@@ -1,0 +1,6 @@
+[submodule "AetherEngine"]
+	path = AetherEngine
+	url = https://github.com/superuser404notfound/AetherEngine.git
+[submodule "FFmpegBuild"]
+	path = FFmpegBuild
+	url = https://github.com/superuser404notfound/FFmpegBuild.git

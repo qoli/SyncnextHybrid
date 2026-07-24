@@ -1,0 +1,407 @@
+diff --git a/Sources/AetherEngine/AetherEngine+IndependentAudioSource.swift b/Sources/AetherEngine/AetherEngine+IndependentAudioSource.swift
+new file mode 100644
+index 0000000..7419d85
+--- /dev/null
++++ b/Sources/AetherEngine/AetherEngine+IndependentAudioSource.swift
+@@ -0,0 +1,240 @@
++import AVFoundation
++import Foundation
++
++/// Stable, non-AVFoundation description of the audible option selected by a
++/// probe-free native HLS item.
++public struct AetherRemoteHLSAudioSelection: Sendable, Equatable {
++    public let displayName: String?
++    public let language: String?
++    public let optionOrdinal: Int?
++
++    public init(
++        displayName: String?,
++        language: String?,
++        optionOrdinal: Int?
++    ) {
++        self.displayName = displayName
++        self.language = language
++        self.optionOrdinal = optionOrdinal
++    }
++}
++
++/// Everything middleware needs to prepare an independent finite HLS VOD
++/// cursor. The request contains no AVPlayer or AVMediaSelectionOption objects.
++public struct AetherRemoteHLSAudioRequest: Sendable, Equatable {
++    public let url: URL
++    public let httpHeaders: [String: String]
++    public let selection: AetherRemoteHLSAudioSelection
++
++    public init(
++        url: URL,
++        httpHeaders: [String: String],
++        selection: AetherRemoteHLSAudioSelection
++    ) {
++        self.url = url
++        self.httpHeaders = httpHeaders
++        self.selection = selection
++    }
++}
++
++public enum AetherIndependentAudioSelection: Sendable, Equatable {
++    case ffmpeg(TrackInfo)
++    case remoteHLS(AetherRemoteHLSAudioSelection)
++}
++
++/// Stable source facts captured from one loaded AetherEngine session.
++///
++/// The value can create a fresh demuxer, but never exposes or reuses the
++/// playback cursor. Hybrid owns decoding, resampling, back-pressure, and
++/// cancellation after it receives this source.
++public struct AetherIndependentAudioSource: @unchecked Sendable {
++    public enum Kind: Sendable, Equatable {
++        case url
++        case custom
++        case remoteHLS
++    }
++
++    public let kind: Kind
++    public let durationSeconds: Double
++    public let isSeekable: Bool
++    public let selection: AetherIndependentAudioSelection
++
++    public var selectedAudioTrack: TrackInfo? {
++        guard case .ffmpeg(let track) = selection else {
++            return nil
++        }
++        return track
++    }
++
++    public var remoteHLSRequest: AetherRemoteHLSAudioRequest? {
++        guard case .remoteHLS(let request) = backing else {
++            return nil
++        }
++        return request
++    }
++
++    fileprivate enum Backing {
++        case url(URL, headers: [String: String])
++        case custom(IOReader, formatHint: String?)
++        case remoteHLS(AetherRemoteHLSAudioRequest)
++    }
++
++    private let backing: Backing
++
++    fileprivate init(
++        backing: Backing,
++        durationSeconds: Double,
++        isSeekable: Bool,
++        selection: AetherIndependentAudioSelection
++    ) {
++        self.backing = backing
++        self.kind = {
++            switch backing {
++            case .url: .url
++            case .custom: .custom
++            case .remoteHLS: .remoteHLS
++            }
++        }()
++        self.durationSeconds = durationSeconds
++        self.isSeekable = isSeekable
++        self.selection = selection
++    }
++
++    /// Opens a caller-owned demuxer. Supplying the instance first lets the
++    /// caller make cancellation visible before a network open begins.
++    public func openDemuxer(_ demuxer: Demuxer) throws {
++        guard isSeekable else {
++            throw AetherIndependentAudioSourceError.sourceNotSeekable
++        }
++
++        do {
++            switch backing {
++            case .url(let url, let headers):
++                try demuxer.openIndependent(url: url, extraHeaders: headers)
++            case .custom(let reader, let formatHint):
++                guard let independent = reader.makeIndependentReader() else {
++                    throw AetherIndependentAudioSourceError.independentReaderUnavailable
++                }
++                try demuxer.openIndependent(reader: independent, formatHint: formatHint)
++            case .remoteHLS:
++                throw AetherIndependentAudioSourceError.remoteHLSPreparationRequired
++            }
++        } catch {
++            demuxer.close()
++            throw error
++        }
++        guard demuxer.isSourceSeekable else {
++            demuxer.close()
++            throw AetherIndependentAudioSourceError.sourceNotSeekable
++        }
++    }
++
++    /// Convenience for clients that do not need to register cancellation
++    /// before open.
++    public func makeDemuxer() throws -> Demuxer {
++        let demuxer = Demuxer()
++        try openDemuxer(demuxer)
++        return demuxer
++    }
++}
++
++public enum AetherIndependentAudioSourceError: Error, Sendable, Equatable {
++    case noActiveSession
++    case liveOrDVRUnsupported
++    case sourceNotSeekable
++    case selectedAudioTrackUnavailable
++    case independentReaderUnavailable
++    case remoteHLSPreparationRequired
++}
++
++public extension AetherEngine {
++    /// Snapshots the active source and selected FFmpeg audio stream identity.
++    /// Probe-free native HLS snapshots a stable media-selection description;
++    /// Hybrid resolves it to one FFmpeg stream in an independent VOD cursor.
++    func independentAudioSource() throws -> AetherIndependentAudioSource {
++        switch state {
++        case .idle, .error:
++            throw AetherIndependentAudioSourceError.noActiveSession
++        case .loading, .playing, .paused, .seeking, .ended:
++            break
++        }
++        guard !isLive, !loadedOptions.isLive else {
++            throw AetherIndependentAudioSourceError.liveOrDVRUnsupported
++        }
++        if loadedOptions.nativeRemoteHLS {
++            guard duration.isFinite, duration > 0,
++                  let loadedURL else {
++                throw AetherIndependentAudioSourceError.sourceNotSeekable
++            }
++            let selected = remoteHLSAudioSelection()
++            let request = AetherRemoteHLSAudioRequest(
++                url: loadedURL,
++                httpHeaders: loadedOptions.httpHeaders,
++                selection: selected
++            )
++            return AetherIndependentAudioSource(
++                backing: .remoteHLS(request),
++                durationSeconds: duration,
++                isSeekable: true,
++                selection: .remoteHLS(selected)
++            )
++        }
++        guard loadedSourceIsSeekable else {
++            throw AetherIndependentAudioSourceError.sourceNotSeekable
++        }
++        guard let selectedID = activeAudioTrackIndex,
++              let selectedTrack = audioTracks.first(where: { $0.id == selectedID }) else {
++            throw AetherIndependentAudioSourceError.selectedAudioTrackUnavailable
++        }
++
++        let backing: AetherIndependentAudioSource.Backing
++        if isCustomSource {
++            guard let customReader else {
++                throw AetherIndependentAudioSourceError.noActiveSession
++            }
++            backing = .custom(customReader, formatHint: customFormatHint)
++        } else {
++            guard let loadedURL else {
++                throw AetherIndependentAudioSourceError.noActiveSession
++            }
++            backing = .url(loadedURL, headers: loadedOptions.httpHeaders)
++        }
++
++        return AetherIndependentAudioSource(
++            backing: backing,
++            durationSeconds: duration,
++            isSeekable: loadedSourceIsSeekable,
++            selection: .ffmpeg(selectedTrack)
++        )
++    }
++
++    private func remoteHLSAudioSelection()
++        -> AetherRemoteHLSAudioSelection
++    {
++        guard let item = currentAVPlayer?.currentItem,
++              let group = item.asset.mediaSelectionGroup(
++                forMediaCharacteristic: .audible
++              ) else {
++            return AetherRemoteHLSAudioSelection(
++                displayName: nil,
++                language: nil,
++                optionOrdinal: nil
++            )
++        }
++        let option =
++            item.currentMediaSelection.selectedMediaOption(in: group)
++            ?? group.defaultOption
++        let ordinal = option.flatMap { selected in
++            group.options.firstIndex { candidate in
++                candidate === selected || candidate.isEqual(selected)
++            }
++        }
++        return AetherRemoteHLSAudioSelection(
++            displayName: option?.displayName,
++            language:
++                option?.extendedLanguageTag
++                ?? option?.locale?.identifier,
++            optionOrdinal: ordinal
++        )
++    }
++}
+diff --git a/Sources/AetherEngine/AetherEngine.swift b/Sources/AetherEngine/AetherEngine.swift
+index 56d842c..6b70293 100644
+--- a/Sources/AetherEngine/AetherEngine.swift
++++ b/Sources/AetherEngine/AetherEngine.swift
+@@ -714,6 +714,10 @@ public final class AetherEngine: ObservableObject {
+     /// False for forward-only custom sources; reload features (audio switch, background reload) no-op for them.
+     private(set) var customSourceIsSeekable = false
+ 
++    /// Seekability captured from the demuxer that admitted the active source.
++    /// Unlike `customSourceIsSeekable`, this also records URL-backed sessions.
++    private(set) var loadedSourceIsSeekable = false
++
+     /// Seconds the producer subtracted from source PTS so AVPlayer's raw clock sits at
+     /// `source_pts - playlistShiftSeconds`. The engine folds this back before publishing, so
+     /// currentTime/sourceTime always carry source PTS. Updated by HLSVideoEngine.onPlaylistShiftChanged
+@@ -2023,7 +2027,8 @@ public final class AetherEngine: ObservableObject {
+         }
+ 
+         // Forward-only custom sources cannot rewind; audio-switch and background-reload stay no-op for them.
+-        customSourceIsSeekable = isCustomSource ? probe.isSourceSeekable : false
++        loadedSourceIsSeekable = probeOpened && probe.isSourceSeekable
++        customSourceIsSeekable = isCustomSource ? loadedSourceIsSeekable : false
+ 
+         // sourceVideoFormat = what's in the file; videoFormat = what the panel shows (published after
+         // the criteria handshake; see panelHDRAfterHandshake below).
+@@ -2945,6 +2950,7 @@ public final class AetherEngine: ObservableObject {
+         loadedURL = nil
+         isCustomSource = false
+         customSourceIsSeekable = false
++        loadedSourceIsSeekable = false
+     }
+ 
+     /// Active AVPlayer on the native path, nil on SW path or when idle. Published so hosts driving an
+diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
+index 17731e5..d2ed922 100644
+--- a/Sources/AetherEngine/Demuxer/Demuxer.swift
++++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
+@@ -151,7 +151,9 @@ public final class Demuxer: @unchecked Sendable {
+     var avioBytesFetched: Int64 { avioProvider?.cumulativeBytesFetched ?? 0 }
+ 
+     // Forward-only custom sources report false.
+-    var isSourceSeekable: Bool { avioProvider?.isSeekable ?? true }
++    public var isSourceSeekable: Bool { avioProvider?.isSeekable ?? true }
++
++    public init() {}
+ 
+     /// Timestamp of last unplanned reconnect (drop/stall, not a seek).
+     /// Live producer correlates with backward source-PTS reset to detect
+@@ -288,6 +290,12 @@ public final class Demuxer: @unchecked Sendable {
+         }
+     }
+ 
++    /// Open a fresh seekable-VOD cursor without exposing AetherEngine's
++    /// playback-oriented demux tuning to middleware clients.
++    public func openIndependent(url: URL, extraHeaders: [String: String] = [:]) throws {
++        try open(url: url, extraHeaders: extraHeaders, profile: .playback, isLive: false)
++    }
++
+     // MARK: - Open Strategies
+ 
+     private func openLocal(url: URL) throws {
+@@ -328,6 +336,11 @@ public final class Demuxer: @unchecked Sendable {
+         try openWithProvider(bridge, inputFormat: inputFormat, isLive: isLive)
+     }
+ 
++    /// Open a fresh cursor over a caller-owned independent IOReader.
++    public func openIndependent(reader: IOReader, formatHint: String? = nil) throws {
++        try open(reader: reader, formatHint: formatHint, profile: .playback, isLive: false)
++    }
++
+     /// A remote disc image (ISO 9660 / UDF / BDMV) by URL extension. Gates the HTTP disc-adapter
+     /// path so a normal media URL keeps the optimized streaming AVIOReader open with no probe cost.
+     static func isDiscImageURL(_ url: URL) -> Bool {
+@@ -536,6 +549,15 @@ public final class Demuxer: @unchecked Sendable {
+         return ctx.pointee.start_time
+     }
+ 
++    /// Zero-based source-timeline origin for independent readers.
++    public var formatStartTimeSeconds: Double {
++        let value = formatStartTime
++        guard value != Int64.min else {
++            return 0
++        }
++        return Double(value) / Double(AV_TIME_BASE)
++    }
++
+     /// Index of the best video stream, or -1.
+     /// Clamped: av_find_best_stream returns AVERROR_STREAM_NOT_FOUND (-1381258232)
+     /// on failure, not -1; normalize to -1 to avoid garbage in logs.
+@@ -576,7 +598,7 @@ public final class Demuxer: @unchecked Sendable {
+         return -1
+     }
+ 
+-    func audioTrackInfos() -> [TrackInfo] {
++    public func audioTrackInfos() -> [TrackInfo] {
+         guard let ctx = formatContext else { return [] }
+         var tracks: [TrackInfo] = []
+         for i in 0..<Int(ctx.pointee.nb_streams) {
+@@ -784,7 +806,7 @@ public final class Demuxer: @unchecked Sendable {
+         return 0
+     }
+ 
+-    func stream(at index: Int32) -> UnsafeMutablePointer<AVStream>? {
++    public func stream(at index: Int32) -> UnsafeMutablePointer<AVStream>? {
+         guard let ctx = formatContext, index >= 0, index < ctx.pointee.nb_streams else {
+             return nil
+         }
+@@ -795,7 +817,7 @@ public final class Demuxer: @unchecked Sendable {
+     /// cluster blocks for all streams on every video packet and queues unused PGS
+     /// bitmaps and audio frames. AVDISCARD_ALL drops before AVPacket alloc, eliminating
+     /// that cycle. Call after open, before readPacket. Safe to call multiple times.
+-    func discardAllStreamsExcept(_ keep: Set<Int32>) {
++    public func discardAllStreamsExcept(_ keep: Set<Int32>) {
+         accessLock.lock()
+         defer { accessLock.unlock() }
+         guard let ctx = formatContext else { return }
+@@ -840,7 +862,7 @@ public final class Demuxer: @unchecked Sendable {
+         return result
+     }
+ 
+-    func readPacket() throws -> UnsafeMutablePointer<AVPacket>? {
++    public func readPacket() throws -> UnsafeMutablePointer<AVPacket>? {
+         accessLock.lock()
+         defer { accessLock.unlock() }
+         guard let ctx = formatContext else { return nil }
+@@ -918,10 +940,11 @@ public final class Demuxer: @unchecked Sendable {
+ 
+     /// Seek via avformat_seek_file (not av_seek_frame: assertion failures
+     /// in matroskadec.c with nested elements).
+-    func seek(to seconds: Double) {
++    @discardableResult
++    public func seek(to seconds: Double) -> Bool {
+         accessLock.lock()
+         defer { accessLock.unlock() }
+-        guard let ctx = formatContext else { return }
++        guard let ctx = formatContext else { return false }
+         let timestamp = Int64(seconds * Double(AV_TIME_BASE))
+         let ret = avformat_seek_file(ctx, -1, Int64.min, timestamp, Int64.max, 0)
+         if ret < 0 {
+@@ -931,6 +954,7 @@ public final class Demuxer: @unchecked Sendable {
+         }
+         avformat_flush(ctx)  // prevents assertion failures in matroskadec.c
+         lastReadClipIdx = -1  // AE#105: post-seek reads may land mid-clip; require a fresh clean crossing
++        return ret >= 0
+     }
+ 
+     /// Seek on one stream's native timestamp axis, never before `timestamp`.
+@@ -1208,11 +1232,11 @@ public final class Demuxer: @unchecked Sendable {
+ 
+     /// Fast lock-free unblock: AVIO read callback returns -1, av_read_frame returns
+     /// at once. No resource freeing. Call before close() when cancelling a pump.
+-    func markClosed() {
++    public func markClosed() {
+         avioProvider?.markClosed()
+     }
+ 
+-    func close() {
++    public func close() {
+         avioProvider?.markClosed()  // unblocks av_read_frame (tvOS suspends threads in background)
+         accessLock.lock()
+         if formatContext != nil {

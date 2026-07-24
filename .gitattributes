@@ -1,0 +1,2 @@
+# Unified diff context lines intentionally end with their context marker.
+*.patch -whitespace
