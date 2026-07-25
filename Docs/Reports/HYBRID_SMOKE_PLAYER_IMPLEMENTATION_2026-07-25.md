@@ -3,15 +3,17 @@
 日期：2026-07-25  
 狀態：Smoke app implementation **PASS**  
 播放器結果：Aether native **PASS**；Aether software **PASS**；
-Hybrid native **PASS**；Hybrid proxy post-seek **FAIL**
+Hybrid native **PASS**；Hybrid proxy post-seek **PASS**
 
 ## 邊界
 
-Smoke app 的實作與本次 baseline 擴充都只發生在 SyncnextHybrid root
-repo：
+Smoke app、baseline 與本次 Hybrid proxy seek 修正都只發生在
+SyncnextHybrid root repo：
 
 ```text
 Examples/HybridSmokePlayer/
+Sources/SyncnextHybrid/
+Tests/SyncnextHybridTests/
 ```
 
 App target 現在 link／import `SyncnextHybrid`，並以診斷例外直接 link 本地
@@ -19,7 +21,7 @@ App target 現在 link／import `SyncnextHybrid`，並以診斷例外直接 link
 改變正式整合邊界：Syncnext App 仍只 link／import
 `SyncnextHybrid`。
 
-沒有修改 SyncnextHybrid library interface，也沒有新增或修改
+沒有修改 SyncnextHybrid public interface，也沒有新增或修改
 AetherEngine／FFmpegBuild Patch、owner code、log forwarding、
 recovery、替代 source、替代 route 或替代 player。
 
@@ -45,7 +47,7 @@ generic tvOS device build:
   BUILD SUCCEEDED
 
 SyncnextHybrid package tests:
-  8 passed
+  13 passed
   0 failed
 ```
 
@@ -62,6 +64,10 @@ Smoke unit tests 涵蓋：
 - finite VOD／seek duration gate；
 - seek landing tolerance；
 - authoritative media-time progress。
+
+新增的 package tests 覆蓋 Hybrid 對 proxy rate／time-jump 回授的來源
+判定，以及 mirrored seek 期間 AVPlayer 自動 pause 不得被轉發給
+AetherEngine。
 
 Package graph 在 Simulator 與 generic device build 都只解析同一份：
 
@@ -123,7 +129,7 @@ Fixture：
 06-seek-5min/progressive-hybrid-mpeg2-interlaced-ac3-5min.mkv
 mode:        aetherEngine
 seek target: 150.000s
-run id:      c9ce16d5-ee13-4486-86fc-262bb71b019a
+run id:      67146a61-cc3c-40ef-b499-a1c24eb29126
 ```
 
 結果：
@@ -138,7 +144,7 @@ backend:
   audio tracks=1
 
 startup:
-  0.000 -> 2.103
+  0.000 -> 2.205
 
 seek:
   target=150.000
@@ -146,7 +152,7 @@ seek:
   error=0.000
 
 post-seek:
-  150.000 -> 152.124
+  150.000 -> 152.100
 
 route:
   not_applicable
@@ -195,7 +201,7 @@ Fixture：
 06-seek-5min/hls-fmp4-h264-aac-5min/index.m3u8
 expected route: nativeAVPlayer
 seek target:    150.000s
-run id:         442e3795-fe31-400c-8c3f-2ed6397ee33f
+run id:         21695a45-86ff-4222-9d32-61e5361572ae
 ```
 
 結果：
@@ -214,7 +220,7 @@ seek:
   error=0.000
 
 post-seek:
-  150.000 -> 152.000
+  150.000 -> 152.103
 
 route:
   nativeAVPlayer throughout
@@ -237,31 +243,26 @@ terminal:
 Fixture：
 
 ```text
-06-seek-5min/progressive-native-h264-aac-5min.mp4
-observed route: avKitProxy
-seek target:    150.000s
-run id:         1fcd7ad3-835c-405e-b193-7244afeb1bd1
+06-seek-5min/progressive-hybrid-mpeg2-interlaced-ac3-5min.mkv
+expected route: avKitProxy
 ```
 
-Simulator 對此 fixture 實際選擇 `avKitProxy`。先前明確指定
-`nativeAVPlayer` 的獨立 run
-`0a933ddb-933c-4749-9b35-a8e0de6b1aaf` 正確以
-`unexpected_route` terminal 失敗；app 沒有在同一 run 內接受或切換成
-觀察到的 route。
-
-其後以 Simulator 已知的 `avKitProxy` contract 建立全新 run：
+修正前的可重現 run：
 
 ```text
+run id:
+  42e8b490-0f59-4dc4-9a82-364abdc07a9f
+
 startup:
-  0.000 -> 2.230
+  0.000 -> 2.103
 
 seek:
-  target=150.000
-  landed=150.000
+  target=10.000
+  landed=10.000
   error=0.000
 
 post-seek:
-  stopped at 150.011
+  stopped at 10.016
   phase=paused
   requested_rate=1.000
   elapsed=60.500
@@ -274,8 +275,73 @@ terminal:
   stage=post_seek
 ```
 
-這證明 smoke app 能保留並終止既有 proxy seek failure，而不是證明 proxy
-播放通過。
+同一來源的 Aether baseline run
+`e9848272-60d8-4aba-818a-b0f844dccbb0` 能從 `10.000` 前進到
+`12.100`，因此問題被界定在 Hybrid 的 AVKit proxy 邊界，而不是 Aether
+seek。
+
+暫時的 proxy 邊界追蹤顯示：Hybrid 鏡像 seek 到黑畫面 AVPlayer 後，
+AVPlayer 在 seek 尚未完成時會自行把 rate 從 `1` 降至 `0`。舊實作將
+這個內部狀態變化誤判為 AVKit 使用者按下 pause，並轉發
+`engine.pause()`。修正後以 seek token 標示 mirrored seek 的存續期，
+忽略該期間由 proxy 自動產生的 `rate=0`；mirrored rate 與 time jump
+也由同一個 gate 消費，真正未配對的 AVKit 操作仍會轉發。
+
+移除暫時追蹤後的 10 秒驗證：
+
+```text
+run id:
+  cc1d168a-9cba-4570-a77f-c0e9dc9c40d7
+
+startup:
+  0.000 -> 2.127
+
+seek:
+  target=10.000
+  landed=10.000
+  error=0.000
+
+post-seek:
+  10.000 -> 12.119
+
+route:
+  avKitProxy throughout
+
+controller binding:
+  matched throughout
+
+terminal:
+  run_passed
+```
+
+再以原 smoke 主要目標 150 秒驗證：
+
+```text
+run id:
+  9c8091c4-5e3a-41e3-9a2a-68e449b44575
+
+startup:
+  0.000 -> 2.134
+
+seek:
+  target=150.000
+  landed=150.000
+  error=0.000
+
+post-seek:
+  150.000 -> 152.133
+
+route:
+  avKitProxy throughout
+
+controller binding:
+  matched throughout
+
+terminal:
+  run_passed
+```
+
+沒有為通過 smoke 而切換 route、source 或 player。
 
 ## 過程錯誤
 
@@ -314,6 +380,10 @@ terminal:
    缺值時讀取公開 `currentAVPlayer.currentItem.presentationSize`；同一
    source 隨後得到 `640x360` 並通過。沒有為此修改 AetherEngine 或
    Patch。
+9. Hybrid proxy 修正前，seek landing 本身正確，但 black-frame
+   AVPlayer 的 seek 內部 `rate=0` 被誤轉成 Aether pause。暫時追蹤只加
+   在 SyncnextHybrid proxy 邊界，完成定位後已移除；保留的是小型
+   feedback gate 與回歸 tests。
 
 ## 結論
 
@@ -325,12 +395,14 @@ HybridSmokePlayer 現在能在 tvOS 上分別驗證：
 - 驗證 session readiness；
 - 驗證真實播放時間前進；
 - 驗證 pause／seek／resume；
+- 區分 mirrored seek 的 AVPlayer 內部回授與真正 AVKit 操作；
 - Aether video/backend gate；
 - Hybrid route invariance 與目前 AVKit player binding；
 - 輸出 privacy-safe structured terminal；
 - 對 mode 缺失／衝突、缺資料、backend/video failure、route mismatch
   與無進度明確失敗。
 
-本次依範圍只執行兩個代表 fixture 的 Simulator baseline，沒有執行
-書房 Apple TV 或全部八個 fixture。generic device build 通過不等同於
-physical-device playback pass。
+本次以 software MPEG-2 fixture 對比 Aether baseline 與 Hybrid proxy，
+並保留既有 native HLS 證據；沒有執行書房 Apple TV 或全部八個
+fixture。generic device build 通過不等同於 physical-device playback
+pass。

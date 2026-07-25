@@ -29,6 +29,7 @@ public final class HybridPlaybackSession:
     private let engine: AetherEngine
     private let surface: AetherPlayerView
     private let proxyPlayer: AVPlayer
+    private let proxyFeedbackGate = HybridProxyFeedbackGate()
     private let eventContinuation: AsyncStream<HybridPlaybackEvent>.Continuation
 
     private weak var attachedController: AVPlayerViewController?
@@ -40,8 +41,6 @@ public final class HybridPlaybackSession:
     nonisolated(unsafe) private var proxyTimeJumpObserver: NSObjectProtocol?
     nonisolated(unsafe) private var nativeMediaSelectionObserver:
         NSObjectProtocol?
-    private var pendingMirroredSeek: Double?
-    private var suppressProxyRateForwarding = false
     private var requestedRate: Float = 1
     private var stopped = false
     private var activeAnalysisRun: HybridAudioAnalysisRun?
@@ -404,15 +403,22 @@ public final class HybridPlaybackSession:
             }
             .store(in: &observations)
 
+        let feedbackGate = proxyFeedbackGate
         proxyRateObservation = proxyPlayer.observe(
             \.rate,
             options: [.new]
         ) { [weak self] _, change in
+            guard let rate = change.newValue else {
+                return
+            }
+            let shouldForward =
+                feedbackGate.shouldForwardRateObservation(rate)
+            guard shouldForward else {
+                return
+            }
             Task { @MainActor in
                 guard let self,
-                      self.snapshot.route == .avKitProxy,
-                      !self.suppressProxyRateForwarding,
-                      let rate = change.newValue else {
+                      self.snapshot.route == .avKitProxy else {
                     return
                 }
                 if rate == 0 {
@@ -436,18 +442,19 @@ public final class HybridPlaybackSession:
                     return
                 }
                 let position = self.proxyPlayer.currentTime().seconds
-                if let pending = self.pendingMirroredSeek,
-                   abs(position - pending) < 0.1 {
-                    self.pendingMirroredSeek = nil
-                    return
-                }
                 guard position.isFinite else {
                     return
                 }
-                Task { @MainActor in
-                    await self.engine.seek(to: position)
-                    self.publishSnapshot()
+                let shouldForward =
+                    feedbackGate.shouldForwardTimeJump(
+                        to: position,
+                        tolerance: 0.1
+                    )
+                guard shouldForward else {
+                    return
                 }
+                await self.engine.seek(to: position)
+                self.publishSnapshot()
             }
         }
 
@@ -581,19 +588,19 @@ public final class HybridPlaybackSession:
 
     private func mirrorProxySeek(to seconds: Double) {
         let target = max(0, min(seconds, engine.duration))
-        pendingMirroredSeek = target
+        let feedbackGate = proxyFeedbackGate
+        let seekToken = feedbackGate.beginMirroredSeek(to: target)
         proxyPlayer.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
             toleranceBefore: .zero,
             toleranceAfter: .zero
         ) { [weak self] _ in
+            feedbackGate.completeMirroredSeek(seekToken)
             Task { @MainActor in
-                guard let self,
-                      let pending = self.pendingMirroredSeek,
-                      abs(pending - target) < 0.001 else {
+                guard let self else {
                     return
                 }
-                self.pendingMirroredSeek = nil
+                self.synchronizeProxyFromEngine(forceSeek: false)
             }
         }
     }
@@ -602,13 +609,13 @@ public final class HybridPlaybackSession:
         guard proxyPlayer.rate != rate else {
             return
         }
-        suppressProxyRateForwarding = true
-        if rate == 0 {
-            proxyPlayer.pause()
-        } else {
-            proxyPlayer.rate = rate
+        proxyFeedbackGate.performMirroredRateChange(to: rate) {
+            if rate == 0 {
+                proxyPlayer.pause()
+            } else {
+                proxyPlayer.rate = rate
+            }
         }
-        suppressProxyRateForwarding = false
     }
 
     private func refreshMenusAndSnapshot() {
