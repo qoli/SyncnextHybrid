@@ -59,6 +59,15 @@ V1 is tvOS-only. Pure-audio sessions and proxy-route PiP/AirPlay are explicit
 unsupported states. An analysis failure never changes playback route, audio
 selection, or playback state.
 
+## tvOS smoke player
+
+[`Examples/HybridSmokePlayer`](Examples/HybridSmokePlayer) is a standalone
+tvOS app that imports only SyncnextHybrid. It attaches Hybrid to a native
+`AVPlayerViewController` and verifies real startup media progress, an explicit
+seek, post-seek progress, route invariance, and current AVKit player binding.
+It emits privacy-safe structured terminal evidence and never switches source,
+route, or player after failure.
+
 ## Upstream update
 
 Follow [`Docs/HYBRID_MAINTENANCE_SOP.md`](Docs/HYBRID_MAINTENANCE_SOP.md).

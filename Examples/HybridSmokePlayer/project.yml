@@ -1,0 +1,56 @@
+name: HybridSmokePlayer
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    tvOS: "16.0"
+packages:
+  SyncnextHybrid:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+targets:
+  HybridSmokePlayer:
+    type: application
+    platform: tvOS
+    sources:
+      - Sources
+    dependencies:
+      - package: SyncnextHybrid
+        product: SyncnextHybrid
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.qoli.SyncnextHybridSmoke
+        PRODUCT_NAME: HybridSmokePlayer
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: 3
+        EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
+        INFOPLIST_FILE: Sources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+  HybridSmokePlayerTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - Tests
+    dependencies:
+      - target: HybridSmokePlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.qoli.SyncnextHybridSmokeTests
+        GENERATE_INFOPLIST_FILE: YES
+        EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
+schemes:
+  HybridSmokePlayer:
+    build:
+      targets:
+        HybridSmokePlayer: all
+        HybridSmokePlayerTests:
+          - test
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - HybridSmokePlayerTests

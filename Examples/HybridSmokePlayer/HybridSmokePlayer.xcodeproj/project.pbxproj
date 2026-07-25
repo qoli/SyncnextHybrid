@@ -1,0 +1,464 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		458BF66BA978D14B4A1A3DFA /* SmokeEventLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */; };
+		6D623A87FE863E508C736139 /* SmokePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */; };
+		74A0CE2F36B79F41924AC7AB /* SyncnextHybrid in Frameworks */ = {isa = PBXBuildFile; productRef = F758CDF2666D21B52AB35802 /* SyncnextHybrid */; };
+		7FDA17206AA2CA3DC8302DBB /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 957CFDCD956051DC67233438 /* ContentView.swift */; };
+		82FEFCB6580F1ADFC675DADF /* HybridSmokePlayerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */; };
+		8FC335CB4A3BABB5E12C60FB /* SmokePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */; };
+		997A0229EA8DD52145D5968E /* SmokeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */; };
+		C968BFEA7333DC4D53A16C56 /* SmokeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13888A4ED150FE27BC7BB2B /* SmokeViewModel.swift */; };
+		D2550F257632377FB6B6BEBC /* SmokeConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A09CA7CECF43D4E46D1488BA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E67BE5DA8007DA68E0C23A90 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5690926E547F1D962E1E58F7;
+			remoteInfo = HybridSmokePlayer;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HybridSmokePlayerApp.swift; sourceTree = "<group>"; };
+		2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfigurationTests.swift; sourceTree = "<group>"; };
+		257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HybridSmokePlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		39D24F4344829401094C42EF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicyTests.swift; sourceTree = "<group>"; };
+		86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfiguration.swift; sourceTree = "<group>"; };
+		957CFDCD956051DC67233438 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A13888A4ED150FE27BC7BB2B /* SmokeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeViewModel.swift; sourceTree = "<group>"; };
+		AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicy.swift; sourceTree = "<group>"; };
+		B90583E2D295C9144488C957 /* SyncnextHybrid */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SyncnextHybrid; path = ../..; sourceTree = SOURCE_ROOT; };
+		C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeEventLogger.swift; sourceTree = "<group>"; };
+		CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HybridSmokePlayerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7534B0E0639318CC150F3239 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				74A0CE2F36B79F41924AC7AB /* SyncnextHybrid in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		640D62A4187E69799082C985 = {
+			isa = PBXGroup;
+			children = (
+				B563F71C289B5E3C6ED40E57 /* Packages */,
+				F9AA9C86F7A3A36DC2EFACC0 /* Sources */,
+				8AB1B866DEC5649DFEAD9E41 /* Tests */,
+				DDF11F830C831C2851F9657D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		8AB1B866DEC5649DFEAD9E41 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */,
+				7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		B563F71C289B5E3C6ED40E57 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				B90583E2D295C9144488C957 /* SyncnextHybrid */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		DDF11F830C831C2851F9657D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */,
+				CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F9AA9C86F7A3A36DC2EFACC0 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				957CFDCD956051DC67233438 /* ContentView.swift */,
+				08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */,
+				39D24F4344829401094C42EF /* Info.plist */,
+				86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */,
+				C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */,
+				AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */,
+				A13888A4ED150FE27BC7BB2B /* SmokeViewModel.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5690926E547F1D962E1E58F7 /* HybridSmokePlayer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F56A516E3B9A3EED447F733C /* Build configuration list for PBXNativeTarget "HybridSmokePlayer" */;
+			buildPhases = (
+				E4B9520D790627A1E3F89B2F /* Sources */,
+				7534B0E0639318CC150F3239 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HybridSmokePlayer;
+			packageProductDependencies = (
+				F758CDF2666D21B52AB35802 /* SyncnextHybrid */,
+			);
+			productName = HybridSmokePlayer;
+			productReference = 257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D497D1C0DD8E5260E0D052B5 /* HybridSmokePlayerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 65B8F75719FABB2EF6F1428A /* Build configuration list for PBXNativeTarget "HybridSmokePlayerTests" */;
+			buildPhases = (
+				45C8C2E68FECAF27AE2C3077 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A92E1F6F5E8DD25FE7E67084 /* PBXTargetDependency */,
+			);
+			name = HybridSmokePlayerTests;
+			packageProductDependencies = (
+			);
+			productName = HybridSmokePlayerTests;
+			productReference = CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E67BE5DA8007DA68E0C23A90 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					5690926E547F1D962E1E58F7 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 738BA2042238966B9FE82401 /* Build configuration list for PBXProject "HybridSmokePlayer" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 640D62A4187E69799082C985;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6C9E2AD879D36E67DB7EFEA7 /* XCLocalSwiftPackageReference "../.." */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5690926E547F1D962E1E58F7 /* HybridSmokePlayer */,
+				D497D1C0DD8E5260E0D052B5 /* HybridSmokePlayerTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		45C8C2E68FECAF27AE2C3077 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D2550F257632377FB6B6BEBC /* SmokeConfigurationTests.swift in Sources */,
+				6D623A87FE863E508C736139 /* SmokePolicyTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E4B9520D790627A1E3F89B2F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7FDA17206AA2CA3DC8302DBB /* ContentView.swift in Sources */,
+				82FEFCB6580F1ADFC675DADF /* HybridSmokePlayerApp.swift in Sources */,
+				997A0229EA8DD52145D5968E /* SmokeConfiguration.swift in Sources */,
+				458BF66BA978D14B4A1A3DFA /* SmokeEventLogger.swift in Sources */,
+				8FC335CB4A3BABB5E12C60FB /* SmokePolicy.swift in Sources */,
+				C968BFEA7333DC4D53A16C56 /* SmokeViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A92E1F6F5E8DD25FE7E67084 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5690926E547F1D962E1E58F7 /* HybridSmokePlayer */;
+			targetProxy = A09CA7CECF43D4E46D1488BA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3A0FEF60568D0B9234F74F11 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TVOS_DEPLOYMENT_TARGET = 16.0;
+			};
+			name = Debug;
+		};
+		4C5BA2408B877F3F6C51B365 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmokeTests;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HybridSmokePlayer.app/HybridSmokePlayer";
+			};
+			name = Debug;
+		};
+		4E98EAFEBEAAAFE3260E046C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmoke;
+				PRODUCT_NAME = HybridSmokePlayer;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Release;
+		};
+		6400DDE952CABB858C5509A6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmokeTests;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HybridSmokePlayer.app/HybridSmokePlayer";
+			};
+			name = Release;
+		};
+		847641126720322570769C8B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TVOS_DEPLOYMENT_TARGET = 16.0;
+			};
+			name = Release;
+		};
+		A0D323826189F713B73293D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmoke;
+				PRODUCT_NAME = HybridSmokePlayer;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		65B8F75719FABB2EF6F1428A /* Build configuration list for PBXNativeTarget "HybridSmokePlayerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4C5BA2408B877F3F6C51B365 /* Debug */,
+				6400DDE952CABB858C5509A6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		738BA2042238966B9FE82401 /* Build configuration list for PBXProject "HybridSmokePlayer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3A0FEF60568D0B9234F74F11 /* Debug */,
+				847641126720322570769C8B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F56A516E3B9A3EED447F733C /* Build configuration list for PBXNativeTarget "HybridSmokePlayer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0D323826189F713B73293D3 /* Debug */,
+				4E98EAFEBEAAAFE3260E046C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6C9E2AD879D36E67DB7EFEA7 /* XCLocalSwiftPackageReference "../.." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F758CDF2666D21B52AB35802 /* SyncnextHybrid */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SyncnextHybrid;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E67BE5DA8007DA68E0C23A90 /* Project object */;
+}
