@@ -66,6 +66,11 @@ enum SmokePolicy {
 }
 
 enum SmokeFailure: Error, Sendable, LocalizedError {
+    case aetherInitializationFailed(String)
+    case aetherSourceLoadFailed(String)
+    case aetherVideoRequired(width: Int32, height: Int32)
+    case aetherBackendUnavailable(String)
+    case aetherPresentationChanged
     case sessionReadinessTimeout(
         phase: String,
         duration: Double,
@@ -96,6 +101,16 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
 
     var code: String {
         switch self {
+        case .aetherInitializationFailed:
+            "aether_initialization_failed"
+        case .aetherSourceLoadFailed:
+            "aether_source_load_failed"
+        case .aetherVideoRequired:
+            "aether_video_required"
+        case .aetherBackendUnavailable:
+            "aether_backend_unavailable"
+        case .aetherPresentationChanged:
+            "aether_presentation_changed"
         case .sessionReadinessTimeout:
             "session_readiness_timeout"
         case .nonFiniteDuration:
@@ -123,21 +138,31 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .aetherInitializationFailed(let message):
+            "AetherEngine initialization failed: \(message)"
+        case .aetherSourceLoadFailed(let message):
+            "AetherEngine source load failed: \(message)"
+        case .aetherVideoRequired(let width, let height):
+            "AetherEngine baseline requires video, but the source dimensions are \(width)x\(height)"
+        case .aetherBackendUnavailable(let backend):
+            "AetherEngine did not select a playable video backend: \(backend)"
+        case .aetherPresentationChanged:
+            "The active AetherEngine presentation changed during the smoke run"
         case .sessionReadinessTimeout(
             let phase,
             let duration,
             let timeout
         ):
-            "Hybrid did not publish a paused finite VOD snapshot within \(timeout)s (phase \(phase), duration \(duration))"
+            "Playback did not reach a paused finite VOD snapshot within \(timeout)s (phase \(phase), duration \(duration))"
         case .nonFiniteDuration:
-            "Hybrid did not publish a finite positive VOD duration"
+            "Playback did not publish a finite positive VOD duration"
         case .mediaTooShortForSeek(
             let duration,
             let requiredDuration
         ):
             "Media duration \(duration) is not greater than the required smoke duration \(requiredDuration)"
         case .invalidMediaTime(let currentTime):
-            "Hybrid published invalid media time \(currentTime)"
+            "Playback published invalid media time \(currentTime)"
         case .controllerBindingChanged:
             "AVPlayerViewController is not bound to session.avPlayer"
         case .unexpectedRoute(let expected, let actual):
@@ -145,7 +170,7 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
         case .routeChanged(let expected, let actual):
             "Hybrid route changed from \(expected) to \(actual)"
         case .playerFailed(let message):
-            "Hybrid entered a typed playback failure: \(message)"
+            "Playback entered a typed failure: \(message)"
         case .endedBeforeProgress(let stage):
             "Playback ended before satisfying \(stage) progress"
         case .noMediaProgress(

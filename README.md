@@ -62,11 +62,17 @@ selection, or playback state.
 ## tvOS smoke player
 
 [`Examples/HybridSmokePlayer`](Examples/HybridSmokePlayer) is a standalone
-tvOS app that imports only SyncnextHybrid. It attaches Hybrid to a native
-`AVPlayerViewController` and verifies real startup media progress, an explicit
-seek, post-seek progress, route invariance, and current AVKit player binding.
-It emits privacy-safe structured terminal evidence and never switches source,
-route, or player after failure.
+tvOS diagnostic app with explicit `aetherEngine` and `hybridAVKit` modes.
+The default Aether baseline directly renders `AetherPlayerSurface` so
+AetherEngine playback can be tested without the AVKit proxy; the Hybrid mode
+retains the production-facing `AVPlayerViewController` path for comparison.
+The smoke target's direct local AetherEngine link is a diagnostic exception:
+Syncnext production still imports only SyncnextHybrid. Both modes verify real
+startup progress, seek, and post-seek progress, emit privacy-safe structured
+terminal evidence, and never switch mode, source, route, or player after
+failure. The Aether overlay also provides an explicit diagnostic seek button;
+using it cancels the bounded automation before moving the engine clock so a
+manual jump cannot create a false smoke PASS.
 
 ## Upstream update
 

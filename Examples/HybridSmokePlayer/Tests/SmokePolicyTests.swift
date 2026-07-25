@@ -1,7 +1,32 @@
+import AetherEngine
 import XCTest
 @testable import HybridSmokePlayer
 
 final class SmokePolicyTests: XCTestCase {
+    func testAetherVideoDimensionsPreferSourceMetadata() {
+        let dimensions = AetherSmokeState.videoDimensions(
+            sourceWidth: 720,
+            sourceHeight: 480,
+            nativePresentationWidth: 1920,
+            nativePresentationHeight: 1080
+        )
+
+        XCTAssertEqual(dimensions.width, 720)
+        XCTAssertEqual(dimensions.height, 480)
+    }
+
+    func testAetherVideoDimensionsUseNativePresentationFallback() {
+        let dimensions = AetherSmokeState.videoDimensions(
+            sourceWidth: 0,
+            sourceHeight: 0,
+            nativePresentationWidth: 1920,
+            nativePresentationHeight: 1080
+        )
+
+        XCTAssertEqual(dimensions.width, 1920)
+        XCTAssertEqual(dimensions.height, 1080)
+    }
+
     func testFiniteDurationMustContainSeekAndPostSeekBudget()
         throws
     {
@@ -69,6 +94,95 @@ final class SmokePolicyTests: XCTestCase {
                 from: 0,
                 to: .nan
             )
+        )
+    }
+
+    func testAetherVideoGateAcceptsOnlyVideoBackends() {
+        XCTAssertNoThrow(
+            try AetherSmokeState.validateVideo(
+                width: 1920,
+                height: 1080,
+                backend: .native
+            )
+        )
+        XCTAssertNoThrow(
+            try AetherSmokeState.validateVideo(
+                width: 1920,
+                height: 1080,
+                backend: .software
+            )
+        )
+
+        XCTAssertThrowsError(
+            try AetherSmokeState.validateVideo(
+                width: 1920,
+                height: 1080,
+                backend: .none
+            )
+        ) { error in
+            XCTAssertEqual(
+                (error as? SmokeFailure)?.code,
+                "aether_backend_unavailable"
+            )
+        }
+        XCTAssertThrowsError(
+            try AetherSmokeState.validateVideo(
+                width: 0,
+                height: 0,
+                backend: .audio
+            )
+        ) { error in
+            XCTAssertEqual(
+                (error as? SmokeFailure)?.code,
+                "aether_video_required"
+            )
+        }
+    }
+
+    func testAetherPlaybackPhaseMappingPreservesFailures() {
+        XCTAssertEqual(PlaybackPhase.paused.smokeName, "paused")
+        XCTAssertEqual(
+            PlaybackPhase.stalled(reconnecting: true).smokeName,
+            "stalled"
+        )
+        XCTAssertEqual(
+            PlaybackPhase.error("decode failed").smokeName,
+            "failed"
+        )
+    }
+
+    @MainActor
+    func testAetherMetricsDoNotPretendToHaveHybridRoute() throws {
+        let configuration = try SmokeConfiguration.interactive(
+            mode: .aetherEngine,
+            rawURL: "https://example.test/video.mkv",
+            rawHeaders: "",
+            rawSeekSeconds: "10"
+        )
+        let emitter = SmokeEventEmitter(
+            configuration: configuration
+        )
+        let snapshot = AetherSmokeSnapshot(
+            phase: .paused,
+            currentTime: 0,
+            duration: 300,
+            requestedRate: 0,
+            backend: .software,
+            hasCurrentAVPlayer: false,
+            videoWidth: 1920,
+            videoHeight: 1080,
+            audioTrackCount: 1,
+            subtitleTrackCount: 0
+        )
+
+        let metrics = emitter.metrics(for: snapshot)
+
+        XCTAssertEqual(metrics["mode"], "aetherEngine")
+        XCTAssertEqual(metrics["route"], "not_applicable")
+        XCTAssertEqual(metrics["aether_backend"], "software")
+        XCTAssertEqual(
+            metrics["aether_current_avplayer"],
+            "absent"
         )
     }
 }

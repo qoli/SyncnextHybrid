@@ -6,6 +6,8 @@ options:
 packages:
   SyncnextHybrid:
     path: ../..
+  AetherEngine:
+    path: ../../AetherEngine
 settings:
   base:
     SWIFT_VERSION: 6.0
@@ -18,6 +20,8 @@ targets:
     dependencies:
       - package: SyncnextHybrid
         product: SyncnextHybrid
+      - package: AetherEngine
+        product: AetherEngine
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.qoli.SyncnextHybridSmoke

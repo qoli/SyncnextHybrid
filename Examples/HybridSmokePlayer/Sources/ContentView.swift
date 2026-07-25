@@ -1,3 +1,4 @@
+import AetherEngine
 import AVKit
 import SwiftUI
 
@@ -6,7 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if model.hasAttachedSession {
+            if model.hasActivePresentation {
                 player
             } else {
                 setup
@@ -17,14 +18,20 @@ struct ContentView: View {
 
     private var setup: some View {
         VStack(alignment: .leading, spacing: 28) {
-            Text("SyncnextHybrid tvOS Smoke")
+            Text("Hybrid / Aether tvOS Smoke")
                 .font(.largeTitle.bold())
 
-            Text(
-                "Tests the public Hybrid interface through native AVKit. "
-                    + "No source, route, or player fallback is used."
-            )
+            Text(setupDescription)
             .foregroundStyle(.secondary)
+
+            Picker("Playback mode", selection: $model.selectedMode) {
+                ForEach(SmokePlaybackMode.allCases, id: \.self) {
+                    mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("hybrid-smoke-mode")
 
             TextField("Absolute media URL", text: $model.sourceURLText)
                 .textContentType(.URL)
@@ -79,10 +86,7 @@ struct ContentView: View {
 
     private var player: some View {
         ZStack(alignment: .topLeading) {
-            PlayerControllerView(
-                controller: model.playerViewController
-            )
-            .ignoresSafeArea()
+            playbackSurface
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(model.runState.title)
@@ -90,15 +94,30 @@ struct ContentView: View {
                     .foregroundStyle(statusColor)
                 Text(model.sourceDisplay)
                 Text(
-                    "\(model.routeName) · \(model.phaseName) · "
+                    "\(model.activeMode?.rawValue ?? "unbound") · "
+                        + "\(model.routeName) · \(model.phaseName) · "
                         + "\(format(model.currentTime)) / "
                         + "\(format(model.duration))"
                 )
                 Text(model.statusMessage)
                     .foregroundStyle(.secondary)
 
+                if model.activeMode == .aetherEngine,
+                   let target = model.activeSeekTarget {
+                    Button(
+                        "Seek → \(format(target))"
+                    ) {
+                        model.seekAetherToConfiguredTarget()
+                    }
+                    .disabled(!model.canManuallySeekAether)
+                    .accessibilityIdentifier(
+                        "hybrid-smoke-aether-seek"
+                    )
+                }
+
                 if model.runState == .passed
-                    || model.runState == .failed {
+                    || model.runState == .failed
+                    || model.runState == .manualControl {
                     Button("Reset") {
                         model.reset()
                     }
@@ -114,6 +133,50 @@ struct ContentView: View {
         }
         .onExitCommand {
             model.reset()
+        }
+    }
+
+    @ViewBuilder
+    private var playbackSurface: some View {
+        switch model.activeMode {
+        case .aetherEngine:
+            if let engine = model.aetherEngine {
+                AetherPlayerSurface(engine: engine)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+            } else {
+                presentationFailure(
+                    "AetherEngine presentation is missing"
+                )
+            }
+        case .hybridAVKit:
+            PlayerControllerView(
+                controller: model.playerViewController
+            )
+            .ignoresSafeArea()
+        case nil:
+            presentationFailure("Playback mode is missing")
+        }
+    }
+
+    private func presentationFailure(_ message: String) -> some View {
+        ZStack {
+            Color.black
+            Text(message)
+                .foregroundStyle(.red)
+                .font(.headline.monospaced())
+        }
+        .ignoresSafeArea()
+    }
+
+    private var setupDescription: String {
+        switch model.selectedMode {
+        case .aetherEngine:
+            "Direct AetherEngine baseline using AetherPlayerSurface. "
+                + "No Hybrid session, AVKit controller, or proxy is created."
+        case .hybridAVKit:
+            "Tests the public Hybrid interface through native AVKit. "
+                + "No source, route, or player fallback is used."
         }
     }
 

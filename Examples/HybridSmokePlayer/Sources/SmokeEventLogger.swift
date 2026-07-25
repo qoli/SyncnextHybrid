@@ -89,7 +89,10 @@ struct SmokeEventEmitter {
         extra: [String: String] = [:]
     ) -> [String: String] {
         var values = [
+            "mode": SmokePlaybackMode.hybridAVKit.rawValue,
             "route": snapshot.route.smokeName,
+            "aether_backend": "not_applicable",
+            "aether_current_avplayer": "not_applicable",
             "phase": snapshot.phase.smokeName,
             "current_time_seconds":
                 Self.number(snapshot.currentTime),
@@ -100,6 +103,32 @@ struct SmokeEventEmitter {
             "selected_subtitle_track":
                 snapshot.selectedSubtitleTrackID.map(String.init)
                 ?? "none",
+        ]
+        values.merge(extra, uniquingKeysWith: { _, latest in latest })
+        return values
+    }
+
+    func metrics(
+        for snapshot: AetherSmokeSnapshot,
+        extra: [String: String] = [:]
+    ) -> [String: String] {
+        var values = [
+            "mode": SmokePlaybackMode.aetherEngine.rawValue,
+            "route": "not_applicable",
+            "aether_backend": snapshot.backend.rawValue,
+            "aether_current_avplayer":
+                snapshot.hasCurrentAVPlayer ? "present" : "absent",
+            "phase": snapshot.phase.smokeName,
+            "current_time_seconds":
+                Self.number(snapshot.currentTime),
+            "duration_seconds": Self.number(snapshot.duration),
+            "requested_rate":
+                Self.number(Double(snapshot.requestedRate)),
+            "video_width": String(snapshot.videoWidth),
+            "video_height": String(snapshot.videoHeight),
+            "audio_track_count": String(snapshot.audioTrackCount),
+            "subtitle_track_count":
+                String(snapshot.subtitleTrackCount),
         ]
         values.merge(extra, uniquingKeysWith: { _, latest in latest })
         return values

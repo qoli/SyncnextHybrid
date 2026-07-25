@@ -1,11 +1,26 @@
 import Foundation
 
+enum SmokePlaybackMode: String, CaseIterable, Sendable, Equatable {
+    case aetherEngine
+    case hybridAVKit
+
+    var title: String {
+        switch self {
+        case .aetherEngine:
+            "AetherEngine Baseline"
+        case .hybridAVKit:
+            "Hybrid AVKit"
+        }
+    }
+}
+
 enum SmokeExpectedRoute: String, Sendable, Equatable {
     case nativeAVPlayer
     case avKitProxy
 }
 
 struct SmokeConfiguration: Sendable, Equatable {
+    static let modeEnvironmentKey = "HYBRID_SMOKE_MODE"
     static let urlEnvironmentKey = "HYBRID_SMOKE_URL"
     static let headersEnvironmentKey = "HYBRID_SMOKE_HEADERS_JSON"
     static let seekEnvironmentKey = "HYBRID_SMOKE_SEEK_SECONDS"
@@ -14,6 +29,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let environmentPrefix = "HYBRID_SMOKE_"
     static let defaultSeekSeconds = 10.0
 
+    let mode: SmokePlaybackMode
     let sourceURL: URL
     let httpHeaders: [String: String]
     let seekSeconds: Double
@@ -44,8 +60,12 @@ struct SmokeConfiguration: Sendable, Equatable {
             }
             return nil
         }
+        guard let rawMode = environment[modeEnvironmentKey] else {
+            throw SmokeConfigurationError.missingMode
+        }
 
         return try make(
+            rawMode: rawMode,
             rawURL: rawURL,
             rawHeaders: environment[headersEnvironmentKey] ?? "",
             rawSeekSeconds:
@@ -57,11 +77,13 @@ struct SmokeConfiguration: Sendable, Equatable {
     }
 
     static func interactive(
+        mode: SmokePlaybackMode,
         rawURL: String,
         rawHeaders: String,
         rawSeekSeconds: String
     ) throws -> SmokeConfiguration {
         try make(
+            rawMode: mode.rawValue,
             rawURL: rawURL,
             rawHeaders: rawHeaders,
             rawSeekSeconds: rawSeekSeconds,
@@ -70,11 +92,15 @@ struct SmokeConfiguration: Sendable, Equatable {
     }
 
     private static func make(
+        rawMode: String,
         rawURL: String,
         rawHeaders: String,
         rawSeekSeconds: String,
         rawExpectedRoute: String?
     ) throws -> SmokeConfiguration {
+        guard let mode = SmokePlaybackMode(rawValue: rawMode) else {
+            throw SmokeConfigurationError.invalidMode(rawMode)
+        }
         let sourceURL = try parseURL(rawURL)
         let headers = try parseHeaders(rawHeaders)
         let seekSeconds = try parseSeekSeconds(rawSeekSeconds)
@@ -91,8 +117,12 @@ struct SmokeConfiguration: Sendable, Equatable {
         } else {
             expectedRoute = nil
         }
+        if mode == .aetherEngine, expectedRoute != nil {
+            throw SmokeConfigurationError.expectedRouteRequiresHybrid
+        }
 
         return SmokeConfiguration(
+            mode: mode,
             sourceURL: sourceURL,
             httpHeaders: headers,
             seekSeconds: seekSeconds,
@@ -183,23 +213,32 @@ enum SmokeConfigurationError:
     LocalizedError
 {
     case missingURL
+    case missingMode
     case invalidURL
+    case invalidMode(String)
     case invalidHeadersJSON
     case invalidSeekSeconds
     case invalidExpectedRoute(String)
+    case expectedRouteRequiresHybrid
 
     var errorDescription: String? {
         switch self {
         case .missingURL:
             "HYBRID_SMOKE_URL or an interactive media URL is required"
+        case .missingMode:
+            "HYBRID_SMOKE_MODE is required for automated smoke runs"
         case .invalidURL:
             "Media URL must be an absolute http, https, or file URL"
+        case .invalidMode(let value):
+            "Playback mode must be aetherEngine or hybridAVKit, not \(value)"
         case .invalidHeadersJSON:
             "HTTP headers must be a JSON object with string values"
         case .invalidSeekSeconds:
             "Seek seconds must be finite and greater than zero"
         case .invalidExpectedRoute(let value):
             "Expected route must be nativeAVPlayer or avKitProxy, not \(value)"
+        case .expectedRouteRequiresHybrid:
+            "HYBRID_SMOKE_EXPECTED_ROUTE is valid only in hybridAVKit mode"
         }
     }
 }

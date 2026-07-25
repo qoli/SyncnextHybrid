@@ -1,38 +1,47 @@
-# SyncnextHybrid tvOS Smoke Player
+# Hybrid / Aether tvOS Smoke Player
 
-This standalone tvOS app tests SyncnextHybrid through the same public interface
-used by Syncnext:
+This standalone diagnostic app has two explicit playback modes:
 
-```text
-HybridPlaybackRequest
-  -> HybridPlaybackSession
-  -> attach(to: AVPlayerViewController)
-  -> authoritative snapshot and events
-```
+| Mode | Playback path |
+| --- | --- |
+| `aetherEngine` | A fresh `AetherEngine` rendered directly by `AetherPlayerSurface(engine:)` |
+| `hybridAVKit` | `HybridPlaybackSession` attached to a native `AVPlayerViewController` |
 
-The app target imports only `SyncnextHybrid`. It does not import or edit
-AetherEngine or FFmpegBuild, inspect Aether diagnostics, start another player,
-switch source, or recover through another route.
+The interactive page defaults to `aetherEngine`, so AetherEngine playback can
+be verified independently of the AVKit proxy. The mode is fixed before the
+player is created. A failed run never switches mode, source, route, or player.
+
+The smoke target directly links the local `../../AetherEngine` product only as
+a diagnostic exception. This does not change the production boundary:
+Syncnext still links and imports only `SyncnextHybrid`. The app does not edit
+SyncnextHybrid's public interface, AetherEngine, FFmpegBuild, or any Patch.
 
 ## Smoke contract
 
-One run uses one explicit seekable VOD URL:
+Every run uses one explicit seekable VOD URL and the same bounded contract:
 
-1. Create and attach one `HybridPlaybackSession`.
+1. Create exactly one player for the selected mode.
 2. Within 30 seconds, require a paused snapshot with finite duration and valid
    initial media time.
-3. Require the authoritative Hybrid media time to advance by at least two
-   seconds within 60.5 seconds.
+3. Require authoritative media time to advance by at least two seconds within
+   60.5 seconds.
 4. Pause and seek to the explicit target, with a one-second landing tolerance.
-5. Resume and require another two seconds of authoritative media progress
-   within 60.5 seconds.
-6. Require the Hybrid route to remain unchanged and
-   `AVPlayerViewController.player === session.avPlayer` throughout.
+5. Resume and require another two seconds of media progress within 60.5
+   seconds.
 
-`PASS` leaves playback active for visual and native AVKit interaction.
-Configuration errors, typed Hybrid failure, early EOS, route drift, AVKit
-binding drift, invalid time, seek mismatch, or zero progress produce one
-terminal `FAIL`.
+`aetherEngine` additionally requires a non-zero video size and a public
+`playbackBackend` of `native` or `software`. It records
+`currentAVPlayer` presence but does not use it for routing. Its `route` metric
+is always `not_applicable`.
+
+`hybridAVKit` additionally requires the Hybrid route to remain unchanged and
+`AVPlayerViewController.player === session.avPlayer` throughout.
+
+`PASS` leaves playback active for visual inspection. Reset calls `stop()` and
+releases the active engine or session. Configuration errors, Aether
+initialization/load/backend/video/phase failure, typed Hybrid failure, early
+EOS, presentation or route drift, AVKit binding drift, invalid time, seek
+mismatch, or zero progress produce one terminal `FAIL`.
 
 This is a bounded smoke test. It does not prove playback to EOS, presented
 frames, HDR panel mode, audio/subtitle selection, independent audio analysis,
@@ -66,8 +75,9 @@ SyncnextHybrid package, AetherEngine, or FFmpegBuild open in another Xcode
 workspace at the same time.
 
 Both SyncNext and HybridSmokePlayer intentionally resolve the same local
-SyncnextHybrid package. Xcode cannot load that package into two independent
-workspace documents concurrently. When this happens, Xcode first reports
+SyncnextHybrid checkout; the smoke project also resolves that checkout's one
+local AetherEngine package. Xcode cannot load those packages into two
+independent workspace documents concurrently. When this happens, Xcode first reports
 `Couldn't load ... because it is already opened from another project or
 workspace` and then reports the downstream error
 `Missing package product 'SyncnextHybrid'`.
@@ -82,12 +92,22 @@ AetherEngine or FFmpegBuild.
 Open `HybridSmokePlayer.xcodeproj`, select an Apple TV simulator or device,
 configure signing if needed, and run. Enter:
 
+- one explicit playback mode; `AetherEngine baseline` is selected by default;
 - one absolute `http`, `https`, or sandbox-accessible `file` URL;
 - optional HTTP headers as a JSON object with string values;
 - one seek target in seconds.
 
 The test-only app permits HTTP sources so it can reach an explicit LAN fixture.
 It must not be distributed as a production application.
+
+While an Aether presentation is active and its finite duration admits the
+configured target, the overlay exposes `Seek → HH:MM:SS`. This diagnostic
+operation first cancels the bounded automation so the manual time jump cannot
+be misreported as natural startup progress. It pauses, seeks through
+`AetherEngine.seek(to:)`, verifies the one-second landing tolerance, and
+resumes only when playback had already been requested. The operation emits
+`manual_seek_requested`, `manual_seek_landed`, `manual_seek_failed`, or
+`manual_seek_cancelled`; it never switches to Hybrid.
 
 Progressive HTTP fixtures must come from an origin with correct single-byte
 Range support (`206`, `Accept-Ranges`, and `Content-Range`). Python's basic
@@ -105,10 +125,10 @@ xcrun devicectl device process launch \
   --console \
   --environment-variables \
   '{
+    "HYBRID_SMOKE_MODE": "aetherEngine",
     "HYBRID_SMOKE_URL":
       "http://<fixture-host>:<port>/<fixture-path>",
-    "HYBRID_SMOKE_SEEK_SECONDS": "150",
-    "HYBRID_SMOKE_EXPECTED_ROUTE": "avKitProxy"
+    "HYBRID_SMOKE_SEEK_SECONDS": "150"
   }' \
   com.qoli.SyncnextHybridSmoke
 ```
@@ -117,18 +137,22 @@ Supported environment values:
 
 | Name | Contract |
 | --- | --- |
+| `HYBRID_SMOKE_MODE` | Required for automation; exactly `aetherEngine` or `hybridAVKit` |
 | `HYBRID_SMOKE_URL` | Required when any `HYBRID_SMOKE_*` automation value is present |
 | `HYBRID_SMOKE_HEADERS_JSON` | Optional JSON object whose values must all be strings |
 | `HYBRID_SMOKE_SEEK_SECONDS` | Optional; fixed contract default is `10` |
-| `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion |
+| `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion; valid only in `hybridAVKit` mode |
 
-Set the expected route only when the fixture and target-device contract are
-known. A mismatch is terminal; the app does not rerun on the observed route.
+Missing/unknown mode and `aetherEngine` combined with an expected Hybrid route
+are configuration failures. Set the expected route only when the Hybrid
+fixture and target-device contract are known. A mismatch is terminal; the app
+does not rerun on the observed route.
 
 The console emits one-line, sorted JSON records prefixed with
-`HYBRID_SMOKE_EVENT`. Records include a SHA-256 source identity, route, phase,
-media time, duration, checkpoints, and the terminal result. They do not include
-the source URL, query, or HTTP header values.
+`HYBRID_SMOKE_EVENT`. Records include a SHA-256 source identity, mode, route,
+phase, media time, duration, checkpoints, and the terminal result. Aether
+records also include `aether_backend` and `aether_current_avplayer`. Records do
+not include the source URL, query, or HTTP header values.
 
 Examples of required terminal events:
 

@@ -23,9 +23,25 @@ final class SmokeConfigurationTests: XCTestCase {
         }
     }
 
+    func testAutomationFailsWithoutExplicitMode() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.urlEnvironmentKey:
+                    "https://example.test/video.mp4",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SmokeConfigurationError,
+                .missingMode
+            )
+        }
+    }
+
     func testAutomationParsesExplicitSourceHeadersAndRoute() throws {
         let configuration = try XCTUnwrap(
             SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey:
+                    SmokePlaybackMode.hybridAVKit.rawValue,
                 SmokeConfiguration.urlEnvironmentKey:
                     "http://example.test/video.mkv?token=secret",
                 SmokeConfiguration.headersEnvironmentKey:
@@ -36,6 +52,7 @@ final class SmokeConfigurationTests: XCTestCase {
             ])
         )
 
+        XCTAssertEqual(configuration.mode, .hybridAVKit)
         XCTAssertEqual(configuration.seekSeconds, 12.5)
         XCTAssertEqual(
             configuration.httpHeaders,
@@ -52,6 +69,7 @@ final class SmokeConfigurationTests: XCTestCase {
     func testHeaderValuesMustBeStrings() {
         XCTAssertThrowsError(
             try SmokeConfiguration.interactive(
+                mode: .aetherEngine,
                 rawURL: "https://example.test/video.mp4",
                 rawHeaders: #"{"X-Retry":3}"#,
                 rawSeekSeconds: "10"
@@ -67,6 +85,7 @@ final class SmokeConfigurationTests: XCTestCase {
     func testRelativeURLFailsExplicitly() {
         XCTAssertThrowsError(
             try SmokeConfiguration.interactive(
+                mode: .aetherEngine,
                 rawURL: "video.mp4",
                 rawHeaders: "",
                 rawSeekSeconds: "10"
@@ -81,6 +100,7 @@ final class SmokeConfigurationTests: XCTestCase {
 
     func testRedactorRemovesURLAndHeaderValues() throws {
         let configuration = try SmokeConfiguration.interactive(
+            mode: .aetherEngine,
             rawURL: "https://example.test/video.mp4?token=secret",
             rawHeaders: #"{"Authorization":"Bearer abc"}"#,
             rawSeekSeconds: "10"
@@ -92,5 +112,46 @@ final class SmokeConfigurationTests: XCTestCase {
         )
 
         XCTAssertEqual(sanitized, "<redacted> <redacted>")
+    }
+
+    func testInvalidAutomationModeFailsExplicitly() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey: "automatic",
+                SmokeConfiguration.urlEnvironmentKey:
+                    "https://example.test/video.mp4",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SmokeConfigurationError,
+                .invalidMode("automatic")
+            )
+        }
+    }
+
+    func testAetherModeRejectsHybridRouteAssertion() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey:
+                    SmokePlaybackMode.aetherEngine.rawValue,
+                SmokeConfiguration.urlEnvironmentKey:
+                    "https://example.test/video.mp4",
+                SmokeConfiguration.expectedRouteEnvironmentKey:
+                    SmokeExpectedRoute.avKitProxy.rawValue,
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SmokeConfigurationError,
+                .expectedRouteRequiresHybrid
+            )
+        }
+    }
+
+    @MainActor
+    func testInteractiveViewModelDefaultsToAetherBaseline() {
+        XCTAssertEqual(
+            SmokeViewModel().selectedMode,
+            .aetherEngine
+        )
     }
 }
