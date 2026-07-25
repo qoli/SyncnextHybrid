@@ -61,9 +61,17 @@ selection, or playback state.
 
 ## Upstream update
 
-1. Update the submodule gitlinks and `Versions.env`.
-2. Regenerate the smallest Aether patch on the new official commit.
-3. Update `Patches/manifest.sha256`.
-4. Run `./Scripts/apply-patches.sh` from a dirty, already-patched checkout.
-5. Commit only the root repo's submodule SHA, patch files, manifest, and
-   Hybrid changes. Do not commit or push the patched submodule worktree.
+Follow [`Docs/HYBRID_MAINTENANCE_SOP.md`](Docs/HYBRID_MAINTENANCE_SOP.md).
+The official AetherEngine Releases page determines the update candidate; the
+release tag must then be resolved to a full commit SHA from the official
+remote.
+
+Existing patches must be validated unchanged first. If a patch no longer
+applies or its semantics have drifted, stop the update and discuss the
+necessity, alternatives, long-term cost, and exact minimal boundary with the
+developer before changing any patch or upstream-owned source. Never commit or
+push a patched AetherEngine or FFmpegBuild submodule.
+
+Latest validation:
+
+- [AetherEngine 5.20.6 — blocked, pin not promoted](Docs/Reports/AETHERENGINE_5.20.6_UPSTREAM_VALIDATION_2026-07-25.md)
