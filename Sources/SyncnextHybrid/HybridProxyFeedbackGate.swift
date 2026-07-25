@@ -9,7 +9,6 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
 
     private let lock = NSLock()
     private var pendingMirroredRates: [Float] = []
-    private var pendingMirroredSeeks: [Double] = []
     private var activeMirroredSeekTokens: Set<UInt64> = []
     private var nextMirroredSeekToken: UInt64 = 0
 
@@ -46,12 +45,10 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
         return true
     }
 
-    func beginMirroredSeek(to seconds: Double) -> UInt64 {
+    func beginMirroredSeek() -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
 
-        pendingMirroredSeeks.append(seconds)
-        trimPendingObservations(&pendingMirroredSeeks)
         nextMirroredSeekToken &+= 1
         activeMirroredSeekTokens.insert(nextMirroredSeekToken)
         return nextMirroredSeekToken
@@ -61,25 +58,6 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
         lock.lock()
         activeMirroredSeekTokens.remove(token)
         lock.unlock()
-    }
-
-    func shouldForwardTimeJump(
-        to seconds: Double,
-        tolerance: Double
-    ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let index = pendingMirroredSeeks.firstIndex(
-            where: {
-                abs($0 - seconds) <= tolerance
-            }
-        ) else {
-            pendingMirroredSeeks.removeAll()
-            return true
-        }
-        pendingMirroredSeeks.removeFirst(index + 1)
-        return false
     }
 
     private func trimPendingObservations<T>(

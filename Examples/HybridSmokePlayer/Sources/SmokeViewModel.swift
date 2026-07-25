@@ -568,7 +568,13 @@ final class SmokeViewModel: ObservableObject {
         runState = .seeking
         statusMessage =
             "Seeking to \(SmokeEventEmitter.number(configuration.seekSeconds))s"
-        playbackSession.pause()
+        let seekStart = playbackSession.snapshot.currentTime
+        let usesAVKitNavigation = fixedRoute == .avKitProxy
+        if usesAVKitNavigation {
+            playbackSession.avPlayer.pause()
+        } else {
+            playbackSession.pause()
+        }
         emitter.emit(
             "seek_requested",
             metrics: emitter.metrics(
@@ -578,23 +584,49 @@ final class SmokeViewModel: ObservableObject {
                         SmokeEventEmitter.number(
                             configuration.seekSeconds
                         ),
+                    "seek_distance_seconds":
+                        SmokeEventEmitter.number(
+                            abs(
+                                configuration.seekSeconds
+                                - seekStart
+                            )
+                        ),
+                    "seek_input":
+                        usesAVKitNavigation
+                        ? "avkit_user_navigation"
+                        : "hybrid_session",
                 ]
             )
         )
-        try await playbackSession.seek(to: configuration.seekSeconds)
+        if usesAVKitNavigation {
+            try await performAVKitProxyNavigation(
+                playbackSession,
+                target: configuration.seekSeconds
+            )
+        } else {
+            try await playbackSession.seek(
+                to: configuration.seekSeconds
+            )
+        }
+        let landedSnapshot = try await requireSeekLanding(
+            playbackSession,
+            expectedRoute: fixedRoute,
+            target: configuration.seekSeconds,
+            emitter: emitter
+        )
         try requireBinding(playbackSession)
         try requireRoute(
-            playbackSession.snapshot.route,
+            landedSnapshot.route,
             expected: fixedRoute
         )
         try SmokePolicy.validateSeekLanding(
             target: configuration.seekSeconds,
-            actual: playbackSession.snapshot.currentTime
+            actual: landedSnapshot.currentTime
         )
         emitter.emit(
             "seek_landed",
             metrics: emitter.metrics(
-                for: playbackSession.snapshot,
+                for: landedSnapshot,
                 extra: [
                     "target_seconds":
                         SmokeEventEmitter.number(
@@ -603,10 +635,14 @@ final class SmokeViewModel: ObservableObject {
                     "landing_error_seconds":
                         SmokeEventEmitter.number(
                             abs(
-                                playbackSession.snapshot.currentTime
+                                landedSnapshot.currentTime
                                 - configuration.seekSeconds
                             )
                         ),
+                    "seek_input":
+                        usesAVKitNavigation
+                        ? "avkit_user_navigation"
+                        : "hybrid_session",
                 ]
             )
         )
@@ -614,7 +650,9 @@ final class SmokeViewModel: ObservableObject {
         runState = .checkingPostSeek
         statusMessage =
             "Requiring 2 seconds of post-seek media progress"
-        playbackSession.play()
+        if !usesAVKitNavigation {
+            playbackSession.play()
+        }
         let postSeekAdvance = try await requireProgress(
             playbackSession,
             expectedRoute: fixedRoute,
@@ -935,6 +973,126 @@ final class SmokeViewModel: ObservableObject {
                     duration: snapshot.duration,
                     timeout:
                         SmokePolicy.maximumSessionReadinessSeconds
+                )
+            }
+
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func performAVKitProxyNavigation(
+        _ playbackSession: HybridPlaybackSession,
+        target: Double
+    ) async throws {
+        try requireBinding(playbackSession)
+        try requireRoute(
+            playbackSession.snapshot.route,
+            expected: .avKitProxy
+        )
+
+        let player = playbackSession.avPlayer
+        let oldTime = player.currentTime()
+        let targetTime = CMTime(
+            seconds: target,
+            preferredTimescale: 600
+        )
+        let finished = await withCheckedContinuation {
+            (continuation: CheckedContinuation<Bool, Never>) in
+            player.seek(
+                to: targetTime,
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            ) { completed in
+                continuation.resume(returning: completed)
+            }
+        }
+        guard finished else {
+            throw SmokeFailure.avKitNavigationCancelled
+        }
+
+        guard playerViewController.delegate?.playerViewController?(
+            playerViewController,
+            willResumePlaybackAfterUserNavigatedFrom: oldTime,
+            to: targetTime
+        ) != nil else {
+            throw SmokeFailure.avKitNavigationDelegateUnavailable
+        }
+        player.play()
+    }
+
+    private func requireSeekLanding(
+        _ playbackSession: HybridPlaybackSession,
+        expectedRoute: HybridPlaybackRoute,
+        target: Double,
+        emitter: SmokeEventEmitter
+    ) async throws -> HybridPlaybackSnapshot {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        var checkpointIndex = 0
+
+        while true {
+            try Task.checkCancellation()
+            try requireBinding(playbackSession)
+
+            let snapshot = playbackSession.snapshot
+            updateSnapshot(snapshot)
+            try requireRoute(snapshot.route, expected: expectedRoute)
+
+            if case .failed(let message) = snapshot.phase {
+                throw SmokeFailure.playerFailed(message)
+            }
+            if snapshot.phase == .ended {
+                throw SmokeFailure.endedBeforeProgress(
+                    stage: "seek_landing"
+                )
+            }
+
+            let landingError = abs(snapshot.currentTime - target)
+            if snapshot.currentTime.isFinite,
+               landingError
+                <= SmokePolicy.seekLandingToleranceSeconds,
+               snapshot.phase == .playing
+                || snapshot.phase == .paused {
+                return snapshot
+            }
+
+            let elapsed =
+                ProcessInfo.processInfo.systemUptime - startedAt
+            while checkpointIndex
+                    < SmokePolicy
+                        .readinessDiagnosticCheckpointsSeconds.count,
+                  elapsed
+                    >= SmokePolicy
+                        .readinessDiagnosticCheckpointsSeconds[
+                            checkpointIndex
+                        ] {
+                let checkpoint =
+                    SmokePolicy
+                        .readinessDiagnosticCheckpointsSeconds[
+                            checkpointIndex
+                        ]
+                emitter.emit(
+                    "awaiting_seek_landing",
+                    metrics: emitter.metrics(
+                        for: snapshot,
+                        extra: [
+                            "elapsed_seconds":
+                                SmokeEventEmitter.number(checkpoint),
+                            "target_seconds":
+                                SmokeEventEmitter.number(target),
+                            "landing_error_seconds":
+                                SmokeEventEmitter.number(landingError),
+                        ]
+                    )
+                )
+                checkpointIndex += 1
+            }
+            if elapsed
+                >= SmokePolicy.maximumSessionReadinessSeconds {
+                throw SmokeFailure.seekLandingMismatch(
+                    target: target,
+                    actual: snapshot.currentTime,
+                    tolerance:
+                        SmokePolicy.seekLandingToleranceSeconds
                 )
             }
 

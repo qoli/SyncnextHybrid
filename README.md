@@ -74,6 +74,13 @@ failure. The Aether overlay also provides an explicit diagnostic seek button;
 using it cancels the bounded automation before moving the engine clock so a
 manual jump cannot create a false smoke PASS.
 
+For the proxy route, the automated seek enters Hybrid through
+`AVPlayerViewControllerDelegate`'s user-navigation callback. Hybrid does not
+interpret `AVPlayerItem.timeJumpedNotification` as user intent because the
+proxy's own mirrored seeks and clock corrections emit the same notification.
+The regression contract includes an approximately 120-second navigation,
+exact landing, and continued authoritative media-time progress.
+
 ## Upstream update
 
 Follow [`Docs/HYBRID_MAINTENANCE_SOP.md`](Docs/HYBRID_MAINTENANCE_SOP.md).

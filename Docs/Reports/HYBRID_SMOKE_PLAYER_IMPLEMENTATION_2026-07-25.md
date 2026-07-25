@@ -21,9 +21,11 @@ App target 現在 link／import `SyncnextHybrid`，並以診斷例外直接 link
 改變正式整合邊界：Syncnext App 仍只 link／import
 `SyncnextHybrid`。
 
-沒有修改 SyncnextHybrid public interface，也沒有新增或修改
-AetherEngine／FFmpegBuild Patch、owner code、log forwarding、
-recovery、替代 source、替代 route 或替代 player。
+沒有新增 Syncnext 必須呼叫的 playback interface；Hybrid 既有的
+`AVPlayerViewControllerDelegate` conformance 現在實作其
+user-navigation callback。也沒有新增或修改 AetherEngine／FFmpegBuild
+Patch、owner code、log forwarding、recovery、替代 source、替代 route
+或替代 player。
 
 本報告只驗證 bounded smoke，不宣稱完整播放至 EOS、presented frame、HDR
 panel mode、音軌／字幕選擇、獨立音訊分析、PiP 或 AirPlay 通過。
@@ -47,7 +49,7 @@ generic tvOS device build:
   BUILD SUCCEEDED
 
 SyncnextHybrid package tests:
-  13 passed
+  15 passed
   0 failed
 ```
 
@@ -65,9 +67,10 @@ Smoke unit tests 涵蓋：
 - seek landing tolerance；
 - authoritative media-time progress。
 
-新增的 package tests 覆蓋 Hybrid 對 proxy rate／time-jump 回授的來源
-判定，以及 mirrored seek 期間 AVPlayer 自動 pause 不得被轉發給
-AetherEngine。
+新增的 package tests 覆蓋 Hybrid 對 proxy rate 回授的來源判定、
+mirrored seek 期間 AVPlayer 自動 pause 不得被轉發給 AetherEngine，
+以及約 120 秒 AVKit navigation 的 generation、deferred resume、
+latest pause intent 與 invalid-time 明確失敗。
 
 Package graph 在 Simulator 與 generic device build 都只解析同一份：
 
@@ -283,9 +286,8 @@ seek。
 暫時的 proxy 邊界追蹤顯示：Hybrid 鏡像 seek 到黑畫面 AVPlayer 後，
 AVPlayer 在 seek 尚未完成時會自行把 rate 從 `1` 降至 `0`。舊實作將
 這個內部狀態變化誤判為 AVKit 使用者按下 pause，並轉發
-`engine.pause()`。修正後以 seek token 標示 mirrored seek 的存續期，
-忽略該期間由 proxy 自動產生的 `rate=0`；mirrored rate 與 time jump
-也由同一個 gate 消費，真正未配對的 AVKit 操作仍會轉發。
+`engine.pause()`。第一階段修正以 seek token 標示 mirrored seek 的
+存續期，忽略該期間由 proxy 自動產生的 `rate=0`。
 
 移除暫時追蹤後的 10 秒驗證：
 
@@ -342,6 +344,74 @@ terminal:
 ```
 
 沒有為通過 smoke 而切換 route、source 或 player。
+
+### AVKit 使用者導覽的約 120 秒回歸
+
+前述 smoke 最初透過公開 `HybridPlaybackSession.seek(to:)` 驗證 seek，
+因此只能證明 Hybrid 的程式化 transport，沒有覆蓋
+`AVPlayerViewController` 的使用者導覽事件。
+
+Syncnext 實際紀錄顯示另一個獨立問題：使用者 pause 後，黑畫面 proxy
+仍連續產生 `AVPlayerItem.timeJumpedNotification`；舊實作把每個未配對
+notification 都轉成新的 Aether seek。大距離導覽因此形成 proxy
+clock correction → Aether seek → proxy mirror 的回授鏈。
+
+`timeJumpedNotification` 不能識別使用者意圖。正式修正改以 tvOS
+`AVPlayerViewControllerDelegate` 的
+`willResumePlaybackAfterUserNavigatedFrom:to:` 作為唯一使用者 seek
+入口；該 callback 依 AVKit contract 只交付使用者導覽，並會合併 resume
+前的多次 scrub。Hybrid 在 Aether seek 完成前固定 proxy 為 paused，
+以 navigation generation 排除舊 completion，並在完成後套用期間收到
+的最新 play／pause intent。內部 proxy mirror seek 改為 single-flight
+且只保留最新 target。原本的 time-jump observer 已移除，不再把 proxy
+內部跳時轉發給 Aether。
+
+Smoke automation 同時改為：
+
+- 先移動黑畫面 proxy；
+- 呼叫 AVKit user-navigation delegate path；
+- 由 AVKit proxy 發出 resume intent；
+- 不再呼叫公開 Hybrid `seek(to:)`，也不在落點後補呼叫
+  `session.play()` 來掩蓋失敗。
+
+結構化 Simulator 證據：
+
+```text
+fixture:
+  progressive-hybrid-mpeg2-interlaced-ac3-5min.mkv
+
+run id:
+  db4ae3c6-8d16-47cb-bf5b-6a083d924d09
+
+startup:
+  0.000 -> 2.136
+
+AVKit user navigation:
+  from=2.136
+  target=122.000
+  distance=119.864
+  landed=122.000
+  landing_error=0.000
+
+post-seek:
+  122.000 -> 124.163
+  progress=2.163
+
+route:
+  avKitProxy throughout
+
+controller binding:
+  matched throughout
+
+terminal:
+  run_passed
+```
+
+同一份本地 Hybrid 其後完成 Syncnext generic tvOS build；Syncnext
+`PluginAutomationDeepLinkTests` 的 120 秒 acceptance contract 共
+25 tests 通過。Syncnext source 沒有為本次修正新增變更，因為正式 App
+已由 `HybridPlaybackSession.attach(to:)` 安裝 Hybrid 為 controller
+delegate。
 
 ## 過程錯誤
 

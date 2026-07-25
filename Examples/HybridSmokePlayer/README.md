@@ -26,6 +26,9 @@ Every run uses one explicit seekable VOD URL and the same bounded contract:
 3. Require authoritative media time to advance by at least two seconds within
    60.5 seconds.
 4. Pause and seek to the explicit target, with a one-second landing tolerance.
+   The Aether and native Hybrid routes use their direct session operation. The
+   proxy route moves the proxy player and enters Hybrid through
+   `AVPlayerViewControllerDelegate`'s user-navigation callback.
 5. Resume and require another two seconds of media progress within 60.5
    seconds.
 
@@ -36,6 +39,12 @@ is always `not_applicable`.
 
 `hybridAVKit` additionally requires the Hybrid route to remain unchanged and
 `AVPlayerViewController.player === session.avPlayer` throughout.
+For `avKitProxy`, automation does not call `HybridPlaybackSession.seek(to:)`
+or `play()` after the navigation. This prevents a direct session command from
+masking a broken AVKit proxy path. The structured `seek_input` metric is
+`avkit_user_navigation`; `seek_distance_seconds` records the exercised
+distance. A representative regression uses an initial time near 2 seconds and
+a target of 122 seconds.
 
 `PASS` leaves playback active for visual inspection. Reset calls `stop()` and
 releases the active engine or session. Configuration errors, Aether

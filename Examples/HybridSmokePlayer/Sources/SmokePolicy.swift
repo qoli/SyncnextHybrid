@@ -85,6 +85,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
     case controllerBindingChanged
     case unexpectedRoute(expected: String, actual: String)
     case routeChanged(expected: String, actual: String)
+    case avKitNavigationCancelled
+    case avKitNavigationDelegateUnavailable
     case playerFailed(String)
     case endedBeforeProgress(stage: String)
     case noMediaProgress(
@@ -125,6 +127,10 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "unexpected_route"
         case .routeChanged:
             "route_changed"
+        case .avKitNavigationCancelled:
+            "avkit_navigation_cancelled"
+        case .avKitNavigationDelegateUnavailable:
+            "avkit_navigation_delegate_unavailable"
         case .playerFailed:
             "player_failed"
         case .endedBeforeProgress:
@@ -169,6 +175,10 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "Hybrid selected route \(actual), expected \(expected)"
         case .routeChanged(let expected, let actual):
             "Hybrid route changed from \(expected) to \(actual)"
+        case .avKitNavigationCancelled:
+            "AVKit cancelled the proxy navigation before Hybrid received its target"
+        case .avKitNavigationDelegateUnavailable:
+            "The attached AVKit delegate does not implement user navigation"
         case .playerFailed(let message):
             "Playback entered a typed failure: \(message)"
         case .endedBeforeProgress(let stage):
