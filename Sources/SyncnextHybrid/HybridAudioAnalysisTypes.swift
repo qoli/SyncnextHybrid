@@ -5,6 +5,7 @@ public enum HybridAudioAnalysisError: Error, Sendable, Equatable, LocalizedError
     case invalidRange
     case rangeOutsideSource
     case noActivePlayback
+    case audioSelectionChanged
     case liveOrDVRUnsupported
     case sourceNotSeekable
     case selectedAudioTrackUnavailable
@@ -24,6 +25,8 @@ public enum HybridAudioAnalysisError: Error, Sendable, Equatable, LocalizedError
             "Audio-analysis range is outside the admitted VOD timeline"
         case .noActivePlayback:
             "No active playback session is available for audio analysis"
+        case .audioSelectionChanged:
+            "The requested audio selection is no longer authoritative"
         case .liveOrDVRUnsupported:
             "Live and DVR audio analysis are not supported in SyncnextHybrid V1"
         case .sourceNotSeekable:
@@ -45,6 +48,25 @@ public enum HybridAudioAnalysisError: Error, Sendable, Equatable, LocalizedError
         case .decoderFailed(let message):
             "Audio-analysis decode failed: \(message)"
         }
+    }
+}
+
+/// One immutable, track-bound request for an independent source-time PCM
+/// stream. The selection revision prevents a request captured for an older
+/// audible option from being silently retargeted.
+public struct HybridAudioAnalysisRequest: Sendable, Equatable {
+    public let audioTrackID: Int
+    public let audioSelectionRevision: UInt64
+    public let sourceRange: Range<Double>
+
+    public init(
+        audioTrackID: Int,
+        audioSelectionRevision: UInt64,
+        sourceRange: Range<Double>
+    ) {
+        self.audioTrackID = audioTrackID
+        self.audioSelectionRevision = audioSelectionRevision
+        self.sourceRange = sourceRange
     }
 }
 

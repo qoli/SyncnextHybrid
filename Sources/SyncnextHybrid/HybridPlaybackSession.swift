@@ -296,7 +296,7 @@ public final class HybridPlaybackSession:
     }
 
     public func audioAnalysisStream(
-        range: Range<Double>
+        request: HybridAudioAnalysisRequest
     ) throws -> HybridAudioAnalysisStream {
         guard !stopped else {
             throw HybridAudioAnalysisError.noActivePlayback
@@ -304,6 +304,15 @@ public final class HybridPlaybackSession:
         guard activeAnalysisRun == nil else {
             throw HybridAudioAnalysisError.streamAlreadyActive
         }
+        guard request.audioSelectionRevision == audioSelectionRevision,
+              snapshot.audioSelectionRevision
+                == request.audioSelectionRevision else {
+            throw HybridAudioAnalysisError.audioSelectionChanged
+        }
+        guard snapshot.selectedAudioTrackID == request.audioTrackID else {
+            throw HybridAudioAnalysisError.selectedAudioTrackUnavailable
+        }
+        let range = request.sourceRange
         guard range.lowerBound.isFinite,
               range.upperBound.isFinite,
               range.lowerBound >= 0,
@@ -323,7 +332,7 @@ public final class HybridPlaybackSession:
 
         let context = HybridAudioAnalysisRun()
         activeAnalysisRun = context
-        analysisTrackID = source.selectedAudioTrack?.id
+        analysisTrackID = request.audioTrackID
         let stream = HybridAudioAnalysisStream(
             gate: context.gate,
             cancel: { context.cancel() }

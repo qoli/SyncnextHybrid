@@ -3,6 +3,18 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridTypesTests: XCTestCase {
+    func testAudioAnalysisRequestPreservesTrackRevisionAndRange() {
+        let request = HybridAudioAnalysisRequest(
+            audioTrackID: 7,
+            audioSelectionRevision: 11,
+            sourceRange: 0..<350
+        )
+
+        XCTAssertEqual(request.audioTrackID, 7)
+        XCTAssertEqual(request.audioSelectionRevision, 11)
+        XCTAssertEqual(request.sourceRange, 0..<350)
+    }
+
     func testPlaybackRequestRejectsInvalidInitialPosition() {
         XCTAssertThrowsError(
             try HybridPlaybackRequest(
