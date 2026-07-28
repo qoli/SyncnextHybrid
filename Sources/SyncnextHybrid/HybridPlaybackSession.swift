@@ -47,7 +47,6 @@ public final class HybridPlaybackSession:
     private var requestedRate: Float = 1
     private var stopped = false
     private var activeAnalysisRun: HybridAudioAnalysisRun?
-    private var analysisTrackID: Int?
     private var audioSelectionRevision: UInt64 = 0
     private var lastNativePlayerIdentity: ObjectIdentifier?
 
@@ -304,14 +303,11 @@ public final class HybridPlaybackSession:
         guard activeAnalysisRun == nil else {
             throw HybridAudioAnalysisError.streamAlreadyActive
         }
-        guard request.audioSelectionRevision == audioSelectionRevision,
-              snapshot.audioSelectionRevision
-                == request.audioSelectionRevision else {
-            throw HybridAudioAnalysisError.audioSelectionChanged
-        }
-        guard snapshot.selectedAudioTrackID == request.audioTrackID else {
-            throw HybridAudioAnalysisError.selectedAudioTrackUnavailable
-        }
+        try HybridAudioAnalysisSelectionGate.validate(
+            request: request,
+            sessionRevision: audioSelectionRevision,
+            snapshot: snapshot
+        )
         let range = request.sourceRange
         guard range.lowerBound.isFinite,
               range.upperBound.isFinite,
@@ -332,7 +328,6 @@ public final class HybridPlaybackSession:
 
         let context = HybridAudioAnalysisRun()
         activeAnalysisRun = context
-        analysisTrackID = request.audioTrackID
         let stream = HybridAudioAnalysisStream(
             gate: context.gate,
             cancel: { context.cancel() }
@@ -351,7 +346,6 @@ public final class HybridPlaybackSession:
                         return
                     }
                     self.activeAnalysisRun = nil
-                    self.analysisTrackID = nil
                     if let error, error != .cancelled {
                         self.eventContinuation.yield(
                             .audioAnalysisUnavailable(error)
@@ -367,7 +361,6 @@ public final class HybridPlaybackSession:
     public func cancelAudioAnalysis() {
         activeAnalysisRun?.cancel()
         activeAnalysisRun = nil
-        analysisTrackID = nil
     }
 
     public func stop() {
@@ -457,12 +450,10 @@ public final class HybridPlaybackSession:
                     guard let self else {
                         return
                     }
-                    if self.snapshot.selectedAudioTrackID
-                        != selectedID {
+                    let selectionChanged =
+                        self.snapshot.selectedAudioTrackID != selectedID
+                    if selectionChanged {
                         self.audioSelectionRevision &+= 1
-                    }
-                    if let analysisTrackID = self.analysisTrackID,
-                       selectedID != analysisTrackID {
                         self.cancelAudioAnalysis()
                     }
                     self.refreshMenusAndSnapshot()

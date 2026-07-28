@@ -51,22 +51,36 @@ public enum HybridAudioAnalysisError: Error, Sendable, Equatable, LocalizedError
     }
 }
 
-/// One immutable, track-bound request for an independent source-time PCM
+/// One immutable, selection-bound request for an independent source-time PCM
 /// stream. The selection revision prevents a request captured for an older
-/// audible option from being silently retargeted.
+/// audible option from being silently retargeted. The selected audio track ID
+/// is intentionally not part of this request because probe-free native HLS
+/// selections have no FFmpeg stream ID until the independent cursor resolves
+/// the selected rendition.
 public struct HybridAudioAnalysisRequest: Sendable, Equatable {
-    public let audioTrackID: Int
     public let audioSelectionRevision: UInt64
     public let sourceRange: Range<Double>
 
     public init(
-        audioTrackID: Int,
         audioSelectionRevision: UInt64,
         sourceRange: Range<Double>
     ) {
-        self.audioTrackID = audioTrackID
         self.audioSelectionRevision = audioSelectionRevision
         self.sourceRange = sourceRange
+    }
+}
+
+enum HybridAudioAnalysisSelectionGate {
+    static func validate(
+        request: HybridAudioAnalysisRequest,
+        sessionRevision: UInt64,
+        snapshot: HybridPlaybackSnapshot
+    ) throws {
+        guard request.audioSelectionRevision == sessionRevision,
+              snapshot.audioSelectionRevision
+                == request.audioSelectionRevision else {
+            throw HybridAudioAnalysisError.audioSelectionChanged
+        }
     }
 }
 
