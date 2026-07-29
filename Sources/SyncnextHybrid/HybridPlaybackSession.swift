@@ -76,12 +76,15 @@ public final class HybridPlaybackSession:
                 formatHint: $0.formatHint
             )
         }
-        let options = LoadOptions(
-            httpHeaders: request.httpHeaders,
-            preferredAudioLanguages: request.preferredAudioLanguages,
-            preferredSubtitleLanguages: request.preferredSubtitleLanguages,
+        let admission = try await
+            HybridRemoteSourceAdmission.classify(
+                url: request.url,
+                httpHeaders: request.httpHeaders
+            )
+        let options = HybridPlaybackLoadOptions.make(
+            request: request,
             externalSubtitles: externalSubtitles,
-            autoplay: false
+            admission: admission
         )
         do {
             try await engine.load(

@@ -302,12 +302,15 @@ enum HybridHLSVODAudioSource {
     }
 }
 
-private enum HLSPlaylistDocument {
+enum HLSPlaylistDocument {
     case master(HLSMasterDocument)
     case media(HLSMediaDocument)
 
     static func parse(_ text: String) throws -> Self {
-        let lines = text
+        let normalizedText = text.hasPrefix("\u{FEFF}")
+            ? String(text.dropFirst())
+            : text
+        let lines = normalizedText
             .split(whereSeparator: \.isNewline)
             .map {
                 $0.trimmingCharacters(
@@ -315,7 +318,7 @@ private enum HLSPlaylistDocument {
                 )
             }
             .filter { !$0.isEmpty }
-        guard lines.first?.hasPrefix("#EXTM3U") == true else {
+        guard lines.first == "#EXTM3U" else {
             throw HybridAudioAnalysisError.demuxFailed(
                 "HLS playlist is missing EXTM3U"
             )
@@ -329,7 +332,7 @@ private enum HLSPlaylistDocument {
     }
 }
 
-private struct HLSMasterDocument {
+struct HLSMasterDocument {
     struct Variant {
         let bandwidth: Int
         let uri: String
@@ -517,7 +520,7 @@ private struct HLSMasterDocument {
     }
 }
 
-private struct HLSMediaDocument {
+struct HLSMediaDocument {
     let segments: [HLSSegmentDocument]
     let hasEndList: Bool
     let totalDuration: Double
@@ -661,18 +664,18 @@ private struct HLSMediaDocument {
     }
 }
 
-private struct HLSSegmentDocument {
+struct HLSSegmentDocument {
     let duration: Double
     let resource: HLSByteResource
     let map: HLSByteResource?
 }
 
-private struct HLSByteResource: Equatable {
+struct HLSByteResource: Equatable {
     let uri: String
     let byteRange: HLSByteRange?
 }
 
-private struct HLSByteRange: Equatable {
+struct HLSByteRange: Equatable {
     let length: Int
     let offset: Int
     let offsetWasExplicit: Bool
@@ -716,7 +719,7 @@ private struct HLSByteRange: Equatable {
     }
 }
 
-private enum HLSAttributeParser {
+enum HLSAttributeParser {
     static func value(
         _ key: String,
         in line: String
