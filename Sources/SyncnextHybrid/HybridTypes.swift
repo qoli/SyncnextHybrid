@@ -160,6 +160,7 @@ public enum HybridPlaybackEvent: Sendable, Equatable {
 
 public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
     case invalidInitialPosition
+    case invalidSeekPosition
     case sourceLoadFailed(String)
     case pureAudioUnsupported
     case proxyAssetUnavailable
@@ -171,6 +172,8 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
         switch self {
         case .invalidInitialPosition:
             "Initial playback position must be finite and non-negative"
+        case .invalidSeekPosition:
+            "Seek position must be finite"
         case .sourceLoadFailed(let message):
             "AetherEngine could not load the source: \(message)"
         case .pureAudioUnsupported:
@@ -184,5 +187,22 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
         case .sessionStopped:
             "The playback session has stopped"
         }
+    }
+}
+
+enum HybridSeekTargetPolicy {
+    static func target(
+        requested: Double,
+        duration: Double
+    ) throws -> Double {
+        guard requested.isFinite else {
+            throw HybridPlaybackError.invalidSeekPosition
+        }
+
+        let nonNegativeTarget = max(0, requested)
+        guard duration.isFinite, duration > 0 else {
+            return nonNegativeTarget
+        }
+        return min(nonNegativeTarget, duration)
     }
 }

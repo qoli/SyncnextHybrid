@@ -245,7 +245,10 @@ public final class HybridPlaybackSession:
         guard !stopped else {
             throw HybridPlaybackError.sessionStopped
         }
-        let target = max(0, min(seconds, engine.duration))
+        let target = try HybridSeekTargetPolicy.target(
+            requested: seconds,
+            duration: engine.duration
+        )
         await engine.seek(to: target)
         mirrorProxySeek(to: target)
         publishSnapshot()
