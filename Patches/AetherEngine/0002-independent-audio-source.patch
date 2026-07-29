@@ -351,12 +351,15 @@ index 17731e5..d2ed922 100644
          guard let ctx = formatContext, index >= 0, index < ctx.pointee.nb_streams else {
              return nil
          }
-@@ -795,7 +817,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -851,10 +873,10 @@ public final class Demuxer: @unchecked Sendable {
      /// cluster blocks for all streams on every video packet and queues unused PGS
      /// bitmaps and audio frames. AVDISCARD_ALL drops before AVPacket alloc, eliminating
      /// that cycle. Call after open, before readPacket. Safe to call multiple times.
--    func discardAllStreamsExcept(_ keep: Set<Int32>) {
-+    public func discardAllStreamsExcept(_ keep: Set<Int32>) {
+     /// `pacing`, when >= 0 and not already in `keep`, is delivered at `AVDISCARD_NONKEY` instead of
+     /// being dropped: keyframes only, enough to give a side reader a read-position control point
+     /// between sparse target packets (#230). -1 keeps the original all-or-nothing behavior.
+-    func discardAllStreamsExcept(_ keep: Set<Int32>, pacing: Int32 = -1) {
++    public func discardAllStreamsExcept(_ keep: Set<Int32>, pacing: Int32 = -1) {
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return }
