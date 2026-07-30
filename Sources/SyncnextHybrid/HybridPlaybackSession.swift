@@ -6,14 +6,6 @@ import Combine
 import Foundation
 import UIKit
 
-private final class WeakHybridPlaybackSessionBox: @unchecked Sendable {
-    weak var value: HybridPlaybackSession?
-
-    init(_ value: HybridPlaybackSession) {
-        self.value = value
-    }
-}
-
 @MainActor
 public final class HybridPlaybackSession:
     NSObject,
@@ -46,7 +38,6 @@ public final class HybridPlaybackSession:
     private var pendingProxyMirrorSeekTarget: Double?
     private var requestedRate: Float = 1
     private var stopped = false
-    private var activeAnalysisRun: HybridAudioAnalysisRun?
     private var audioSelectionRevision: UInt64 = 0
     private var lastNativePlayerIdentity: ObjectIdentifier?
 
@@ -280,7 +271,6 @@ public final class HybridPlaybackSession:
               engine.audioTracks.contains(where: { $0.id == id }) else {
             return
         }
-        cancelAudioAnalysis()
         engine.selectAudioTrack(index: id)
     }
 
@@ -300,99 +290,6 @@ public final class HybridPlaybackSession:
         }
     }
 
-    public func audioAnalysisStream(
-        request: HybridAudioAnalysisRequest
-    ) throws -> HybridAudioAnalysisStream {
-        guard !stopped else {
-            throw HybridAudioAnalysisError.noActivePlayback
-        }
-        guard activeAnalysisRun == nil else {
-            throw HybridAudioAnalysisError.streamAlreadyActive
-        }
-        try HybridAudioAnalysisSelectionGate.validate(
-            request: request,
-            sessionRevision: audioSelectionRevision,
-            snapshot: snapshot
-        )
-        let range = request.sourceRange
-        guard range.lowerBound.isFinite,
-              range.upperBound.isFinite,
-              range.lowerBound >= 0,
-              range.upperBound > range.lowerBound else {
-            throw HybridAudioAnalysisError.invalidRange
-        }
-
-        let source: AetherIndependentAudioSource
-        do {
-            source = try engine.independentAudioSource()
-        } catch {
-            throw Self.mapAnalysisSourceError(error)
-        }
-        guard range.upperBound <= source.durationSeconds + 0.001 else {
-            throw HybridAudioAnalysisError.rangeOutsideSource
-        }
-
-        let context = HybridAudioAnalysisRun()
-        activeAnalysisRun = context
-        let stream = HybridAudioAnalysisStream(
-            gate: context.gate,
-            cancel: { context.cancel() }
-        )
-        let runID = context.id
-        let sessionBox = WeakHybridPlaybackSessionBox(self)
-        let task = Task.detached(priority: .utility) {
-            await HybridAudioAnalysisRunner.run(
-                context: context,
-                source: source,
-                range: range
-            ) { error in
-                Task { @MainActor in
-                    guard let self = sessionBox.value,
-                          self.activeAnalysisRun?.id == runID else {
-                        return
-                    }
-                    self.activeAnalysisRun = nil
-                    if let error, error != .cancelled {
-                        self.eventContinuation.yield(
-                            .audioAnalysisUnavailable(error)
-                        )
-                    }
-                }
-            }
-        }
-        context.install(task: task)
-        return stream
-    }
-
-    public func extractIntroAudioArtifact(
-        maximumDuration: Double = 180,
-        outputURL: URL
-    ) async throws -> HybridIntroAudioArtifact {
-        guard !stopped else {
-            throw HybridIntroAudioExtractionError.sourceUnavailable
-        }
-        let source: AetherIndependentAudioSource
-        do {
-            source = try engine.independentAudioSource()
-        } catch {
-            throw HybridIntroAudioExtractionError.sourceUnavailable
-        }
-        let boundedDuration = min(
-            maximumDuration,
-            source.durationSeconds
-        )
-        return try await HybridIntroAudioExtractor.extract(
-            source: source,
-            maximumDuration: boundedDuration,
-            outputURL: outputURL
-        )
-    }
-
-    public func cancelAudioAnalysis() {
-        activeAnalysisRun?.cancel()
-        activeAnalysisRun = nil
-    }
-
     public func stop() {
         guard !stopped else {
             return
@@ -402,7 +299,6 @@ public final class HybridPlaybackSession:
         proxyNavigationTask = nil
         proxyTransportIntent.cancelUserNavigation()
         pendingProxyMirrorSeekTarget = nil
-        cancelAudioAnalysis()
         detach()
         engine.stop()
         proxyPlayer.pause()
@@ -410,7 +306,6 @@ public final class HybridPlaybackSession:
     }
 
     deinit {
-        activeAnalysisRun?.cancel()
         proxyNavigationTask?.cancel()
         eventContinuation.finish()
         proxyRateObservation?.invalidate()
@@ -484,7 +379,6 @@ public final class HybridPlaybackSession:
                         self.snapshot.selectedAudioTrackID != selectedID
                     if selectionChanged {
                         self.audioSelectionRevision &+= 1
-                        self.cancelAudioAnalysis()
                     }
                     self.refreshMenusAndSnapshot()
                 }
@@ -549,10 +443,6 @@ public final class HybridPlaybackSession:
         let newRoute: HybridPlaybackRoute
         if let player {
             let newIdentity = ObjectIdentifier(player)
-            if let priorIdentity = lastNativePlayerIdentity,
-               priorIdentity != newIdentity {
-                cancelAudioAnalysis()
-            }
             lastNativePlayerIdentity = newIdentity
             avPlayer = player
             newRoute = .nativeAVPlayer
@@ -774,7 +664,6 @@ public final class HybridPlaybackSession:
                     guard let self else {
                         return
                     }
-                    self.cancelAudioAnalysis()
                     self.audioSelectionRevision &+= 1
                     self.refreshMenusAndSnapshot()
                 }
@@ -937,29 +826,5 @@ public final class HybridPlaybackSession:
         }
     }
 
-    private static func mapAnalysisSourceError(
-        _ error: Error
-    ) -> HybridAudioAnalysisError {
-        guard let sourceError =
-            error as? AetherIndependentAudioSourceError else {
-            return .demuxFailed(String(describing: error))
-        }
-        return switch sourceError {
-        case .noActiveSession:
-            .noActivePlayback
-        case .liveOrDVRUnsupported:
-            .liveOrDVRUnsupported
-        case .sourceNotSeekable:
-            .sourceNotSeekable
-        case .selectedAudioTrackUnavailable:
-            .selectedAudioTrackUnavailable
-        case .independentReaderUnavailable:
-            .independentReaderUnavailable
-        case .remoteHLSPreparationRequired:
-            .demuxFailed(
-                "remote HLS VOD requires bounded preparation"
-            )
-        }
-    }
 }
 #endif

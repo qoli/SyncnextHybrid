@@ -45,6 +45,32 @@ public struct HybridIntroAudioArtifact:
     }
 }
 
+/// Immutable source facts for intro-audio extraction.
+///
+/// This value deliberately contains no playback session, AVPlayer, or
+/// AetherEngine instance. Extraction owns a fresh demuxer and network cursor.
+public struct HybridIntroAudioExtractionRequest:
+    Sendable,
+    Equatable
+{
+    public let url: URL
+    public let httpHeaders: [String: String]
+    public let maximumDuration: Double
+    public let outputURL: URL
+
+    public init(
+        url: URL,
+        httpHeaders: [String: String] = [:],
+        maximumDuration: Double = 180,
+        outputURL: URL
+    ) {
+        self.url = url
+        self.httpHeaders = httpHeaders
+        self.maximumDuration = maximumDuration
+        self.outputURL = outputURL
+    }
+}
+
 private actor HybridIntroAudioArtifactGate {
     private var isHeld = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -68,14 +94,13 @@ private actor HybridIntroAudioArtifactGate {
     }
 }
 
-enum HybridIntroAudioExtractor {
+public enum HybridIntroAudioExtractor {
     private static let artifactGate = HybridIntroAudioArtifactGate()
 
-    static func extract(
-        source: AetherIndependentAudioSource,
-        maximumDuration: Double,
-        outputURL: URL
+    public static func extract(
+        request: HybridIntroAudioExtractionRequest
     ) async throws -> HybridIntroAudioArtifact {
+        let maximumDuration = request.maximumDuration
         guard maximumDuration.isFinite,
               maximumDuration > 0,
               maximumDuration <= 180 else {
@@ -86,9 +111,9 @@ enum HybridIntroAudioExtractor {
         do {
             try Task.checkCancellation()
             let result = try await extractExclusively(
-                source: source,
+                request: request,
                 maximumDuration: maximumDuration,
-                outputURL: outputURL
+                outputURL: request.outputURL
             )
             await artifactGate.release()
             return result
@@ -99,7 +124,7 @@ enum HybridIntroAudioExtractor {
     }
 
     private static func extractExclusively(
-        source: AetherIndependentAudioSource,
+        request: HybridIntroAudioExtractionRequest,
         maximumDuration: Double,
         outputURL: URL
     ) async throws -> HybridIntroAudioArtifact {
@@ -112,7 +137,22 @@ enum HybridIntroAudioExtractor {
         }
 
         do {
-            if let hlsRequest = source.remoteHLSRequest {
+            let admission = try await
+                HybridRemoteSourceAdmission.classify(
+                    url: request.url,
+                    httpHeaders: request.httpHeaders
+                )
+            switch admission {
+            case .hlsVOD:
+                let hlsRequest = AetherRemoteHLSAudioRequest(
+                    url: request.url,
+                    httpHeaders: request.httpHeaders,
+                    selection: AetherRemoteHLSAudioSelection(
+                        displayName: nil,
+                        language: nil,
+                        optionOrdinal: nil
+                    )
+                )
                 let prepared = try await
                     HybridHLSVODAudioSource.prepare(
                         request: hlsRequest,
@@ -124,8 +164,13 @@ enum HybridIntroAudioExtractor {
                     reader: prepared.reader,
                     formatHint: prepared.formatHint
                 )
-            } else {
-                try source.openDemuxer(demuxer)
+            case .hlsLive:
+                throw HybridIntroAudioExtractionError.sourceUnavailable
+            case .aetherDefault:
+                try demuxer.openIndependent(
+                    url: request.url,
+                    extraHeaders: request.httpHeaders
+                )
             }
         } catch is CancellationError {
             throw HybridIntroAudioExtractionError.cancelled
