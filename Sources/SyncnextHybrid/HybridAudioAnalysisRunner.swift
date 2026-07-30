@@ -84,7 +84,7 @@ enum HybridAudioAnalysisRunner {
         var preparedHLSCursor: HybridHLSPreparedAudioCursor?
         defer {
             context.close()
-            preparedHLSCursor?.removeFile()
+            preparedHLSCursor?.close()
             completion(terminalError)
         }
 
@@ -107,7 +107,8 @@ enum HybridAudioAnalysisRunner {
                 try context.throwIfCancelled()
                 do {
                     try demuxer.openIndependent(
-                        url: prepared.fileURL
+                        reader: prepared.reader,
+                        formatHint: prepared.formatHint
                     )
                 } catch {
                     throw HybridAudioAnalysisError.demuxFailed(
@@ -148,6 +149,7 @@ enum HybridAudioAnalysisRunner {
             }
             let timelineOrigin = demuxer.formatStartTimeSeconds
             guard range.lowerBound == 0
+                    || preparedHLSCursor != nil
                     || demuxer.seek(
                         to: range.lowerBound + timelineOrigin
                     ) else {
@@ -199,8 +201,13 @@ enum HybridAudioAnalysisRunner {
         var inputEnded = false
         var decoderDrained = false
         var demandOutstanding = hasOutstandingDemand
-        var expectedPosition = Int64(
-            (range.lowerBound * HybridAudioAnalysisFormat.sampleRate).rounded()
+        var continuity = HybridAudioContinuityTracker(
+            requestedStartPosition: Int64(
+                (
+                    range.lowerBound
+                        * HybridAudioAnalysisFormat.sampleRate
+                ).rounded()
+            )
         )
 
         while true {
@@ -258,16 +265,18 @@ enum HybridAudioAnalysisRunner {
                 case .finish:
                     return
                 case .emit(let pcm, let sourcePosition):
+                    let isDiscontinuous = continuity.consume(
+                        sourcePosition: sourcePosition,
+                        frameLength: pcm.frameLength
+                    )
                     let output = HybridAudioAnalysisBuffer(
                         pcm: pcm,
                         sourceSamplePosition: sourcePosition,
-                        isDiscontinuous: sourcePosition != expectedPosition
+                        isDiscontinuous: isDiscontinuous
                     )
                     guard await context.gate.yield(output) else {
                         throw HybridAudioAnalysisError.cancelled
                     }
-                    expectedPosition =
-                        sourcePosition + Int64(pcm.frameLength)
                     demandOutstanding = false
                 }
                 break
@@ -372,6 +381,33 @@ enum HybridAudioAnalysisRunner {
         let position =
             Int64((chunkStart * sampleRate).rounded()) + Int64(startFrame)
         return .emit(pcm, position)
+    }
+}
+
+struct HybridAudioContinuityTracker {
+    private static let initialOriginTolerance: Int64 = 1
+
+    let requestedStartPosition: Int64
+    private(set) var expectedPosition: Int64?
+
+    mutating func consume(
+        sourcePosition: Int64,
+        frameLength: AVAudioFrameCount
+    ) -> Bool {
+        let isDiscontinuous: Bool
+        if let expectedPosition {
+            isDiscontinuous = sourcePosition != expectedPosition
+        } else {
+            // FFmpeg timestamp conversion and range clipping can place the
+            // first decoded sample one position either side of the requested
+            // origin. This is rounding, not a break in the emitted PCM stream.
+            let delta = sourcePosition - requestedStartPosition
+            isDiscontinuous =
+                delta < -Self.initialOriginTolerance
+                || delta > Self.initialOriginTolerance
+        }
+        expectedPosition = sourcePosition + Int64(frameLength)
+        return isDiscontinuous
     }
 }
 

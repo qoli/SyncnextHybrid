@@ -2,12 +2,13 @@ import AetherEngine
 import Foundation
 
 struct HybridHLSPreparedAudioCursor {
-    let fileURL: URL
+    let reader: IOReader
+    let formatHint: String
     let selection: AetherRemoteHLSAudioSelection
     let usesDedicatedAudioRendition: Bool
 
-    func removeFile() {
-        try? FileManager.default.removeItem(at: fileURL)
+    func close() {
+        reader.close()
     }
 }
 
@@ -15,6 +16,7 @@ enum HybridHLSVODAudioSource {
     private static let maximumPlaylistBytes = 2 * 1024 * 1024
     private static let maximumAssembledBytes: Int64 =
         2 * 1024 * 1024 * 1024
+    private static let maximumConcurrentResourceRequests = 4
 
     static func prepare(
         request: AetherRemoteHLSAudioRequest,
@@ -72,62 +74,56 @@ enum HybridHLSVODAudioSource {
         }
 
         let selectedSegments = media.prefix(through: range.upperBound)
-        let fileExtension = media.fileExtension
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(
-                "syncnext-hybrid-audio-\(UUID().uuidString)"
-            )
-            .appendingPathExtension(fileExtension)
-        guard FileManager.default.createFile(
-            atPath: fileURL.path,
-            contents: nil
-        ) else {
-            throw HybridAudioAnalysisError.demuxFailed(
-                "cannot create the bounded HLS VOD analysis file"
-            )
+        let reader = HybridHLSVODResourceReader()
+        var resources: [HLSByteResource] = []
+        var lastMap: HLSByteResource?
+        for segment in selectedSegments {
+            if let map = segment.map, map != lastMap {
+                resources.append(map)
+                lastMap = map
+            }
+            resources.append(segment.resource)
         }
-
-        do {
-            let handle = try FileHandle(forWritingTo: fileURL)
-            defer { try? handle.close() }
-            var writtenBytes: Int64 = 0
-            var lastMap: HLSByteResource?
-
-            for segment in selectedSegments {
-                if let map = segment.map, map != lastMap {
-                    let bytes = try await fetchResource(
-                        map,
+        let producer = Task.detached(priority: .utility) {
+            do {
+                var writtenBytes: Int64 = 0
+                for batchStart in stride(
+                    from: 0,
+                    to: resources.count,
+                    by: maximumConcurrentResourceRequests
+                ) {
+                    try Task.checkCancellation()
+                    let batchEnd = min(
+                        batchStart + maximumConcurrentResourceRequests,
+                        resources.count
+                    )
+                    let batch = Array(resources[batchStart..<batchEnd])
+                    let fetched = try await fetchBatch(
+                        batch,
                         relativeTo: mediaURL,
                         headers: request.httpHeaders,
                         session: session
                     )
-                    try append(
-                        bytes,
-                        to: handle,
-                        writtenBytes: &writtenBytes
-                    )
-                    lastMap = map
+                    for bytes in fetched {
+                        writtenBytes += Int64(bytes.count)
+                        guard writtenBytes <= maximumAssembledBytes else {
+                            throw HybridAudioAnalysisError.demuxFailed(
+                                "bounded HLS VOD analysis input exceeded 2 GiB"
+                            )
+                        }
+                        try reader.append(bytes)
+                    }
                 }
-
-                let bytes = try await fetchResource(
-                    segment.resource,
-                    relativeTo: mediaURL,
-                    headers: request.httpHeaders,
-                    session: session
-                )
-                try append(
-                    bytes,
-                    to: handle,
-                    writtenBytes: &writtenBytes
-                )
+                reader.finish()
+            } catch {
+                reader.fail()
             }
-        } catch {
-            try? FileManager.default.removeItem(at: fileURL)
-            throw error
         }
+        reader.install(producer: producer)
 
         return HybridHLSPreparedAudioCursor(
-            fileURL: fileURL,
+            reader: reader,
+            formatHint: media.formatHint,
             selection: request.selection,
             usesDedicatedAudioRendition:
                 usesDedicatedAudioRendition
@@ -234,6 +230,48 @@ enum HybridHLSVODAudioSource {
         )
     }
 
+    private static func fetchBatch(
+        _ resources: [HLSByteResource],
+        relativeTo baseURL: URL,
+        headers: [String: String],
+        session: URLSession
+    ) async throws -> [Data] {
+        try await withThrowingTaskGroup(
+            of: (Int, Data).self,
+            returning: [Data].self
+        ) { group in
+            for (index, resource) in resources.enumerated() {
+                group.addTask {
+                    (
+                        index,
+                        try await fetchResource(
+                            resource,
+                            relativeTo: baseURL,
+                            headers: headers,
+                            session: session
+                        )
+                    )
+                }
+            }
+
+            var fetched = Array<Data?>(
+                repeating: nil,
+                count: resources.count
+            )
+            for try await (index, data) in group {
+                fetched[index] = data
+            }
+            return try fetched.map {
+                guard let data = $0 else {
+                    throw HybridAudioAnalysisError.demuxFailed(
+                        "HLS VOD resource batch was incomplete"
+                    )
+                }
+                return data
+            }
+        }
+    }
+
     private static func fetch(
         _ url: URL,
         headers: [String: String],
@@ -278,21 +316,6 @@ enum HybridHLSVODAudioSource {
         return data.subdata(
             in: byteRange.offset..<byteRange.endOffset
         )
-    }
-
-    private static func append(
-        _ data: Data,
-        to handle: FileHandle,
-        writtenBytes: inout Int64
-    ) throws {
-        let next = writtenBytes + Int64(data.count)
-        guard next <= maximumAssembledBytes else {
-            throw HybridAudioAnalysisError.demuxFailed(
-                "bounded HLS VOD analysis input exceeded 2 GiB"
-            )
-        }
-        try handle.write(contentsOf: data)
-        writtenBytes = next
     }
 
     fileprivate static func normalize(_ value: String) -> String {
@@ -662,6 +685,17 @@ struct HLSMediaDocument {
             return "bin"
         }
     }
+
+    var formatHint: String {
+        switch fileExtension {
+        case "ts", "m2ts":
+            return "mpegts"
+        case "mp4", "m4a":
+            return "mov"
+        default:
+            return fileExtension
+        }
+    }
 }
 
 struct HLSSegmentDocument {
@@ -670,12 +704,12 @@ struct HLSSegmentDocument {
     let map: HLSByteResource?
 }
 
-struct HLSByteResource: Equatable {
+struct HLSByteResource: Equatable, Sendable {
     let uri: String
     let byteRange: HLSByteRange?
 }
 
-struct HLSByteRange: Equatable {
+struct HLSByteRange: Equatable, Sendable {
     let length: Int
     let offset: Int
     let offsetWasExplicit: Bool
@@ -716,6 +750,141 @@ struct HLSByteRange: Equatable {
             offset: implicitOffset ?? 0,
             offsetWasExplicit: false
         )
+    }
+}
+
+private final class HybridHLSVODResourceReader:
+    IOReader,
+    @unchecked Sendable
+{
+    private static let maximumBufferedBytes = 32 * 1024 * 1024
+
+    private let condition = NSCondition()
+    private var queue: [Data] = []
+    private var headOffset = 0
+    private var bufferedBytes = 0
+    private var position: Int64 = 0
+    private var finished = false
+    private var failed = false
+    private var closed = false
+    private var producer: Task<Void, Never>?
+
+    func install(producer: Task<Void, Never>) {
+        condition.lock()
+        self.producer = producer
+        let shouldCancel = closed
+        condition.unlock()
+        if shouldCancel {
+            producer.cancel()
+        }
+    }
+
+    func append(_ data: Data) throws {
+        guard !data.isEmpty else {
+            return
+        }
+        condition.lock()
+        defer { condition.unlock() }
+        while !closed,
+              bufferedBytes > 0,
+              bufferedBytes + data.count > Self.maximumBufferedBytes {
+            condition.wait()
+        }
+        guard !closed else {
+            throw HybridAudioAnalysisError.cancelled
+        }
+        queue.append(data)
+        bufferedBytes += data.count
+        condition.broadcast()
+    }
+
+    func finish() {
+        condition.lock()
+        finished = true
+        producer = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func fail() {
+        condition.lock()
+        failed = true
+        producer = nil
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func read(
+        _ buffer: UnsafeMutablePointer<UInt8>?,
+        size: Int32
+    ) -> Int32 {
+        guard let buffer, size > 0 else {
+            return -1
+        }
+        condition.lock()
+        defer { condition.unlock() }
+        while queue.isEmpty, !finished, !failed, !closed {
+            condition.wait()
+        }
+        guard !queue.isEmpty else {
+            return finished ? 0 : -1
+        }
+
+        let available = queue[0].count - headOffset
+        let count = min(available, Int(size))
+        queue[0].withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return
+            }
+            buffer.update(
+                from: baseAddress
+                    .assumingMemoryBound(to: UInt8.self)
+                    .advanced(by: headOffset),
+                count: count
+            )
+        }
+        headOffset += count
+        bufferedBytes -= count
+        position += Int64(count)
+        if headOffset == queue[0].count {
+            queue.removeFirst()
+            headOffset = 0
+        }
+        condition.broadcast()
+        return Int32(count)
+    }
+
+    func seek(offset: Int64, whence: Int32) -> Int64 {
+        if whence == SEEK_CUR, offset == 0 {
+            condition.lock()
+            defer { condition.unlock() }
+            return position
+        }
+        return -1
+    }
+
+    func cancel() {
+        close()
+    }
+
+    func close() {
+        condition.lock()
+        guard !closed else {
+            condition.unlock()
+            return
+        }
+        closed = true
+        let producer = producer
+        self.producer = nil
+        queue.removeAll()
+        bufferedBytes = 0
+        condition.broadcast()
+        condition.unlock()
+        producer?.cancel()
+    }
+
+    func makeIndependentReader() -> IOReader? {
+        nil
     }
 }
 

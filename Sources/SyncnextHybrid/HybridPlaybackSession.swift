@@ -364,6 +364,30 @@ public final class HybridPlaybackSession:
         return stream
     }
 
+    public func extractIntroAudioArtifact(
+        maximumDuration: Double = 180,
+        outputURL: URL
+    ) async throws -> HybridIntroAudioArtifact {
+        guard !stopped else {
+            throw HybridIntroAudioExtractionError.sourceUnavailable
+        }
+        let source: AetherIndependentAudioSource
+        do {
+            source = try engine.independentAudioSource()
+        } catch {
+            throw HybridIntroAudioExtractionError.sourceUnavailable
+        }
+        let boundedDuration = min(
+            maximumDuration,
+            source.durationSeconds
+        )
+        return try await HybridIntroAudioExtractor.extract(
+            source: source,
+            maximumDuration: boundedDuration,
+            outputURL: outputURL
+        )
+    }
+
     public func cancelAudioAnalysis() {
         activeAnalysisRun?.cancel()
         activeAnalysisRun = nil

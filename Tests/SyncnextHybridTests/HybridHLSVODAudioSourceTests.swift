@@ -31,17 +31,15 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
             range: 0..<2,
             session: session
         )
-        defer { prepared.removeFile() }
-
-        XCTAssertTrue(prepared.usesDedicatedAudioRendition)
-        XCTAssertGreaterThan(
-            try Data(contentsOf: prepared.fileURL).count,
-            20_000
-        )
+        defer { prepared.close() }
 
         let demuxer = Demuxer()
-        try demuxer.openIndependent(url: prepared.fileURL)
+        try demuxer.openIndependent(
+            reader: prepared.reader,
+            formatHint: prepared.formatHint
+        )
         defer { demuxer.close() }
+        XCTAssertTrue(prepared.usesDedicatedAudioRendition)
         let selected = try
             HybridHLSVODAudioSource.resolveSelectedTrack(
                 from: demuxer.audioTrackInfos(),
