@@ -18,11 +18,25 @@ public final class HybridPlaybackSession:
     @Published public private(set) var avPlayer: AVPlayer
     @Published public private(set) var snapshot: HybridPlaybackSnapshot
 
+    public var hlsProxyServerObservation:
+        HybridHLSProxyServerObservation?
+    {
+        guard avPlayer === proxyPlayer else {
+            return nil
+        }
+        let state = proxyTimeline.state
+        return HybridHLSProxyServerObservation(
+            seekGeneration: state.seekGeneration,
+            resolvedSegmentIndices: state.resolvedSegmentIndices
+        )
+    }
+
     private let engine: AetherEngine
     private let surface: AetherPlayerView
+    private let proxyTimeline: HybridHLSTimelineProxy
     private let proxyPlayer: AVPlayer
+    private let proxyDuration: Double
     private let forceAVKitProxy: Bool
-    private let proxyFeedbackGate = HybridProxyFeedbackGate()
     private let proxyDiagnosticsID = String(
         UUID().uuidString.prefix(8)
     )
@@ -36,14 +50,16 @@ public final class HybridPlaybackSession:
     private var proxyRateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var nativeMediaSelectionObserver:
         NSObjectProtocol?
-    private var proxyTransportIntent = HybridProxyTransportIntent()
-    private var proxyNavigationTask: Task<Void, Never>?
-    private var proxyClockCorrectionTask: Task<Void, Never>?
-    private var proxyMirrorSeekInFlight = false
-    private var suppressProxyClockCorrection = false
-    private var proxyRateStabilizationDeadline: TimeInterval = 0
-    private var pendingProxyMirrorSeekTarget: Double?
+    private var proxyNavigationTasks:
+        [UInt64: Task<Void, Never>] = [:]
+    private var completedProxyClientSeekGenerations: Set<UInt64> = []
+    private struct PendingServerSeekContext {
+        let oldTime: Double
+        let origin: HybridProxyNavigation.Origin
+    }
+    private var pendingServerSeekContext: PendingServerSeekContext?
     private var requestedRate: Float = 1
+    private var lastLoggedHLSMaterial: HybridHLSProxyMaterial?
     private var stopped = false
     private var audioSelectionRevision: UInt64 = 0
     private var lastNativePlayerIdentity: ObjectIdentifier?
@@ -110,9 +126,14 @@ public final class HybridPlaybackSession:
             admission: admission,
             engineDuration: engine.duration
         )
-        proxyPlayer = try await ProxyMediaFactory.makePlayer(
-            duration: proxyDuration
+        self.proxyDuration = proxyDuration
+        let timeline = try await ProxyMediaFactory.makeTimeline(
+            duration: proxyDuration,
+            initialPosition: request.initialPosition ?? 0,
+            initialBufferedThrough: engine.bufferedPosition
         )
+        proxyTimeline = timeline
+        proxyPlayer = timeline.player
         if let nativePlayer = engine.currentAVPlayer,
            !forceAVKitProxy {
             avPlayer = nativePlayer
@@ -127,16 +148,22 @@ public final class HybridPlaybackSession:
             route: forceAVKitProxy || engine.currentAVPlayer == nil
                 ? .avKitProxy
                 : .nativeAVPlayer,
-            rate: requestedRate,
+            proxyState: timeline.state,
+            nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
 
         super.init()
+        proxyTimeline.setEventHandler { [weak self] event in
+            self?.handleProxyServerEvent(event)
+        }
         installObservers()
-        synchronizeProxyFromEngine(
-            forceSeek: true,
-            reason: "session-init"
-        )
+        applyAetherMaterial()
+        if snapshot.route == .avKitProxy,
+           let initialPosition = request.initialPosition,
+           initialPosition > 0 {
+            try await seek(to: initialPosition)
+        }
         publishSnapshot()
     }
 
@@ -198,13 +225,10 @@ public final class HybridPlaybackSession:
             )
             return
         }
-        guard let navigation =
-                proxyTransportIntent.beginUserNavigation(
-                    from: oldTime.seconds,
-                    to: targetTime.seconds,
-                    duration: engine.duration,
-                    resumeRate: requestedRate
-                ) else {
+        guard oldTime.seconds.isFinite,
+              targetTime.seconds.isFinite,
+              proxyDuration.isFinite,
+              proxyDuration > 0 else {
             proxyDiagnostics(
                 "navigation-rejected",
                 "reason=invalid-time-or-duration"
@@ -212,59 +236,16 @@ public final class HybridPlaybackSession:
             return
         }
 
-        proxyDiagnostics(
-            "navigation-began",
-            "generation=\(navigation.generation)",
-            "target=\(navigation.targetTime)",
-            "distance=\(navigation.distance)"
+        let boundedOld = max(0, min(oldTime.seconds, proxyDuration))
+        let boundedTarget = max(
+            0,
+            min(targetTime.seconds, proxyDuration)
         )
-
-        armProxyRateStabilization(for: requestedRate)
-
-        proxyNavigationTask?.cancel()
-        pendingProxyMirrorSeekTarget = nil
-        engine.pause()
-        mirrorProxyRate(0, reason: "navigation-begin")
-        publishSnapshot()
-
-        proxyNavigationTask = Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            await self.engine.seek(to: navigation.targetTime)
-            guard !Task.isCancelled,
-                  !self.stopped,
-                  self.snapshot.route == .avKitProxy,
-                  let desiredRate =
-                    self.proxyTransportIntent
-                    .completeUserNavigation(navigation) else {
-                self.proxyDiagnostics(
-                    "navigation-completion-ignored",
-                    "generation=\(navigation.generation)",
-                    "cancelled=\(Task.isCancelled)",
-                    "stopped=\(self.stopped)",
-                    "route=\(self.snapshot.route)"
-                )
-                return
-            }
-            self.proxyNavigationTask = nil
-            self.proxyDiagnostics(
-                "navigation-completed",
-                "generation=\(navigation.generation)",
-                "target=\(navigation.targetTime)",
-                "engineTime=\(self.engine.currentTime)",
-                "desiredRate=\(desiredRate)"
-            )
-            self.applyProxyRateIntent(
-                desiredRate,
-                reason: "navigation-complete"
-            )
-            self.synchronizeProxyFromEngine(
-                forceSeek: false,
-                reason: "navigation-complete"
-            )
-            self.publishSnapshot()
-        }
+        pendingServerSeekContext = PendingServerSeekContext(
+            oldTime: boundedOld,
+            origin: .avKit
+        )
+        proxyTimeline.prepareSeek(to: boundedTarget)
     }
 
     public func play() {
@@ -272,14 +253,13 @@ public final class HybridPlaybackSession:
             return
         }
         requestedRate = max(requestedRate, 1)
-        guard proxyTransportIntent.recordDesiredRate(requestedRate) else {
-            mirrorProxyRate(0, reason: "public-play-navigation-pending")
+        guard snapshot.route == .avKitProxy else {
+            engine.play()
+            engine.setRate(requestedRate)
             publishSnapshot()
             return
         }
-        engine.play()
-        engine.setRate(requestedRate)
-        mirrorProxyRate(requestedRate, reason: "public-play")
+        commandProxyRate(requestedRate, reason: "public-play")
         publishSnapshot()
     }
 
@@ -287,14 +267,12 @@ public final class HybridPlaybackSession:
         guard !stopped else {
             return
         }
-        guard proxyTransportIntent.recordDesiredRate(0) else {
+        guard snapshot.route == .avKitProxy else {
             engine.pause()
-            mirrorProxyRate(0, reason: "public-pause-navigation-pending")
             publishSnapshot()
             return
         }
-        engine.pause()
-        mirrorProxyRate(0, reason: "public-pause")
+        commandProxyRate(0, reason: "public-pause")
         publishSnapshot()
     }
 
@@ -306,9 +284,38 @@ public final class HybridPlaybackSession:
             requested: seconds,
             duration: engine.duration
         )
-        await engine.seek(to: target)
-        mirrorProxySeek(to: target, reason: "public-seek")
+        guard snapshot.route == .avKitProxy else {
+            await engine.seek(to: target)
+            publishSnapshot()
+            return
+        }
+        let oldTime = proxyTimeline.state.currentTime
+        proxyDiagnostics(
+            "public-seek-began",
+            "target=\(target)",
+            "requestedRate=\(requestedRate)",
+            "enginePhase=\(engine.playbackPhase)",
+            "engineTime=\(engine.currentTime)",
+            "proxyTime=\(proxyPlayer.currentTime().seconds)"
+        )
+        pendingServerSeekContext = PendingServerSeekContext(
+            oldTime: oldTime,
+            origin: .programmatic
+        )
+        proxyTimeline.prepareSeek(to: target)
+        requestProxyAuthoritySeek(
+            to: target,
+            reason: "public-seek-begin"
+        )
         publishSnapshot()
+    }
+
+    /// Client-side completion is diagnostic synchronization for App UI
+    /// capture. It never replaces the HLS Proxy Server's seek authority.
+    public func hasAVKitProxyClientCompletedSeek(
+        generation: UInt64
+    ) -> Bool {
+        completedProxyClientSeekGenerations.contains(generation)
     }
 
     public func setRate(_ rate: Float) {
@@ -317,19 +324,16 @@ public final class HybridPlaybackSession:
         }
         let bounded = max(0, min(rate, engine.maxSupportedRate))
         requestedRate = bounded
-        armProxyRateStabilization(for: bounded)
-        guard proxyTransportIntent.recordDesiredRate(bounded) else {
-            engine.pause()
-            mirrorProxyRate(0, reason: "public-set-rate-navigation-pending")
+        guard snapshot.route == .avKitProxy else {
+            if bounded == 0 {
+                engine.pause()
+            } else {
+                engine.setRate(bounded)
+            }
             publishSnapshot()
             return
         }
-        if bounded == 0 {
-            engine.pause()
-        } else {
-            engine.setRate(bounded)
-        }
-        mirrorProxyRate(bounded, reason: "public-set-rate")
+        commandProxyRate(bounded, reason: "public-set-rate")
         publishSnapshot()
     }
 
@@ -362,21 +366,17 @@ public final class HybridPlaybackSession:
             return
         }
         stopped = true
-        proxyNavigationTask?.cancel()
-        proxyNavigationTask = nil
-        proxyClockCorrectionTask?.cancel()
-        proxyClockCorrectionTask = nil
-        proxyTransportIntent.cancelUserNavigation()
-        pendingProxyMirrorSeekTarget = nil
+        proxyNavigationTasks.values.forEach { $0.cancel() }
+        proxyNavigationTasks.removeAll()
         detach()
         engine.stop()
         proxyPlayer.pause()
+        proxyTimeline.stop()
         eventContinuation.finish()
     }
 
     deinit {
-        proxyNavigationTask?.cancel()
-        proxyClockCorrectionTask?.cancel()
+        proxyNavigationTasks.values.forEach { $0.cancel() }
         eventContinuation.finish()
         proxyRateObservation?.invalidate()
         if let nativeMediaSelectionObserver {
@@ -396,9 +396,15 @@ public final class HybridPlaybackSession:
             .store(in: &observations)
 
         engine.$playbackPhase
-            .sink { [weak self] _ in
+            .sink { [weak self] phase in
                 Task { @MainActor in
-                    self?.publishSnapshot()
+                    guard let self else {
+                        return
+                    }
+                    self.applyAetherMaterial()
+                    if self.snapshot.route == .nativeAVPlayer {
+                        self.publishSnapshot()
+                    }
                 }
             }
             .store(in: &observations)
@@ -406,7 +412,11 @@ public final class HybridPlaybackSession:
         engine.$duration
             .sink { [weak self] _ in
                 Task { @MainActor in
-                    self?.publishSnapshot()
+                    guard let self,
+                          self.snapshot.route == .nativeAVPlayer else {
+                        return
+                    }
+                    self.publishSnapshot()
                 }
             }
             .store(in: &observations)
@@ -414,14 +424,19 @@ public final class HybridPlaybackSession:
         engine.clock.$currentTime
             .sink { [weak self] _ in
                 Task { @MainActor in
-                    guard let self else {
+                    guard let self,
+                          self.snapshot.route == .nativeAVPlayer else {
                         return
                     }
-                    self.synchronizeProxyFromEngine(
-                        forceSeek: false,
-                        reason: "engine-clock"
-                    )
                     self.publishSnapshot()
+                }
+            }
+            .store(in: &observations)
+
+        engine.clock.$bufferedPosition
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.applyAetherMaterial()
                 }
             }
             .store(in: &observations)
@@ -466,7 +481,6 @@ public final class HybridPlaybackSession:
             }
             .store(in: &observations)
 
-        let feedbackGate = proxyFeedbackGate
         proxyRateObservation = proxyPlayer.observe(
             \.rate,
             options: [.new]
@@ -474,8 +488,6 @@ public final class HybridPlaybackSession:
             guard let rate = change.newValue else {
                 return
             }
-            let decision =
-                feedbackGate.rateObservationDecision(rate)
             Task { @MainActor in
                 guard let self else {
                     return
@@ -483,17 +495,12 @@ public final class HybridPlaybackSession:
                 self.proxyDiagnostics(
                     "rate-observed",
                     "rate=\(rate)",
-                    "decision=\(decision.disposition.rawValue)",
-                    "matchedAge=\(decision.matchedMirroredRateAge.map(String.init(describing:)) ?? "none")",
-                    "pendingRates=\(decision.pendingMirroredRateCount)",
-                    "activeSeeks=\(decision.activeMirroredSeekCount)",
                     "enginePhase=\(self.engine.playbackPhase)",
                     "engineTime=\(self.engine.currentTime)",
                     "proxyTime=\(self.proxyPlayer.currentTime().seconds)",
                     "requestedRate=\(self.requestedRate)"
                 )
-                guard decision.shouldForward,
-                      self.snapshot.route == .avKitProxy else {
+                guard self.snapshot.route == .avKitProxy else {
                     return
                 }
                 if rate == 0,
@@ -506,49 +513,14 @@ public final class HybridPlaybackSession:
                     )
                     return
                 }
-                if rate == 0,
-                   self.requestedRate > 1,
-                   ProcessInfo.processInfo.systemUptime
-                    < self.proxyRateStabilizationDeadline {
-                    self.mirrorProxyRate(
-                        self.requestedRate,
-                        reason: "fast-rate-stabilization"
-                    )
-                    return
-                }
-                let canApplyImmediately =
-                    self.proxyTransportIntent
-                    .recordDesiredRate(rate)
-                guard canApplyImmediately else {
-                    self.proxyDiagnostics(
-                        "rate-forward-deferred",
-                        "rate=\(rate)",
-                        "reason=navigation-active"
-                    )
-                    if rate != 0 {
-                        self.mirrorProxyRate(
-                            0,
-                            reason: "rate-observed-navigation-active"
-                        )
-                    }
-                    self.publishSnapshot()
-                    return
-                }
-                if rate == 0 {
-                    self.deferProxyClockCorrection()
-                }
-                self.applyProxyRateIntent(
-                    rate,
-                    reason: "rate-observed-forwarded"
-                )
-                self.publishSnapshot()
+                self.proxyTimeline.acceptClientRate(rate)
             }
         }
 
         // Deliberately do not translate AVPlayerItem.timeJumpedNotification
-        // into an Aether seek. The proxy's own mirrored seeks and clock
-        // corrections emit that notification too. AVKit's navigation
-        // delegate above is the user-intent boundary.
+        // into an Aether seek. Proxy initialization and programmatic seeks
+        // emit that notification too. AVKit's navigation delegate above is
+        // the user-intent boundary.
         installNativeMediaSelectionObserver(
             for: engine.currentAVPlayer?.currentItem
         )
@@ -571,10 +543,8 @@ public final class HybridPlaybackSession:
             newRoute = .avKitProxy
         }
         if newRoute != .avKitProxy {
-            proxyNavigationTask?.cancel()
-            proxyNavigationTask = nil
-            proxyTransportIntent.cancelUserNavigation()
-            pendingProxyMirrorSeekTarget = nil
+            proxyNavigationTasks.values.forEach { $0.cancel() }
+            proxyNavigationTasks.removeAll()
         }
         installNativeMediaSelectionObserver(
             for: player?.currentItem
@@ -657,171 +627,159 @@ public final class HybridPlaybackSession:
         }
     }
 
-    private func synchronizeProxyFromEngine(
-        forceSeek: Bool,
-        reason: String
+    private func applyAetherMaterial() {
+        guard snapshot.route == .avKitProxy else {
+            return
+        }
+        let supplyPhase: HybridHLSProxySupplyPhase
+        switch engine.playbackPhase {
+        case .loading, .rebuffering, .stalled:
+            // Buffer/readiness failures are valid Aether -> Server state.
+            // They withhold HLS material and project waitingToPlay without
+            // letting Aether replace the Server's rate, seek, or playhead.
+            // A seek still has a separate Server-owned pending gate from the
+            // request until the matching Aether response.
+            supplyPhase = .waiting
+        case .ended:
+            supplyPhase = .ended
+        case .error(let message):
+            supplyPhase = .failed(message)
+        case .idle, .playing, .paused, .seeking:
+            // These Aether transport states cannot drive the authoritative
+            // HLS timeline. They are consequences of Server commands.
+            supplyPhase = .flowing
+        }
+        let material = HybridHLSProxyMaterial(
+            phase: supplyPhase,
+            bufferedThrough: engine.bufferedPosition
+        )
+        proxyTimeline.update(material: material)
+        let shouldLog: Bool
+        if let previous = lastLoggedHLSMaterial {
+            shouldLog = previous.phase != material.phase
+                || abs(
+                    previous.bufferedThrough
+                        - material.bufferedThrough
+                ) >= 1
+        } else {
+            shouldLog = true
+        }
+        guard shouldLog else {
+            return
+        }
+        lastLoggedHLSMaterial = material
+        proxyDiagnostics(
+            "hls-material-updated",
+            "enginePhase=\(engine.playbackPhase)",
+            "supplyPhase=\(supplyPhase)",
+            "bufferedThrough=\(engine.bufferedPosition)",
+            "engineTime=\(engine.currentTime)",
+            "proxyTime=\(proxyPlayer.currentTime().seconds)"
+        )
+    }
+
+    private func handleProxyServerEvent(
+        _ event: HybridHLSTimelineEvent
     ) {
         guard !stopped,
-              !proxyTransportIntent.isNavigating else {
+              snapshot.route == .avKitProxy else {
             return
         }
-        let sourceTime = engine.currentTime
-        let proxyTime = proxyPlayer.currentTime().seconds
-        let canCorrectClockDrift: Bool
-        switch engine.playbackPhase {
-        case .playing:
-            // Both clocks already advance at requestedRate. Periodic exact
-            // seeks here can still be in flight when AVKit begins a user
-            // navigation, causing AVPlayer to cancel that navigation seek.
-            canCorrectClockDrift = false
-        case .paused, .idle, .loading, .seeking, .rebuffering,
-             .stalled, .ended, .error:
-            canCorrectClockDrift = true
-        }
-        if sourceTime.isFinite,
-           (
-            forceSeek
-                || !proxyTime.isFinite
-                || (
-                    !suppressProxyClockCorrection
-                        && canCorrectClockDrift
-                        && abs(sourceTime - proxyTime) > 0.75
-                )
-           ) {
-            mirrorProxySeek(
-                to: sourceTime,
-                reason: "\(reason)-clock-correction"
+        switch event {
+        case .stateChanged:
+            publishSnapshot()
+        case .transportRateChanged(let rate, _):
+            forwardRateToAether(
+                rate,
+                reason: "hls-server-rate-event"
             )
-        }
-
-        switch engine.playbackPhase {
-        case .playing:
-            mirrorProxyRate(
-                max(requestedRate, 1),
-                reason: "\(reason)-engine-playing"
+            publishSnapshot()
+        case .seekRequested(let generation, let target):
+            let context = pendingServerSeekContext
+            pendingServerSeekContext = nil
+            let oldTime = context?.oldTime
+                ?? proxyTimeline.state.currentTime
+            let origin = context?.origin ?? .programmatic
+            let navigation = HybridProxyNavigation(
+                generation: generation,
+                oldTime: oldTime,
+                targetTime: target,
+                origin: origin
             )
-        case .paused, .idle, .loading, .seeking, .rebuffering,
-             .stalled, .ended, .error:
-            mirrorProxyRate(
-                0,
-                reason: "\(reason)-engine-not-playing"
+            proxyDiagnostics(
+                "server-seek-projected",
+                "generation=\(generation)",
+                "origin=\(origin)",
+                "target=\(target)"
             )
+            forwardProxySeekToAether(navigation)
+            publishSnapshot()
         }
     }
 
-    private func deferProxyClockCorrection() {
-        suppressProxyClockCorrection = true
-        proxyClockCorrectionTask?.cancel()
-        proxyClockCorrectionTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            guard let self, !Task.isCancelled, !self.stopped else {
-                return
-            }
-            self.proxyClockCorrectionTask = nil
-            self.suppressProxyClockCorrection = false
-            self.synchronizeProxyFromEngine(
-                forceSeek: false,
-                reason: "deferred-clock-correction"
-            )
-        }
-    }
-
-    private func armProxyRateStabilization(for rate: Float) {
-        guard rate > 1 else {
-            return
-        }
-        // AVPlayer may publish an automatic zero while applying a newly
-        // selected fast-play rate. Treat only that short transition as
-        // mirrored feedback; a later user pause remains authoritative.
-        proxyRateStabilizationDeadline =
-            ProcessInfo.processInfo.systemUptime + 3
-    }
-
-    private func mirrorProxySeek(
+    private func requestProxyAuthoritySeek(
         to seconds: Double,
         reason: String
     ) {
-        let target = max(0, min(seconds, engine.duration))
-        pendingProxyMirrorSeekTarget = target
+        let target = max(0, min(seconds, proxyDuration))
+        let generation = proxyTimeline.state.seekGeneration
         proxyDiagnostics(
-            "seek-queued",
+            "seek-dispatched",
             "reason=\(reason)",
+            "generation=\(generation)",
             "requested=\(seconds)",
             "target=\(target)",
             "engineTime=\(engine.currentTime)",
             "proxyTime=\(proxyPlayer.currentTime().seconds)",
-            "inFlight=\(proxyMirrorSeekInFlight)",
-            "navigating=\(proxyTransportIntent.isNavigating)"
+            "serverGeneration=\(proxyTimeline.state.seekGeneration)"
         )
-        guard !proxyMirrorSeekInFlight,
-              !proxyTransportIntent.isNavigating else {
-            return
-        }
-        performPendingProxyMirrorSeek()
-    }
-
-    private func performPendingProxyMirrorSeek() {
-        guard let target = pendingProxyMirrorSeekTarget,
-              !proxyMirrorSeekInFlight,
-              !proxyTransportIntent.isNavigating else {
-            return
-        }
-        pendingProxyMirrorSeekTarget = nil
-        proxyMirrorSeekInFlight = true
-        let feedbackGate = proxyFeedbackGate
-        let seekToken = feedbackGate.beginMirroredSeek()
-        proxyDiagnostics(
-            "seek-dispatched",
-            "token=\(seekToken)",
-            "target=\(target)",
-            "engineTime=\(engine.currentTime)",
-            "proxyTime=\(proxyPlayer.currentTime().seconds)"
-        )
+        // Forward the same authoritative Server operation to the HLS client.
+        // AVPlayer owns its own cancellation semantics; Hybrid adds none.
         proxyPlayer.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
+            toleranceBefore: CMTime(
+                seconds:
+                    HybridHLSProxyPlaylist.segmentDuration / 2,
+                preferredTimescale: 600
+            ),
+            toleranceAfter: CMTime(
+                seconds:
+                    HybridHLSProxyPlaylist.segmentDuration / 2,
+                preferredTimescale: 600
+            )
         ) { [weak self] finished in
-            feedbackGate.completeMirroredSeek(seekToken)
             Task { @MainActor in
                 guard let self else {
                     return
                 }
-                self.proxyMirrorSeekInFlight = false
+                if finished {
+                    self.completedProxyClientSeekGenerations.insert(
+                        generation
+                    )
+                    if self.completedProxyClientSeekGenerations.count > 32,
+                       let oldest = self.completedProxyClientSeekGenerations
+                        .min() {
+                        self.completedProxyClientSeekGenerations.remove(oldest)
+                    }
+                }
                 self.proxyDiagnostics(
                     "seek-completed",
-                    "token=\(seekToken)",
+                    "generation=\(generation)",
                     "finished=\(finished)",
                     "target=\(target)",
                     "engineTime=\(self.engine.currentTime)",
                     "proxyTime=\(self.proxyPlayer.currentTime().seconds)"
                 )
-                guard !self.stopped else {
-                    self.pendingProxyMirrorSeekTarget = nil
-                    return
-                }
-                guard !self.proxyTransportIntent.isNavigating else {
-                    self.pendingProxyMirrorSeekTarget = nil
-                    return
-                }
-                if self.pendingProxyMirrorSeekTarget != nil {
-                    self.performPendingProxyMirrorSeek()
-                } else {
-                    self.synchronizeProxyFromEngine(
-                        forceSeek: false,
-                        reason: "mirror-seek-complete"
-                    )
-                }
             }
         }
     }
 
-    private func applyProxyRateIntent(
+    private func forwardRateToAether(
         _ rate: Float,
         reason: String
     ) {
         proxyDiagnostics(
-            "rate-intent-applied",
+            "rate-forwarded-to-aether",
             "reason=\(reason)",
             "rate=\(rate)",
             "enginePhaseBefore=\(engine.playbackPhase)",
@@ -835,36 +793,112 @@ public final class HybridPlaybackSession:
             engine.play()
             engine.setRate(rate)
         }
-        mirrorProxyRate(rate, reason: reason)
     }
 
-    private func mirrorProxyRate(
+    private func forwardProxySeekToAether(
+        _ navigation: HybridProxyNavigation
+    ) {
+        // The HLS Proxy Server has already accepted the seek and entered its
+        // authoritative waiting state. Freeze the controlled renderer before
+        // dispatching the seek so Aether cannot keep presenting the old
+        // position while the destination is being resolved.
+        engine.pause()
+        proxyDiagnostics(
+            "navigation-forwarded-to-aether",
+            "generation=\(navigation.generation)",
+            "origin=\(navigation.origin)",
+            "target=\(navigation.targetTime)",
+            "transport=pause-then-seek",
+            "authoritativeRate=\(proxyTimeline.state.rate)"
+        )
+        proxyNavigationTasks[navigation.generation] = Task {
+            @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.runProxyNavigationSeek(navigation)
+        }
+    }
+
+    private func runProxyNavigationSeek(
+        _ navigation: HybridProxyNavigation
+    ) async {
+        proxyDiagnostics(
+            "navigation-seek-dispatched",
+            "generation=\(navigation.generation)",
+            "origin=\(navigation.origin)",
+            "target=\(navigation.targetTime)"
+        )
+        await engine.seek(to: navigation.targetTime)
+        proxyNavigationTasks[navigation.generation] = nil
+        guard !Task.isCancelled,
+              !stopped,
+              snapshot.route == .avKitProxy else {
+            proxyDiagnostics(
+                "navigation-worker-stopped",
+                "generation=\(navigation.generation)",
+                "cancelled=\(Task.isCancelled)",
+                "stopped=\(stopped)",
+                "route=\(snapshot.route)"
+            )
+            return
+        }
+
+        proxyDiagnostics(
+            "navigation-aether-returned",
+            "generation=\(navigation.generation)",
+            "origin=\(navigation.origin)",
+            "target=\(navigation.targetTime)",
+            "engineTime=\(engine.currentTime)"
+        )
+        let acknowledged = proxyTimeline.acknowledgeSeekResponse(
+            generation: navigation.generation
+        )
+        let authoritativeRate = proxyTimeline.state.rate
+        proxyDiagnostics(
+            "navigation-server-wait-ended",
+            "generation=\(navigation.generation)",
+            "acknowledged=\(acknowledged)",
+            "authoritativeRate=\(authoritativeRate)",
+            "proxyPhase=\(proxyTimeline.state.phase)",
+            "proxyTime=\(proxyTimeline.state.currentTime)"
+        )
+        if acknowledged {
+            // Aether is a controlled timeline. Only the current Server seek
+            // response may restore transport, and the Server's current rate
+            // decides whether this is Play or remains Pause. A stale seek
+            // response must never restart playback behind a newer seek.
+            forwardRateToAether(
+                authoritativeRate,
+                reason: "hls-server-seek-response"
+            )
+        }
+        publishSnapshot()
+    }
+
+    /// Accepts the operation on the authoritative Server first, then forwards
+    /// it unchanged to the HLS client. The Server event forwards it to Aether.
+    private func commandProxyRate(
         _ rate: Float,
         reason: String
     ) {
-        guard proxyPlayer.rate != rate else {
-            return
-        }
         let previousRate = proxyPlayer.rate
-        let pendingCount =
-            proxyFeedbackGate.performMirroredRateChange(to: rate) {
-            if rate == 0 {
-                proxyPlayer.pause()
-            } else {
-                proxyPlayer.defaultRate = rate
-                proxyPlayer.play()
-            }
+        proxyTimeline.commandRate(rate)
+        if rate == 0 {
+            proxyPlayer.pause()
+        } else {
+            proxyPlayer.defaultRate = rate
+            proxyPlayer.play()
         }
         proxyDiagnostics(
-            "rate-mirrored",
+            "rate-commanded-by-proxy-authority",
             "reason=\(reason)",
             "from=\(previousRate)",
             "to=\(rate)",
-            "pendingRates=\(pendingCount)",
             "enginePhase=\(engine.playbackPhase)",
             "engineTime=\(engine.currentTime)",
             "proxyTime=\(proxyPlayer.currentTime().seconds)",
-            "navigating=\(proxyTransportIntent.isNavigating)"
+            "serverGeneration=\(proxyTimeline.state.seekGeneration)"
         )
     }
 
@@ -872,7 +906,7 @@ public final class HybridPlaybackSession:
         _ event: String,
         _ fields: String...
     ) {
-        print(
+        HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_PROXY_CONTROL "
                 + "session=\(proxyDiagnosticsID) "
                 + "event=\(event) "
@@ -995,7 +1029,8 @@ public final class HybridPlaybackSession:
             route: avPlayer === proxyPlayer
                 ? .avKitProxy
                 : .nativeAVPlayer,
-            rate: requestedRate,
+            proxyState: proxyTimeline.state,
+            nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
         guard updated != snapshot else {
@@ -1008,15 +1043,24 @@ public final class HybridPlaybackSession:
     private static func makeSnapshot(
         engine: AetherEngine,
         route: HybridPlaybackRoute,
-        rate: Float,
+        proxyState: HybridHLSTimelineState,
+        nativeRate: Float,
         audioSelectionRevision: UInt64
     ) -> HybridPlaybackSnapshot {
         HybridPlaybackSnapshot(
-            phase: mapPhase(engine.playbackPhase),
+            phase: route == .avKitProxy
+                ? proxyState.phase
+                : mapPhase(engine.playbackPhase),
             route: route,
-            currentTime: engine.currentTime,
-            duration: engine.duration,
-            rate: rate,
+            currentTime: route == .avKitProxy
+                ? proxyState.currentTime
+                : engine.currentTime,
+            duration: route == .avKitProxy
+                ? proxyState.duration
+                : engine.duration,
+            rate: route == .avKitProxy
+                ? proxyState.rate
+                : nativeRate,
             audioSelectionRevision: audioSelectionRevision,
             selectedAudioTrackID: engine.activeAudioTrackIndex,
             selectedSubtitleTrackID: engine.activeSubtitleTrackIndex,

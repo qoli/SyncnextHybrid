@@ -28,8 +28,11 @@ let package = Package(
                 .product(name: "Libavutil", package: "FFmpegBuild"),
                 .product(name: "Libswresample", package: "FFmpegBuild"),
             ],
+            exclude: [
+                "Resources/black-proxy.mp4",
+            ],
             resources: [
-                .copy("Resources/black-proxy.mp4"),
+                .copy("Resources/black-proxy.ts"),
             ]
         ),
         .testTarget(

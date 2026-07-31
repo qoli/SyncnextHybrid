@@ -167,6 +167,8 @@ extension HybridPlaybackPhase {
             "idle"
         case .loading:
             "loading"
+        case .waitingToPlay:
+            "waitingToPlay"
         case .playing:
             "playing"
         case .paused:

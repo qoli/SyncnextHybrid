@@ -97,13 +97,15 @@ public struct HybridMediaTrack: Identifiable, Sendable, Equatable {
 public enum HybridPlaybackRoute: Sendable, Equatable {
     /// AVKit owns the same native AVPlayer instance published by AetherEngine.
     case nativeAVPlayer
-    /// AVKit owns a silent black UI proxy while AetherEngine renders and clocks.
+    /// AVKit owns the silent black HLS timeline while AetherEngine renders and
+    /// supplies buffer availability.
     case avKitProxy
 }
 
 public enum HybridPlaybackPhase: Sendable, Equatable {
     case idle
     case loading
+    case waitingToPlay
     case playing
     case paused
     case seeking
@@ -152,6 +154,22 @@ public struct HybridPlaybackSnapshot: Sendable, Equatable {
     }
 }
 
+/// Evidence observed by the HLS Proxy Server itself. Segment resolution is
+/// scoped to the current seek generation so cancelled, stale requests cannot
+/// be mistaken for a successful landing.
+public struct HybridHLSProxyServerObservation: Sendable, Equatable {
+    public let seekGeneration: UInt64
+    public let resolvedSegmentIndices: [Int]
+
+    public init(
+        seekGeneration: UInt64,
+        resolvedSegmentIndices: [Int]
+    ) {
+        self.seekGeneration = seekGeneration
+        self.resolvedSegmentIndices = resolvedSegmentIndices
+    }
+}
+
 public enum HybridPlaybackEvent: Sendable, Equatable {
     case snapshot(HybridPlaybackSnapshot)
     case playerBindingChanged(HybridPlaybackRoute)
@@ -165,6 +183,7 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
     case pureAudioUnsupported
     case proxyAssetUnavailable
     case proxyAssetInvalid
+    case proxyServerUnavailable(String)
     case proxyDurationUnavailable
     case avKitOverlayUnavailable
     case sessionStopped
@@ -183,6 +202,8 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
             "The AVKit proxy asset is missing"
         case .proxyAssetInvalid:
             "The AVKit proxy asset cannot create a finite video item"
+        case .proxyServerUnavailable(let message):
+            "The AVKit HLS proxy server could not start: \(message)"
         case .proxyDurationUnavailable:
             "The AVKit proxy route requires a confirmed finite VOD duration"
         case .avKitOverlayUnavailable:
