@@ -103,8 +103,12 @@ public final class HybridPlaybackSession:
             throw HybridPlaybackError.pureAudioUnsupported
         }
 
+        let proxyDuration = try HybridProxyDurationPolicy.duration(
+            admission: admission,
+            engineDuration: engine.duration
+        )
         proxyPlayer = try await ProxyMediaFactory.makePlayer(
-            duration: engine.duration
+            duration: proxyDuration
         )
         if let nativePlayer = engine.currentAVPlayer,
            !forceAVKitProxy {

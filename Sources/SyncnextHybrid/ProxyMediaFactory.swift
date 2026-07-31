@@ -1,5 +1,6 @@
 #if os(tvOS)
 import AVFoundation
+import CryptoKit
 import Foundation
 
 enum ProxyMediaFactory {
@@ -11,6 +12,19 @@ enum ProxyMediaFactory {
         ) else {
             throw HybridPlaybackError.proxyAssetUnavailable
         }
+        let assetData: Data
+        do {
+            assetData = try Data(contentsOf: url)
+        } catch {
+            throw HybridPlaybackError.proxyAssetUnavailable
+        }
+        let assetSHA256 = SHA256.hash(data: assetData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        print(
+            "SYNCNEXT_HYBRID_PROXY_ASSET "
+                + "name=black-proxy.mp4 sha256=\(assetSHA256)"
+        )
 
         let asset = AVURLAsset(url: url)
         async let videoTracks = asset.loadTracks(withMediaType: .video)
@@ -61,6 +75,11 @@ enum ProxyMediaFactory {
             )
             insertionTime = CMTimeAdd(insertionTime, chunkDuration)
         }
+        print(
+            "SYNCNEXT_HYBRID_PROXY_TIMELINE "
+                + "requestedDuration=\(duration) "
+                + "compositionDuration=\(composition.duration.seconds)"
+        )
 
         let item = AVPlayerItem(asset: composition)
         let player = AVPlayer(playerItem: item)

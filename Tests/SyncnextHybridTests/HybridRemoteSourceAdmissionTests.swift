@@ -86,7 +86,11 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
             session: session
         )
 
-        XCTAssertEqual(admission, .hlsVODHEVCMPEGTS)
+        XCTAssertEqual(
+            admission,
+            .hlsVODHEVCMPEGTS(duration: 10.5)
+        )
+        XCTAssertEqual(admission.avKitProxyDuration, 10.5)
         let request = try HybridPlaybackRequest(url: url)
         let options = HybridPlaybackLoadOptions.make(
             request: request,
@@ -95,6 +99,31 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         )
         XCTAssertFalse(options.nativeRemoteHLS)
         XCTAssertFalse(options.isLive)
+    }
+
+    func testForcedProxyUsesPlaylistDurationInsteadOfTransientEngineValue()
+        throws
+    {
+        let duration = try HybridProxyDurationPolicy.duration(
+            admission: .hlsVODHEVCMPEGTS(duration: 1_423.75),
+            engineDuration: 0.01
+        )
+
+        XCTAssertEqual(duration, 1_423.75)
+    }
+
+    func testForcedProxyRejectsInvalidPlaylistDuration() {
+        XCTAssertThrowsError(
+            try HybridProxyDurationPolicy.duration(
+                admission: .hlsVODHEVCMPEGTS(duration: 0),
+                engineDuration: 0.01
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? HybridPlaybackError,
+                .proxyDurationUnavailable
+            )
+        }
     }
 
     func testM3U8SuffixWithBinaryBodyFallsBackToAether()
@@ -302,6 +331,8 @@ private final class HybridAdmissionFixtureURLProtocol:
                 #EXTM3U
                 #EXT-X-TARGETDURATION:6
                 #EXTINF:6,
+                hevc-segment.ts
+                #EXTINF:4.5,
                 hevc-segment.ts
                 #EXT-X-ENDLIST
                 """.utf8

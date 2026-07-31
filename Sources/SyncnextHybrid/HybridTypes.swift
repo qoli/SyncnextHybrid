@@ -165,6 +165,7 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
     case pureAudioUnsupported
     case proxyAssetUnavailable
     case proxyAssetInvalid
+    case proxyDurationUnavailable
     case avKitOverlayUnavailable
     case sessionStopped
 
@@ -182,6 +183,8 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
             "The AVKit proxy asset is missing"
         case .proxyAssetInvalid:
             "The AVKit proxy asset cannot create a finite video item"
+        case .proxyDurationUnavailable:
+            "The AVKit proxy route requires a confirmed finite VOD duration"
         case .avKitOverlayUnavailable:
             "AVPlayerViewController did not provide a content overlay view"
         case .sessionStopped:

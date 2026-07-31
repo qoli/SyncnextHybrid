@@ -22,7 +22,7 @@ enum HybridRemoteSourceAdmission: Equatable {
     case hlsVOD
     /// Finite MPEG-TS HLS whose PMT declares HEVC (stream_type 0x24).
     /// The temporary AetherEngine patch owns the seekable TS -> fMP4 path.
-    case hlsVODHEVCMPEGTS
+    case hlsVODHEVCMPEGTS(duration: Double)
     case hlsLive
     case aetherDefault(AetherDefaultReason)
 
@@ -40,7 +40,17 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     var requiresAetherHLSVODRemux: Bool {
-        self == .hlsVODHEVCMPEGTS
+        if case .hlsVODHEVCMPEGTS = self {
+            return true
+        }
+        return false
+    }
+
+    var avKitProxyDuration: Double? {
+        guard case .hlsVODHEVCMPEGTS(let duration) = self else {
+            return nil
+        }
+        return duration
     }
 
     static func classify(
@@ -159,6 +169,12 @@ enum HybridRemoteSourceAdmission: Equatable {
         guard media.hasEndList else {
             return .hlsLive
         }
+        let duration = media.segments.reduce(0) {
+            $0 + $1.duration
+        }
+        guard duration.isFinite, duration > 0 else {
+            return .aetherDefault(.invalidPlaylist)
+        }
         guard media.segments.first?.map == nil,
               let uri = media.segments.first?.resource.uri,
               let segmentURL = URL(
@@ -183,7 +199,7 @@ enum HybridRemoteSourceAdmission: Equatable {
                   MPEGTransportStreamCodecProbe.containsHEVC(data) else {
                 return .hlsVOD
             }
-            return .hlsVODHEVCMPEGTS
+            return .hlsVODHEVCMPEGTS(duration: duration)
         } catch {
             return .hlsVOD
         }
@@ -319,6 +335,23 @@ enum HybridRemoteSourceAdmission: Equatable {
     private struct PlaylistCandidate {
         let text: String
         let responseURL: URL
+    }
+}
+
+enum HybridProxyDurationPolicy {
+    static func duration(
+        admission: HybridRemoteSourceAdmission,
+        engineDuration: Double
+    ) throws -> Double {
+        guard admission.requiresAetherHLSVODRemux else {
+            return engineDuration
+        }
+        guard let duration = admission.avKitProxyDuration,
+              duration.isFinite,
+              duration > 0 else {
+            throw HybridPlaybackError.proxyDurationUnavailable
+        }
+        return duration
     }
 }
 
