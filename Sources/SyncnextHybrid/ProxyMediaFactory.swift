@@ -13,42 +13,68 @@ enum ProxyMediaFactory {
         }
 
         let asset = AVURLAsset(url: url)
-        let tracks = try await asset.loadTracks(withMediaType: .video)
+        async let videoTracks = asset.loadTracks(withMediaType: .video)
+        async let audioTracks = asset.loadTracks(withMediaType: .audio)
         let sourceDuration = try await asset.load(.duration)
-        guard let sourceTrack = tracks.first,
+        guard let sourceVideoTrack = try await videoTracks.first,
+              let sourceAudioTrack = try await audioTracks.first,
               sourceDuration.isNumeric,
               sourceDuration.seconds > 0 else {
             throw HybridPlaybackError.proxyAssetInvalid
         }
 
         let composition = AVMutableComposition()
-        guard let targetTrack = composition.addMutableTrack(
+        guard let targetVideoTrack = composition.addMutableTrack(
             withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ),
+        let targetAudioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
             preferredTrackID: kCMPersistentTrackID_Invalid
         ) else {
             throw HybridPlaybackError.proxyAssetInvalid
         }
-        let sourceRange = CMTimeRange(
-            start: .zero,
-            duration: sourceDuration
+        // A single sparse sample stretched across the whole title can pause
+        // itself at rates above 1x on tvOS. Repeat the tiny bundled clip so
+        // AVKit owns a dense, seekable transport timeline at every rate.
+        let targetDuration = CMTime(
+            seconds: max(1, duration),
+            preferredTimescale: 600
         )
-        try targetTrack.insertTimeRange(
-            sourceRange,
-            of: sourceTrack,
-            at: .zero
-        )
-        targetTrack.scaleTimeRange(
-            sourceRange,
-            toDuration: CMTime(
-                seconds: max(1, duration),
-                preferredTimescale: 600
+        var insertionTime = CMTime.zero
+        while insertionTime < targetDuration {
+            let remaining = CMTimeSubtract(targetDuration, insertionTime)
+            let chunkDuration = CMTimeMinimum(sourceDuration, remaining)
+            let sourceRange = CMTimeRange(
+                start: .zero,
+                duration: chunkDuration
             )
-        )
+            try targetVideoTrack.insertTimeRange(
+                sourceRange,
+                of: sourceVideoTrack,
+                at: insertionTime
+            )
+            try targetAudioTrack.insertTimeRange(
+                sourceRange,
+                of: sourceAudioTrack,
+                at: insertionTime
+            )
+            insertionTime = CMTimeAdd(insertionTime, chunkDuration)
+        }
 
         let item = AVPlayerItem(asset: composition)
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
         player.actionAtItemEnd = .pause
+        let readinessDeadline =
+            ProcessInfo.processInfo.systemUptime + 5
+        while item.status == .unknown,
+              ProcessInfo.processInfo.systemUptime < readinessDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        guard item.status == .readyToPlay else {
+            throw HybridPlaybackError.proxyAssetInvalid
+        }
         return player
     }
 }

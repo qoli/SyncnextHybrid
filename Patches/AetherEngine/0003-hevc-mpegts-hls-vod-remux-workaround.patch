@@ -1,0 +1,650 @@
+diff --git a/Sources/AetherEngine/AetherEngine.swift b/Sources/AetherEngine/AetherEngine.swift
+index c4574a7..b70023c 100644
+--- a/Sources/AetherEngine/AetherEngine.swift
++++ b/Sources/AetherEngine/AetherEngine.swift
+@@ -2120,24 +2120,30 @@ public final class AetherEngine: ObservableObject {
+             throw AetherEngineError.hlsPlaylistOnRawLivePath
+         }
+ 
+-        // AE#154: a non-live HLS playlist on the loopback path. FFmpeg (--disable-network) can never
+-        // demux it (see AVIOReaderError.hlsPlaylistOnVODPath); remote HLS is AVPlayer's native
+-        // domain, so reroute this load onto the nativeRemoteHLS bypass instead of surfacing the
+-        // former bare AVERROR_INVALIDDATA. loadedOptions flips so every downstream consumer
+-        // (audio-tap reader selection, seek paths) sees a genuine remote-HLS session.
++        // Temporary downstream workaround for AetherEngine#246: when the host explicitly chose the
++        // non-native path, preserve that decision and resolve finite MPEG-TS HLS through a time-seekable
++        // ingest reader. The normal nativeRemoteHLS=true path still bypasses this probe entirely.
+         if RemoteHLSMediaSelection.shouldReroute(failure: probeFailure, isCustomSource: isCustomSource),
+            case .url(let hlsURL) = source {
+-            EngineLog.emit("[AetherEngine] AE#154: HLS playlist on the VOD loopback path; rerouting to the native remote-HLS bypass", category: .engine)
+-            loadedOptions.nativeRemoteHLS = true
+-            do {
+-                try await loadRemoteHLS(url: hlsURL, options: loadedOptions, startPosition: startPosition)
+-            } catch is CancellationError {
+-                throw CancellationError()
+-            } catch {
+-                state = .error("Failed to load: \(error.localizedDescription)")
+-                throw error
+-            }
+-            return nil
++            EngineLog.emit(
++                "[AetherEngine] downstream workaround: finite HLS selected for seekable TS -> fMP4 remux",
++                category: .engine
++            )
++            var remuxOptions = loadedOptions
++            remuxOptions.nativeRemoteHLS = false
++            return try await load(
++                source: .custom(
++                    HLSVODIngestReader(
++                        playlistURL: hlsURL,
++                        httpHeaders: remuxOptions.httpHeaders
++                    ),
++                    formatHint: "mpegts"
++                ),
++                startPosition: startPosition,
++                options: remuxOptions,
++                audioSourceStreamIndex: audioSourceStreamIndex,
++                discTitleID: discTitleID
++            )
+         }
+ 
+         // Live fail-fast: a failed probe means the AVIOReader burned its full reconnect budget.
+@@ -2644,25 +2650,31 @@ public final class AetherEngine: ObservableObject {
+             // Superseded.
+             throw CancellationError()
+         } catch {
+-            // AE#246: the load-time probe failed for a reason that was not the HLS classification, so the
+-            // AE#154 check above saw an inconclusive failure and this load fell through to the loopback
+-            // path with no preopened demuxer. The session's own open is then the first one to read the
+-            // body, and it has now classified the source as remote HLS after all. Take the same reroute
+-            // rather than surfacing a terminal failure for a source AVPlayer can play. A full load()
+-            // restart (the #168 reroute's shape) is what clears the half-built loopback session; the
+-            // bypass runs no probe, so this cannot bounce back here a second time.
++            // The session open can be the first read that recognizes the HLS body. Preserve the same
++            // explicit non-native decision as the probe-time branch above.
+             if RemoteHLSMediaSelection.shouldReroute(failure: error, isCustomSource: isCustomSource),
+                case .url(let hlsURL) = source,
+                loadGeneration == gen {
+                 EngineLog.emit(
+-                    "[AetherEngine] AE#246: the loopback session's own open classified the source as HLS; "
+-                    + "taking the AE#154 reroute onto the native remote-HLS bypass",
++                    "[AetherEngine] downstream workaround: second open classified finite HLS; "
++                    + "restarting on seekable TS -> fMP4 remux",
+                     category: .engine
+                 )
+                 var rerouted = loadedOptions
+-                rerouted.nativeRemoteHLS = true
+-                _ = try await load(source: .url(hlsURL), startPosition: startPosition, options: rerouted)
+-                return nil
++                rerouted.nativeRemoteHLS = false
++                return try await load(
++                    source: .custom(
++                        HLSVODIngestReader(
++                            playlistURL: hlsURL,
++                            httpHeaders: rerouted.httpHeaders
++                        ),
++                        formatHint: "mpegts"
++                    ),
++                    startPosition: startPosition,
++                    options: rerouted,
++                    audioSourceStreamIndex: audioSourceStreamIndex,
++                    discTitleID: discTitleID
++                )
+             }
+             state = .error("Failed to load: \(error.localizedDescription)")
+             throw error
+diff --git a/Sources/AetherEngine/Demuxer/CustomIOReaderBridge.swift b/Sources/AetherEngine/Demuxer/CustomIOReaderBridge.swift
+index e0ae82f..dc5257d 100644
+--- a/Sources/AetherEngine/Demuxer/CustomIOReaderBridge.swift
++++ b/Sources/AetherEngine/Demuxer/CustomIOReaderBridge.swift
+@@ -15,6 +15,10 @@ final class CustomIOReaderBridge: AVIOProvider, @unchecked Sendable {
+     private var isFullyClosed = false
+     private(set) var isSeekable: Bool = true
+ 
++    var timeSeekableReader: TimeSeekableIOReader? {
++        reader as? TimeSeekableIOReader
++    }
++
+     var cumulativeBytesFetched: Int64 { 0 }  // custom readers don't track network bytes
+ 
+     /// #112 round 9: same demux-thread-only contract as AVIOReader's deadline. Armed by
+@@ -68,7 +72,8 @@ final class CustomIOReaderBridge: AVIOProvider, @unchecked Sendable {
+         context = ctx
+ 
+         // SEEK_SET to 0 is a no-op for seekable, refused by forward-only (returns negative).
+-        isSeekable = reader.seek(offset: 0, whence: 0) >= 0
++        isSeekable = timeSeekableReader != nil
++            || reader.seek(offset: 0, whence: 0) >= 0
+     }
+ 
+     func markClosed() {
+diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
+index ecd5dd2..7ad319b 100644
+--- a/Sources/AetherEngine/Demuxer/Demuxer.swift
++++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
+@@ -562,6 +562,11 @@ public final class Demuxer: @unchecked Sendable {
+     }
+ 
+     var duration: Double {
++        if let duration = (avioProvider as? CustomIOReaderBridge)?
++            .timeSeekableReader?.mediaDuration,
++           duration > 0 {
++            return duration
++        }
+         let container: Double = {
+             guard let ctx = formatContext else { return 0 }
+             let dur = ctx.pointee.duration
+@@ -1094,6 +1099,12 @@ public final class Demuxer: @unchecked Sendable {
+         accessLock.lock()
+         defer { accessLock.unlock() }
+         guard let ctx = formatContext else { return false }
++        if let reader = (avioProvider as? CustomIOReaderBridge)?.timeSeekableReader {
++            guard reader.seek(to: seconds) else { return false }
++            resetAfterTimeSeek(ctx)
++            lastReadClipIdx = -1
++            return true
++        }
+         let timestamp = Int64(seconds * Double(AV_TIME_BASE))
+         let ret = avformat_seek_file(ctx, -1, Int64.min, timestamp, Int64.max, 0)
+         if ret < 0 {
+@@ -1114,6 +1125,17 @@ public final class Demuxer: @unchecked Sendable {
+         guard let ctx = formatContext,
+               streamIndex >= 0,
+               streamIndex < Int32(ctx.pointee.nb_streams) else { return false }
++        if let reader = (avioProvider as? CustomIOReaderBridge)?.timeSeekableReader,
++           let stream = ctx.pointee.streams[Int(streamIndex)] {
++            let timeBase = stream.pointee.time_base
++            guard timeBase.num > 0, timeBase.den > 0 else { return false }
++            let seconds = Double(timestamp) * Double(timeBase.num)
++                / Double(timeBase.den)
++            guard reader.seek(to: max(0, seconds)) else { return false }
++            resetAfterTimeSeek(ctx)
++            lastReadClipIdx = -1
++            return true
++        }
+         let ret = avformat_seek_file(
+             ctx,
+             streamIndex,
+@@ -1133,6 +1155,15 @@ public final class Demuxer: @unchecked Sendable {
+         return ret >= 0
+     }
+ 
++    private func resetAfterTimeSeek(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
++        if let pb = ctx.pointee.pb {
++            avio_flush(pb)
++            pb.pointee.eof_reached = 0
++            pb.pointee.error = 0
++        }
++        avformat_flush(ctx)
++    }
++
+     /// #112 round 10: latched by the side reader once a timestamp positioning seek timed out or failed on this
+     /// container (index-less MPEG-TS: read_timestamp binary search is either wedged or broken). Later re-arms on
+     /// a reused demuxer skip straight to the byte estimate instead of paying the seek budget per positioning.
+diff --git a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
+new file mode 100644
+index 0000000..1673b08
+--- /dev/null
++++ b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
+@@ -0,0 +1,443 @@
++import CommonCrypto
++import Foundation
++
++/// Temporary downstream workaround for finite HEVC-in-MPEG-TS HLS.
++///
++/// The reader resolves one immutable ENDLIST playlist and exposes its segments
++/// as a blocking MPEG-TS stream. Unlike `HLSLiveIngestReader`, seeks restart the
++/// same source at the segment preceding the requested playlist time. Demuxer
++/// packet gating then discards frames before the exact target.
++final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
++    private struct ResolvedMedia {
++        let url: URL
++        let segments: [HLSMediaSegment]
++        let starts: [Double]
++        let duration: Double
++    }
++
++    private static let maximumBufferedBytes = 32 * 1024 * 1024
++    private static let maximumPlaylistBytes = 2 * 1024 * 1024
++    private static let maxConcurrentSegmentFetches = 4
++
++    private let playlistURL: URL
++    private let httpHeaders: [String: String]
++    private let session: URLSession
++    private let condition = NSCondition()
++    private let keyCacheLock = NSLock()
++    private var keyCache: [String: Data] = [:]
++
++    private var resolved: ResolvedMedia?
++    private var queue: [Data] = []
++    private var headOffset = 0
++    private var bufferedBytes = 0
++    private var bytePosition: Int64 = 0
++    private var generation: UInt64 = 0
++    private var started = false
++    private var finished = false
++    private var failed = false
++    private var closed = false
++    private var producer: Task<Void, Never>?
++
++    init(playlistURL: URL, httpHeaders: [String: String]) {
++        self.playlistURL = playlistURL
++        self.httpHeaders = httpHeaders
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.timeoutIntervalForRequest = 15
++        configuration.timeoutIntervalForResource = 45
++        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
++        configuration.urlCache = nil
++        session = URLSession(configuration: configuration)
++    }
++
++    var mediaDuration: Double {
++        condition.withLock { resolved?.duration ?? 0 }
++    }
++
++    func read(_ buffer: UnsafeMutablePointer<UInt8>?, size: Int32) -> Int32 {
++        guard let buffer, size > 0 else { return -1 }
++        startIfNeeded()
++        condition.lock()
++        defer { condition.unlock() }
++        while queue.isEmpty, !finished, !failed, !closed {
++            condition.wait()
++        }
++        guard !failed, !closed else { return -1 }
++        guard !queue.isEmpty else { return 0 }
++
++        let available = queue[0].count - headOffset
++        let count = min(available, Int(size))
++        queue[0].withUnsafeBytes { bytes in
++            guard let base = bytes.baseAddress else { return }
++            buffer.update(
++                from: base.assumingMemoryBound(to: UInt8.self)
++                    .advanced(by: headOffset),
++                count: count
++            )
++        }
++        headOffset += count
++        bufferedBytes -= count
++        bytePosition += Int64(count)
++        if headOffset == queue[0].count {
++            queue.removeFirst()
++            headOffset = 0
++        }
++        condition.broadcast()
++        return Int32(count)
++    }
++
++    /// Byte seeks are deliberately unsupported. SEEK_SET(0) is the capability
++    /// handshake used by `CustomIOReaderBridge`; real positioning crosses the
++    /// `TimeSeekableIOReader` seam in `Demuxer`.
++    func seek(offset: Int64, whence: Int32) -> Int64 {
++        if whence == SEEK_SET, offset == 0 { return 0 }
++        if whence == SEEK_CUR, offset == 0 {
++            return condition.withLock { bytePosition }
++        }
++        return -1
++    }
++
++    func seek(to seconds: Double) -> Bool {
++        guard seconds.isFinite, seconds >= 0 else { return false }
++        startIfNeeded()
++
++        condition.lock()
++        while resolved == nil, !failed, !closed {
++            condition.wait()
++        }
++        guard let resolved, !failed, !closed else {
++            condition.unlock()
++            return false
++        }
++        let containing = resolved.starts.lastIndex(where: { $0 <= seconds }) ?? 0
++        // A playlist need not declare independent segments. Starting one GOP
++        // earlier supplies the decoder with a random-access point; the engine's
++        // existing target gate drops frames before the requested time.
++        let startIndex = max(0, containing - 1)
++        let previous = producer
++        generation &+= 1
++        let currentGeneration = generation
++        queue.removeAll(keepingCapacity: true)
++        headOffset = 0
++        bufferedBytes = 0
++        bytePosition = 0
++        finished = false
++        failed = false
++        producer = Task.detached(priority: .userInitiated) { [self] in
++            await produce(
++                resolved: resolved,
++                startIndex: startIndex,
++                generation: currentGeneration
++            )
++        }
++        condition.broadcast()
++        condition.unlock()
++        previous?.cancel()
++
++        let targetText = String(format: "%.2f", seconds)
++        let originText = String(format: "%.2f", resolved.starts[startIndex])
++        EngineLog.emit(
++            "[HLSVODIngest] seek target=\(targetText)s "
++                + "segment=\(startIndex) origin=\(originText)s",
++            category: .engine
++        )
++        return true
++    }
++
++    func cancel() {
++        condition.lock()
++        failed = true
++        let task = producer
++        producer = nil
++        condition.broadcast()
++        condition.unlock()
++        task?.cancel()
++    }
++
++    func close() {
++        condition.lock()
++        guard !closed else {
++            condition.unlock()
++            return
++        }
++        closed = true
++        let task = producer
++        producer = nil
++        queue.removeAll()
++        bufferedBytes = 0
++        condition.broadcast()
++        condition.unlock()
++        task?.cancel()
++        session.invalidateAndCancel()
++    }
++
++    func makeIndependentReader() -> IOReader? {
++        HLSVODIngestReader(playlistURL: playlistURL, httpHeaders: httpHeaders)
++    }
++
++    private func startIfNeeded() {
++        condition.lock()
++        guard !started, !closed else {
++            condition.unlock()
++            return
++        }
++        started = true
++        generation &+= 1
++        let currentGeneration = generation
++        producer = Task.detached(priority: .userInitiated) { [self] in
++            do {
++                let media = try await resolveMedia()
++                let accepted = condition.withLock { () -> Bool in
++                    guard generation == currentGeneration, !closed else {
++                        return false
++                    }
++                    resolved = media
++                    condition.broadcast()
++                    return true
++                }
++                guard accepted else {
++                    return
++                }
++                let durationText = String(format: "%.2f", media.duration)
++                EngineLog.emit(
++                    "[HLSVODIngest] resolved finite MPEG-TS VOD segments=\(media.segments.count) "
++                        + "duration=\(durationText)s",
++                    category: .engine
++                )
++                await produce(
++                    resolved: media,
++                    startIndex: 0,
++                    generation: currentGeneration
++                )
++            } catch is CancellationError {
++            } catch {
++                fail(error, generation: currentGeneration)
++            }
++        }
++        condition.unlock()
++    }
++
++    private func produce(
++        resolved: ResolvedMedia,
++        startIndex: Int,
++        generation: UInt64
++    ) async {
++        do {
++            let remaining = Array(resolved.segments[startIndex...])
++            try await ingestSegmentBatch(
++                remaining,
++                mediaURL: resolved.url,
++                generation: generation
++            )
++            condition.withLock {
++                if self.generation == generation, !closed {
++                    finished = true
++                    producer = nil
++                    condition.broadcast()
++                }
++            }
++        } catch is CancellationError {
++        } catch {
++            fail(error, generation: generation)
++        }
++    }
++
++    private func ingestSegmentBatch(
++        _ segments: [HLSMediaSegment],
++        mediaURL: URL,
++        generation: UInt64
++    ) async throws {
++        let resolvedSegments: [(HLSMediaSegment, URL)] = try segments.map { segment in
++            guard let url = HLSPlaylistParser.resolve(uri: segment.uri, against: mediaURL) else {
++                throw HLSIngestError.playlistInvalid(reason: "unresolvable segment URI")
++            }
++            return (segment, url)
++        }
++
++        try await withThrowingTaskGroup(of: (Int, Data).self) { group in
++            var nextToSpawn = 0
++            var nextToCommit = 0
++            var ready: [Int: Data] = [:]
++
++            func spawn(_ index: Int) {
++                let item = resolvedSegments[index]
++                group.addTask {
++                    let bytes = try await self.fetch(item.1)
++                    guard let crypt = item.0.crypt else { return (index, bytes) }
++                    return (
++                        index,
++                        try await self.decrypt(bytes, crypt: crypt, baseURL: mediaURL)
++                    )
++                }
++            }
++
++            while nextToSpawn < resolvedSegments.count,
++                  nextToSpawn < Self.maxConcurrentSegmentFetches {
++                spawn(nextToSpawn)
++                nextToSpawn += 1
++            }
++            while nextToCommit < resolvedSegments.count {
++                try Task.checkCancellation()
++                guard let (index, bytes) = try await group.next() else { break }
++                ready[index] = bytes
++                while let head = ready.removeValue(forKey: nextToCommit) {
++                    if nextToCommit == 0,
++                       LiveSegmentFormat.classify(head) != .mpegts {
++                        throw HLSIngestError.unsupportedSegmentFormat
++                    }
++                    nextToCommit += 1
++                    guard append(head, generation: generation) else {
++                        group.cancelAll()
++                        return
++                    }
++                    while nextToSpawn < resolvedSegments.count,
++                          nextToSpawn < nextToCommit + Self.maxConcurrentSegmentFetches {
++                        spawn(nextToSpawn)
++                        nextToSpawn += 1
++                    }
++                }
++            }
++        }
++    }
++
++    private func append(_ data: Data, generation: UInt64) -> Bool {
++        condition.lock()
++        defer { condition.unlock() }
++        while self.generation == generation,
++              !closed,
++              bufferedBytes >= Self.maximumBufferedBytes {
++            condition.wait()
++        }
++        guard self.generation == generation, !closed else { return false }
++        queue.append(data)
++        bufferedBytes += data.count
++        condition.broadcast()
++        return true
++    }
++
++    private func fail(_ error: Error, generation: UInt64) {
++        condition.lock()
++        guard self.generation == generation, !closed else {
++            condition.unlock()
++            return
++        }
++        failed = true
++        producer = nil
++        condition.broadcast()
++        condition.unlock()
++        EngineLog.emit("[HLSVODIngest] terminal: \(error)", category: .engine)
++    }
++
++    private func resolveMedia() async throws -> ResolvedMedia {
++        let (root, rootURL) = try await fetchPlaylist(playlistURL)
++        let media: HLSMediaPlaylist
++        let mediaURL: URL
++        switch root {
++        case .media(let value):
++            media = value
++            mediaURL = rootURL
++        case .master(let master):
++            guard let best = master.variants.max(by: { $0.bandwidth < $1.bandwidth }),
++                  best.audioGroupID == nil,
++                  let url = HLSPlaylistParser.resolve(uri: best.uri, against: rootURL) else {
++                throw HLSIngestError.demuxedAudioNotSupported
++            }
++            let (selected, selectedURL) = try await fetchPlaylist(url)
++            guard case .media(let value) = selected else {
++                throw HLSIngestError.playlistInvalid(reason: "selected variant is not a media playlist")
++            }
++            media = value
++            mediaURL = selectedURL
++        }
++
++        guard media.hasEndList else {
++            throw HLSIngestError.playlistInvalid(reason: "finite VOD requires EXT-X-ENDLIST")
++        }
++        guard !media.hasMap else { throw HLSIngestError.unsupportedSegmentFormat }
++        guard !media.hasUnsupportedEncryption else {
++            throw HLSIngestError.encryptedNotSupported
++        }
++        var starts: [Double] = []
++        starts.reserveCapacity(media.segments.count)
++        var duration = 0.0
++        for segment in media.segments {
++            guard segment.duration.isFinite, segment.duration > 0 else {
++                throw HLSIngestError.playlistInvalid(reason: "segment duration must be positive")
++            }
++            starts.append(duration)
++            duration += segment.duration
++        }
++        return ResolvedMedia(
++            url: mediaURL,
++            segments: media.segments,
++            starts: starts,
++            duration: duration
++        )
++    }
++
++    private func makeRequest(_ url: URL) -> URLRequest {
++        var request = URLRequest(url: url)
++        for (field, value) in httpHeaders {
++            request.setValue(value, forHTTPHeaderField: field)
++        }
++        return request
++    }
++
++    private func fetchPlaylist(_ url: URL) async throws -> (HLSPlaylist, URL) {
++        let (data, response) = try await session.data(for: makeRequest(url))
++        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
++        guard (200..<300).contains(status) else {
++            throw HLSIngestError.playlistUnreachable(status: status)
++        }
++        guard data.count <= Self.maximumPlaylistBytes,
++              let text = String(data: data, encoding: .utf8) else {
++            throw HLSIngestError.playlistInvalid(reason: "playlist is not bounded UTF-8")
++        }
++        return (try HLSPlaylistParser.parse(text), response.url ?? url)
++    }
++
++    private func fetch(_ url: URL) async throws -> Data {
++        let (data, response) = try await session.data(for: makeRequest(url))
++        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
++        guard (200..<300).contains(status), !data.isEmpty else {
++            throw HLSIngestError.playlistUnreachable(status: status)
++        }
++        return data
++    }
++
++    private func decrypt(
++        _ ciphertext: Data,
++        crypt: HLSSegmentCrypt,
++        baseURL: URL
++    ) async throws -> Data {
++        guard let keyURL = HLSPlaylistParser.resolve(uri: crypt.keyURI, against: baseURL) else {
++            throw HLSIngestError.segmentDecryptFailed(reason: "unresolvable key URI")
++        }
++        let key: Data
++        if let cached = keyCacheLock.withLock({ keyCache[keyURL.absoluteString] }) {
++            key = cached
++        } else {
++            let fetched = try await fetch(keyURL)
++            guard fetched.count == kCCKeySizeAES128 else {
++                throw HLSIngestError.segmentDecryptFailed(reason: "key length is not 16 bytes")
++            }
++            keyCacheLock.withLock { keyCache[keyURL.absoluteString] = fetched }
++            key = fetched
++        }
++        guard let plaintext = HLSSegmentDecryptor.decryptAES128CBC(
++            ciphertext,
++            key: key,
++            iv: crypt.iv
++        ) else {
++            throw HLSIngestError.segmentDecryptFailed(reason: "AES-128-CBC failed")
++        }
++        return plaintext
++    }
++}
++
++private extension NSCondition {
++    func withLock<T>(_ body: () -> T) -> T {
++        lock()
++        defer { unlock() }
++        return body()
++    }
++}
+diff --git a/Sources/AetherEngine/IO/IOReader.swift b/Sources/AetherEngine/IO/IOReader.swift
+index dc6a45d..395d3a9 100644
+--- a/Sources/AetherEngine/IO/IOReader.swift
++++ b/Sources/AetherEngine/IO/IOReader.swift
+@@ -17,6 +17,13 @@ public protocol IOReader: AnyObject, Sendable {
+     func makeIndependentReader() -> IOReader?
+ }
+ 
++/// Internal seam for finite segmented sources whose natural seek axis is time,
++/// not a synthetic concatenated byte offset.
++protocol TimeSeekableIOReader: IOReader {
++    var mediaDuration: Double { get }
++    func seek(to seconds: Double) -> Bool
++}
++
+ public extension IOReader {
+     func cancel() {}
+     func makeIndependentReader() -> IOReader? { nil }

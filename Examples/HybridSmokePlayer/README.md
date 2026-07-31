@@ -150,6 +150,7 @@ Supported environment values:
 | `HYBRID_SMOKE_URL` | Required when any `HYBRID_SMOKE_*` automation value is present |
 | `HYBRID_SMOKE_HEADERS_JSON` | Optional JSON object whose values must all be strings |
 | `HYBRID_SMOKE_SEEK_SECONDS` | Optional; fixed contract default is `10` |
+| `HYBRID_SMOKE_RATE` | Optional playback rate in `(0, 4]`; fixed contract default is `1` |
 | `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion; valid only in `hybridAVKit` mode |
 
 Missing/unknown mode and `aetherEngine` combined with an expected Hybrid route

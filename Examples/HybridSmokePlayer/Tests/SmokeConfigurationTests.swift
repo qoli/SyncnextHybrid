@@ -47,6 +47,7 @@ final class SmokeConfigurationTests: XCTestCase {
                 SmokeConfiguration.headersEnvironmentKey:
                     #"{"Authorization":"Bearer secret"}"#,
                 SmokeConfiguration.seekEnvironmentKey: "12.5",
+                SmokeConfiguration.rateEnvironmentKey: "2.0",
                 SmokeConfiguration.expectedRouteEnvironmentKey:
                     "avKitProxy",
             ])
@@ -54,6 +55,7 @@ final class SmokeConfigurationTests: XCTestCase {
 
         XCTAssertEqual(configuration.mode, .hybridAVKit)
         XCTAssertEqual(configuration.seekSeconds, 12.5)
+        XCTAssertEqual(configuration.playbackRate, 2.0)
         XCTAssertEqual(
             configuration.httpHeaders,
             ["Authorization": "Bearer secret"]
@@ -125,6 +127,23 @@ final class SmokeConfigurationTests: XCTestCase {
             XCTAssertEqual(
                 error as? SmokeConfigurationError,
                 .invalidMode("automatic")
+            )
+        }
+    }
+
+    func testInvalidPlaybackRateFailsExplicitly() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey:
+                    SmokePlaybackMode.hybridAVKit.rawValue,
+                SmokeConfiguration.urlEnvironmentKey:
+                    "https://example.test/video.mp4",
+                SmokeConfiguration.rateEnvironmentKey: "0",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SmokeConfigurationError,
+                .invalidPlaybackRate
             )
         }
     }

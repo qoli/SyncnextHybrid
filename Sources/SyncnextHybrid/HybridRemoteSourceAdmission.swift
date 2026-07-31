@@ -20,12 +20,15 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     case hlsVOD
+    /// Finite MPEG-TS HLS whose PMT declares HEVC (stream_type 0x24).
+    /// The temporary AetherEngine patch owns the seekable TS -> fMP4 path.
+    case hlsVODHEVCMPEGTS
     case hlsLive
     case aetherDefault(AetherDefaultReason)
 
     var isConfirmedHLS: Bool {
         switch self {
-        case .hlsVOD, .hlsLive:
+        case .hlsVOD, .hlsVODHEVCMPEGTS, .hlsLive:
             true
         case .aetherDefault:
             false
@@ -34,6 +37,10 @@ enum HybridRemoteSourceAdmission: Equatable {
 
     var isLiveHLS: Bool {
         self == .hlsLive
+    }
+
+    var requiresAetherHLSVODRemux: Bool {
+        self == .hlsVODHEVCMPEGTS
     }
 
     static func classify(
@@ -78,7 +85,12 @@ enum HybridRemoteSourceAdmission: Equatable {
             guard !media.segments.isEmpty else {
                 return .aetherDefault(.invalidPlaylist)
             }
-            return media.hasEndList ? .hlsVOD : .hlsLive
+            return await classifyMedia(
+                media,
+                responseURL: rootCandidate.responseURL,
+                httpHeaders: httpHeaders,
+                session: session
+            )
 
         case .master(let master):
             guard let variant = master.variants.max(
@@ -122,7 +134,12 @@ enum HybridRemoteSourceAdmission: Equatable {
                     !media.segments.isEmpty else {
                     return .aetherDefault(.variantUnavailable)
                 }
-                return media.hasEndList ? .hlsVOD : .hlsLive
+                return await classifyMedia(
+                    media,
+                    responseURL: variantCandidate.responseURL,
+                    httpHeaders: httpHeaders,
+                    session: session
+                )
             } catch {
                 return .aetherDefault(.variantUnavailable)
             }
@@ -131,6 +148,46 @@ enum HybridRemoteSourceAdmission: Equatable {
 
     private static let maximumPlaylistBytes = 2 * 1024 * 1024
     private static let maximumLeadingWhitespaceBytes = 1024
+    private static let codecProbeBytes = 512 * 1024
+
+    private static func classifyMedia(
+        _ media: HLSMediaDocument,
+        responseURL: URL,
+        httpHeaders: [String: String],
+        session: URLSession
+    ) async -> Self {
+        guard media.hasEndList else {
+            return .hlsLive
+        }
+        guard media.segments.first?.map == nil,
+              let uri = media.segments.first?.resource.uri,
+              let segmentURL = URL(
+                  string: uri,
+                  relativeTo: responseURL
+              )?.absoluteURL else {
+            return .hlsVOD
+        }
+
+        var request = URLRequest(url: segmentURL)
+        for (name, value) in httpHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        request.setValue(
+            "bytes=0-\(codecProbeBytes - 1)",
+            forHTTPHeaderField: "Range"
+        )
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  MPEGTransportStreamCodecProbe.containsHEVC(data) else {
+                return .hlsVOD
+            }
+            return .hlsVODHEVCMPEGTS
+        } catch {
+            return .hlsVOD
+        }
+    }
 
     private static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -278,12 +335,92 @@ enum HybridPlaybackLoadOptions {
         LoadOptions(
             httpHeaders: request.httpHeaders,
             isLive: admission.isLiveHLS,
-            nativeRemoteHLS: admission.isConfirmedHLS,
+            nativeRemoteHLS:
+                admission.isConfirmedHLS
+                    && !admission.requiresAetherHLSVODRemux,
             preferredAudioLanguages: request.preferredAudioLanguages,
             preferredSubtitleLanguages:
                 request.preferredSubtitleLanguages,
             externalSubtitles: externalSubtitles,
             autoplay: false
         )
+    }
+}
+
+/// Bounded PMT inspection used only by the disposable HEVC MPEG-TS HLS
+/// workaround. It never guesses from a URL suffix or MIME type.
+enum MPEGTransportStreamCodecProbe {
+    private static let packetSize = 188
+
+    static func containsHEVC(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        guard let syncOffset = (0..<min(packetSize, bytes.count)).first(
+            where: { offset in
+                offset + packetSize * 2 < bytes.count
+                    && bytes[offset] == 0x47
+                    && bytes[offset + packetSize] == 0x47
+                    && bytes[offset + packetSize * 2] == 0x47
+            }
+        ) else {
+            return false
+        }
+
+        var packetStart = syncOffset
+        while packetStart + packetSize <= bytes.count {
+            if packetContainsHEVC(
+                bytes,
+                packetStart: packetStart
+            ) {
+                return true
+            }
+            packetStart += packetSize
+        }
+        return false
+    }
+
+    private static func packetContainsHEVC(
+        _ bytes: [UInt8],
+        packetStart: Int
+    ) -> Bool {
+        guard bytes[packetStart] == 0x47,
+              bytes[packetStart + 1] & 0x40 != 0 else {
+            return false
+        }
+        let adaptationControl = (bytes[packetStart + 3] >> 4) & 0x03
+        guard adaptationControl == 1 || adaptationControl == 3 else {
+            return false
+        }
+        var payload = packetStart + 4
+        if adaptationControl == 3 {
+            payload += 1 + Int(bytes[payload])
+        }
+        let packetEnd = packetStart + packetSize
+        guard payload < packetEnd else {
+            return false
+        }
+        payload += 1 + Int(bytes[payload])
+        guard payload + 12 <= packetEnd,
+              bytes[payload] == 0x02 else {
+            return false
+        }
+
+        let sectionLength =
+            (Int(bytes[payload + 1] & 0x0F) << 8)
+                | Int(bytes[payload + 2])
+        let sectionEnd = min(packetEnd, payload + 3 + sectionLength - 4)
+        let programInfoLength =
+            (Int(bytes[payload + 10] & 0x0F) << 8)
+                | Int(bytes[payload + 11])
+        var stream = payload + 12 + programInfoLength
+        while stream + 5 <= sectionEnd {
+            if bytes[stream] == 0x24 {
+                return true
+            }
+            let infoLength =
+                (Int(bytes[stream + 3] & 0x0F) << 8)
+                    | Int(bytes[stream + 4])
+            stream += 5 + infoLength
+        }
+        return false
     }
 }

@@ -71,6 +71,32 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         XCTAssertTrue(admission.isLiveHLS)
     }
 
+    func testFiniteHEVCTransportStreamUsesAetherRemuxPath()
+        async throws
+    {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let url = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/hevc-vod")
+        )
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"],
+            session: session
+        )
+
+        XCTAssertEqual(admission, .hlsVODHEVCMPEGTS)
+        let request = try HybridPlaybackRequest(url: url)
+        let options = HybridPlaybackLoadOptions.make(
+            request: request,
+            externalSubtitles: [],
+            admission: admission
+        )
+        XCTAssertFalse(options.nativeRemoteHLS)
+        XCTAssertFalse(options.isLive)
+    }
+
     func testM3U8SuffixWithBinaryBodyFallsBackToAether()
         async throws
     {
@@ -270,6 +296,18 @@ private final class HybridAdmissionFixtureURLProtocol:
                 segment-live.ts
                 """.utf8
             )
+        case "hevc-vod":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:6
+                #EXTINF:6,
+                hevc-segment.ts
+                #EXT-X-ENDLIST
+                """.utf8
+            )
+        case "hevc-segment.ts":
+            hevcTransportStreamFixture()
         case "malformed":
             Data(
                 """
@@ -285,5 +323,34 @@ private final class HybridAdmissionFixtureURLProtocol:
         default:
             Data()
         }
+    }
+
+    private func hevcTransportStreamFixture() -> Data {
+        var bytes = [UInt8](repeating: 0xFF, count: 188 * 3)
+        for packet in 0..<3 {
+            bytes[packet * 188] = 0x47
+            bytes[packet * 188 + 3] = 0x10
+        }
+        bytes[1] = 0x40
+        bytes[2] = 0x64
+        bytes[4] = 0
+        bytes[5] = 0x02
+        bytes[6] = 0xB0
+        bytes[7] = 18
+        bytes[8] = 0
+        bytes[9] = 1
+        bytes[10] = 0xC1
+        bytes[11] = 0
+        bytes[12] = 0
+        bytes[13] = 0xE1
+        bytes[14] = 0
+        bytes[15] = 0xF0
+        bytes[16] = 0
+        bytes[17] = 0x24
+        bytes[18] = 0xE1
+        bytes[19] = 1
+        bytes[20] = 0xF0
+        bytes[21] = 0
+        return Data(bytes)
     }
 }

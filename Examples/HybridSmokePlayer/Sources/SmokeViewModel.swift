@@ -278,6 +278,10 @@ final class SmokeViewModel: ObservableObject {
                     SmokeEventEmitter.number(
                         configuration.seekSeconds
                     ),
+                "playback_rate":
+                    SmokeEventEmitter.number(
+                        Double(configuration.playbackRate)
+                    ),
                 "expected_route":
                     configuration.expectedRoute?.rawValue
                     ?? "observe",
@@ -380,8 +384,9 @@ final class SmokeViewModel: ObservableObject {
         runState = .checkingStartup
         statusMessage =
             "Requiring 2 seconds of direct AetherEngine media progress"
-        aetherRequestedRate = 1
+        aetherRequestedRate = configuration.playbackRate
         engine.play()
+        engine.setRate(configuration.playbackRate)
         emitter.emit(
             "play_requested",
             metrics: emitter.metrics(
@@ -454,8 +459,9 @@ final class SmokeViewModel: ObservableObject {
         runState = .checkingPostSeek
         statusMessage =
             "Requiring 2 seconds of post-seek AetherEngine progress"
-        aetherRequestedRate = 1
+        aetherRequestedRate = configuration.playbackRate
         engine.play()
+        engine.setRate(configuration.playbackRate)
         let postSeekAdvance = try await requireAetherProgress(
             engine,
             minimumAdvance:
@@ -542,6 +548,7 @@ final class SmokeViewModel: ObservableObject {
         runState = .checkingStartup
         statusMessage = "Requiring 2 seconds of authoritative media progress"
         playbackSession.play()
+        playbackSession.setRate(configuration.playbackRate)
         emitter.emit(
             "play_requested",
             metrics: emitter.metrics(for: playbackSession.snapshot)
@@ -603,6 +610,7 @@ final class SmokeViewModel: ObservableObject {
                 playbackSession,
                 target: configuration.seekSeconds
             )
+            playbackSession.setRate(configuration.playbackRate)
         } else {
             try await playbackSession.seek(
                 to: configuration.seekSeconds

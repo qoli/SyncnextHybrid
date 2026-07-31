@@ -24,6 +24,15 @@ final class HybridProxyFeedbackGateTests: XCTestCase {
         XCTAssertTrue(gate.shouldForwardRateObservation(0))
     }
 
+    func testUnmatchedObservationDoesNotDiscardDelayedMirror() {
+        let gate = HybridProxyFeedbackGate()
+
+        gate.performMirroredRateChange(to: 0) {}
+
+        XCTAssertTrue(gate.shouldForwardRateObservation(1))
+        XCTAssertFalse(gate.shouldForwardRateObservation(0))
+    }
+
     func testAutomaticPauseDuringMirroredSeekIsNotForwarded() {
         let gate = HybridProxyFeedbackGate()
 

@@ -24,15 +24,18 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let urlEnvironmentKey = "HYBRID_SMOKE_URL"
     static let headersEnvironmentKey = "HYBRID_SMOKE_HEADERS_JSON"
     static let seekEnvironmentKey = "HYBRID_SMOKE_SEEK_SECONDS"
+    static let rateEnvironmentKey = "HYBRID_SMOKE_RATE"
     static let expectedRouteEnvironmentKey =
         "HYBRID_SMOKE_EXPECTED_ROUTE"
     static let environmentPrefix = "HYBRID_SMOKE_"
     static let defaultSeekSeconds = 10.0
+    static let defaultPlaybackRate: Float = 1
 
     let mode: SmokePlaybackMode
     let sourceURL: URL
     let httpHeaders: [String: String]
     let seekSeconds: Double
+    let playbackRate: Float
     let expectedRoute: SmokeExpectedRoute?
 
     var displaySource: String {
@@ -71,6 +74,9 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawSeekSeconds:
                 environment[seekEnvironmentKey]
                 ?? String(defaultSeekSeconds),
+            rawPlaybackRate:
+                environment[rateEnvironmentKey]
+                ?? String(defaultPlaybackRate),
             rawExpectedRoute:
                 environment[expectedRouteEnvironmentKey]
         )
@@ -87,6 +93,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawURL: rawURL,
             rawHeaders: rawHeaders,
             rawSeekSeconds: rawSeekSeconds,
+            rawPlaybackRate: String(defaultPlaybackRate),
             rawExpectedRoute: nil
         )
     }
@@ -96,6 +103,7 @@ struct SmokeConfiguration: Sendable, Equatable {
         rawURL: String,
         rawHeaders: String,
         rawSeekSeconds: String,
+        rawPlaybackRate: String,
         rawExpectedRoute: String?
     ) throws -> SmokeConfiguration {
         guard let mode = SmokePlaybackMode(rawValue: rawMode) else {
@@ -104,6 +112,7 @@ struct SmokeConfiguration: Sendable, Equatable {
         let sourceURL = try parseURL(rawURL)
         let headers = try parseHeaders(rawHeaders)
         let seekSeconds = try parseSeekSeconds(rawSeekSeconds)
+        let playbackRate = try parsePlaybackRate(rawPlaybackRate)
 
         let expectedRoute: SmokeExpectedRoute?
         if let rawExpectedRoute {
@@ -126,6 +135,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             sourceURL: sourceURL,
             httpHeaders: headers,
             seekSeconds: seekSeconds,
+            playbackRate: playbackRate,
             expectedRoute: expectedRoute
         )
     }
@@ -204,6 +214,21 @@ struct SmokeConfiguration: Sendable, Equatable {
         }
         return seconds
     }
+
+    private static func parsePlaybackRate(
+        _ rawValue: String
+    ) throws -> Float {
+        let value = rawValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let rate = Float(value),
+              rate.isFinite,
+              rate > 0,
+              rate <= 4 else {
+            throw SmokeConfigurationError.invalidPlaybackRate
+        }
+        return rate
+    }
 }
 
 enum SmokeConfigurationError:
@@ -218,6 +243,7 @@ enum SmokeConfigurationError:
     case invalidMode(String)
     case invalidHeadersJSON
     case invalidSeekSeconds
+    case invalidPlaybackRate
     case invalidExpectedRoute(String)
     case expectedRouteRequiresHybrid
 
@@ -235,6 +261,8 @@ enum SmokeConfigurationError:
             "HTTP headers must be a JSON object with string values"
         case .invalidSeekSeconds:
             "Seek seconds must be finite and greater than zero"
+        case .invalidPlaybackRate:
+            "Playback rate must be finite, greater than zero, and at most 4"
         case .invalidExpectedRoute(let value):
             "Expected route must be nativeAVPlayer or avKitProxy, not \(value)"
         case .expectedRouteRequiresHybrid:
