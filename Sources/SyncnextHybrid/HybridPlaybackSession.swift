@@ -21,22 +21,45 @@ public final class HybridPlaybackSession:
     public var hlsProxyServerObservation:
         HybridHLSProxyServerObservation?
     {
-        guard avPlayer === proxyPlayer else {
+        guard let proxyContext,
+              avPlayer === proxyContext.player else {
             return nil
         }
-        let state = proxyTimeline.state
+        let state = proxyContext.timeline.state
         return HybridHLSProxyServerObservation(
             seekGeneration: state.seekGeneration,
             resolvedSegmentIndices: state.resolvedSegmentIndices
         )
     }
 
+    private struct ProxyContext {
+        let timeline: HybridHLSTimelineProxy
+        let player: AVPlayer
+        let duration: Double
+    }
+
     private let engine: AetherEngine
     private let surface: AetherPlayerView
-    private let proxyTimeline: HybridHLSTimelineProxy
-    private let proxyPlayer: AVPlayer
-    private let proxyDuration: Double
+    private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
+    private var proxyTimeline: HybridHLSTimelineProxy {
+        guard let proxyContext else {
+            preconditionFailure("Proxy timeline requested by native AVPlayer route")
+        }
+        return proxyContext.timeline
+    }
+    private var proxyPlayer: AVPlayer {
+        guard let proxyContext else {
+            preconditionFailure("Proxy player requested by native AVPlayer route")
+        }
+        return proxyContext.player
+    }
+    private var proxyDuration: Double {
+        guard let proxyContext else {
+            preconditionFailure("Proxy duration requested by native AVPlayer route")
+        }
+        return proxyContext.duration
+    }
     private let proxyDiagnosticsID = String(
         UUID().uuidString.prefix(8)
     )
@@ -122,39 +145,44 @@ public final class HybridPlaybackSession:
             throw HybridPlaybackError.pureAudioUnsupported
         }
 
-        let proxyDuration = try HybridProxyDurationPolicy.duration(
-            admission: admission,
-            engineDuration: engine.duration
-        )
-        self.proxyDuration = proxyDuration
-        let timeline = try await ProxyMediaFactory.makeTimeline(
-            duration: proxyDuration,
-            initialPosition: request.initialPosition ?? 0,
-            initialBufferedThrough: engine.bufferedPosition
-        )
-        proxyTimeline = timeline
-        proxyPlayer = timeline.player
+        let initialRoute: HybridPlaybackRoute
         if let nativePlayer = engine.currentAVPlayer,
            !forceAVKitProxy {
+            proxyContext = nil
             avPlayer = nativePlayer
+            initialRoute = .nativeAVPlayer
             engine.unbind(view: surface)
             lastNativePlayerIdentity = ObjectIdentifier(nativePlayer)
         } else {
-            avPlayer = proxyPlayer
+            let proxyDuration = try HybridProxyDurationPolicy.duration(
+                admission: admission,
+                engineDuration: engine.duration
+            )
+            let timeline = try await ProxyMediaFactory.makeTimeline(
+                duration: proxyDuration,
+                initialPosition: request.initialPosition ?? 0,
+                initialBufferedThrough: engine.bufferedPosition
+            )
+            let context = ProxyContext(
+                timeline: timeline,
+                player: timeline.player,
+                duration: proxyDuration
+            )
+            proxyContext = context
+            avPlayer = context.player
+            initialRoute = .avKitProxy
             lastNativePlayerIdentity = nil
         }
         snapshot = Self.makeSnapshot(
             engine: engine,
-            route: forceAVKitProxy || engine.currentAVPlayer == nil
-                ? .avKitProxy
-                : .nativeAVPlayer,
-            proxyState: timeline.state,
+            route: initialRoute,
+            proxyState: proxyContext?.timeline.state,
             nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
 
         super.init()
-        proxyTimeline.setEventHandler { [weak self] event in
+        proxyContext?.timeline.setEventHandler { [weak self] event in
             self?.handleProxyServerEvent(event)
         }
         installObservers()
@@ -205,30 +233,25 @@ public final class HybridPlaybackSession:
         timeToSeekAfterUserNavigatedFrom oldTime: CMTime,
         to targetTime: CMTime
     ) -> CMTime {
+        guard !stopped,
+              attachedController === playerViewController,
+              snapshot.route == .avKitProxy,
+              let proxyContext else {
+            return targetTime
+        }
         proxyDiagnostics(
             "navigation-target-received",
             "old=\(oldTime.seconds)",
             "target=\(targetTime.seconds)",
             "engineTime=\(engine.currentTime)",
-            "proxyTime=\(proxyPlayer.currentTime().seconds)",
+            "proxyTime=\(proxyContext.player.currentTime().seconds)",
             "duration=\(engine.duration)",
             "requestedRate=\(requestedRate)"
         )
-        guard !stopped,
-              attachedController === playerViewController,
-              snapshot.route == .avKitProxy else {
-            proxyDiagnostics(
-                "navigation-target-ignored",
-                "stopped=\(stopped)",
-                "controllerMatches=\(attachedController === playerViewController)",
-                "route=\(snapshot.route)"
-            )
-            return targetTime
-        }
         guard oldTime.seconds.isFinite,
               targetTime.seconds.isFinite,
-              proxyDuration.isFinite,
-              proxyDuration > 0 else {
+              proxyContext.duration.isFinite,
+              proxyContext.duration > 0 else {
             proxyDiagnostics(
                 "navigation-target-rejected",
                 "reason=invalid-time-or-duration"
@@ -236,17 +259,17 @@ public final class HybridPlaybackSession:
             return targetTime
         }
 
-        let boundedOld = max(0, min(oldTime.seconds, proxyDuration))
+        let boundedOld = max(0, min(oldTime.seconds, proxyContext.duration))
         let boundedTarget = max(
             0,
-            min(targetTime.seconds, proxyDuration)
+            min(targetTime.seconds, proxyContext.duration)
         )
         // AVKit asks for its final user-selected time before it performs the
         // client seek. This is the deliberate fast path: establish the same
         // authoritative Server generation and waitingToPlay state, but send
         // Aether the operation directly from the AVKit UI callback instead of
         // reflecting it back through the Server's seekRequested event.
-        let generation = proxyTimeline.prepareSeek(
+        let generation = proxyContext.timeline.prepareSeek(
             to: boundedTarget,
             emitsSeekRequest: false
         )
@@ -254,7 +277,7 @@ public final class HybridPlaybackSession:
             "avkit-seek-projected",
             "generation=\(generation)",
             "target=\(boundedTarget)",
-            "serverPhase=\(proxyTimeline.state.phase)"
+            "serverPhase=\(proxyContext.timeline.state.phase)"
         )
         forwardProxySeekToAether(
             HybridProxyNavigation(
@@ -272,17 +295,23 @@ public final class HybridPlaybackSession:
         willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime,
         to targetTime: CMTime
     ) {
+        guard !stopped,
+              attachedController === playerViewController,
+              snapshot.route == .avKitProxy,
+              let proxyContext else {
+            return
+        }
         // Completion observation only. The operation was already accepted in
         // timeToSeekAfterUserNavigatedFrom, before AVKit began its HLS seek.
         proxyDiagnostics(
             "navigation-will-resume",
             "old=\(oldTime.seconds)",
             "target=\(targetTime.seconds)",
-            "serverGeneration=\(proxyTimeline.state.seekGeneration)",
-            "serverPhase=\(proxyTimeline.state.phase)"
+            "serverGeneration=\(proxyContext.timeline.state.seekGeneration)",
+            "serverPhase=\(proxyContext.timeline.state.phase)"
         )
         markAVKitProxyClientSeekCompleted(
-            generation: proxyTimeline.state.seekGeneration
+            generation: proxyContext.timeline.state.seekGeneration
         )
     }
 
@@ -408,8 +437,8 @@ public final class HybridPlaybackSession:
         proxyNavigationTasks.removeAll()
         detach()
         engine.stop()
-        proxyPlayer.pause()
-        proxyTimeline.stop()
+        proxyContext?.player.pause()
+        proxyContext?.timeline.stop()
         eventContinuation.finish()
     }
 
@@ -519,39 +548,41 @@ public final class HybridPlaybackSession:
             }
             .store(in: &observations)
 
-        proxyRateObservation = proxyPlayer.observe(
-            \.rate,
-            options: [.new]
-        ) { [weak self] _, change in
-            guard let rate = change.newValue else {
-                return
-            }
-            Task { @MainActor in
-                guard let self else {
+        if let proxyContext {
+            proxyRateObservation = proxyContext.player.observe(
+                \.rate,
+                options: [.new]
+            ) { [weak self] _, change in
+                guard let rate = change.newValue else {
                     return
                 }
-                self.proxyDiagnostics(
-                    "rate-observed",
-                    "rate=\(rate)",
-                    "enginePhase=\(self.engine.playbackPhase)",
-                    "engineTime=\(self.engine.currentTime)",
-                    "proxyTime=\(self.proxyPlayer.currentTime().seconds)",
-                    "requestedRate=\(self.requestedRate)"
-                )
-                guard self.snapshot.route == .avKitProxy else {
-                    return
-                }
-                if rate == 0,
-                   self.proxyPlayer.timeControlStatus
-                    == .waitingToPlayAtSpecifiedRate {
+                Task { @MainActor in
+                    guard let self else {
+                        return
+                    }
                     self.proxyDiagnostics(
-                        "rate-forward-ignored",
-                        "reason=waiting-to-play",
-                        "rate=\(rate)"
+                        "rate-observed",
+                        "rate=\(rate)",
+                        "enginePhase=\(self.engine.playbackPhase)",
+                        "engineTime=\(self.engine.currentTime)",
+                        "proxyTime=\(proxyContext.player.currentTime().seconds)",
+                        "requestedRate=\(self.requestedRate)"
                     )
-                    return
+                    guard self.snapshot.route == .avKitProxy else {
+                        return
+                    }
+                    if rate == 0,
+                       proxyContext.player.timeControlStatus
+                        == .waitingToPlayAtSpecifiedRate {
+                        self.proxyDiagnostics(
+                            "rate-forward-ignored",
+                            "reason=waiting-to-play",
+                            "rate=\(rate)"
+                        )
+                        return
+                    }
+                    proxyContext.timeline.acceptClientRate(rate)
                 }
-                self.proxyTimeline.acceptClientRate(rate)
             }
         }
 
@@ -575,10 +606,15 @@ public final class HybridPlaybackSession:
             lastNativePlayerIdentity = newIdentity
             avPlayer = player
             newRoute = .nativeAVPlayer
-        } else {
+        } else if let proxyContext {
             lastNativePlayerIdentity = nil
-            avPlayer = proxyPlayer
+            avPlayer = proxyContext.player
             newRoute = .avKitProxy
+        } else {
+            // A native session owns no Proxy Server. A transient nil player
+            // publication during teardown or item replacement must not invent
+            // a proxy route that was never constructed.
+            return
         }
         if newRoute != .avKitProxy {
             proxyNavigationTasks.values.forEach { $0.cancel() }
@@ -1062,12 +1098,17 @@ public final class HybridPlaybackSession:
         guard !stopped else {
             return
         }
+        let route: HybridPlaybackRoute
+        if let proxyContext,
+           avPlayer === proxyContext.player {
+            route = .avKitProxy
+        } else {
+            route = .nativeAVPlayer
+        }
         let updated = Self.makeSnapshot(
             engine: engine,
-            route: avPlayer === proxyPlayer
-                ? .avKitProxy
-                : .nativeAVPlayer,
-            proxyState: proxyTimeline.state,
+            route: route,
+            proxyState: proxyContext?.timeline.state,
             nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
@@ -1081,24 +1122,37 @@ public final class HybridPlaybackSession:
     private static func makeSnapshot(
         engine: AetherEngine,
         route: HybridPlaybackRoute,
-        proxyState: HybridHLSTimelineState,
+        proxyState: HybridHLSTimelineState?,
         nativeRate: Float,
         audioSelectionRevision: UInt64
     ) -> HybridPlaybackSnapshot {
-        HybridPlaybackSnapshot(
-            phase: route == .avKitProxy
-                ? proxyState.phase
-                : mapPhase(engine.playbackPhase),
+        let phase: HybridPlaybackPhase
+        let currentTime: Double
+        let duration: Double
+        let rate: Float
+        switch route {
+        case .nativeAVPlayer:
+            phase = mapPhase(engine.playbackPhase)
+            currentTime = engine.currentTime
+            duration = engine.duration
+            rate = nativeRate
+        case .avKitProxy:
+            guard let proxyState else {
+                preconditionFailure(
+                    "AVKit Proxy snapshot requires a Proxy Server state"
+                )
+            }
+            phase = proxyState.phase
+            currentTime = proxyState.currentTime
+            duration = proxyState.duration
+            rate = proxyState.rate
+        }
+        return HybridPlaybackSnapshot(
+            phase: phase,
             route: route,
-            currentTime: route == .avKitProxy
-                ? proxyState.currentTime
-                : engine.currentTime,
-            duration: route == .avKitProxy
-                ? proxyState.duration
-                : engine.duration,
-            rate: route == .avKitProxy
-                ? proxyState.rate
-                : nativeRate,
+            currentTime: currentTime,
+            duration: duration,
+            rate: rate,
             audioSelectionRevision: audioSelectionRevision,
             selectedAudioTrackID: engine.activeAudioTrackIndex,
             selectedSubtitleTrackID: engine.activeSubtitleTrackIndex,
