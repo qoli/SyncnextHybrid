@@ -82,6 +82,17 @@ enum ProxyMediaFactory {
         )
 
         let item = AVPlayerItem(asset: composition)
+        let videoItemTracks = item.tracks.filter {
+            $0.assetTrack?.mediaType == .video
+        }
+        for videoItemTrack in videoItemTracks {
+            videoItemTrack.isEnabled = false
+        }
+        print(
+            "SYNCNEXT_HYBRID_PROXY_VIDEO_TRACK "
+                + "count=\(videoItemTracks.count) "
+                + "enabled=\(videoItemTracks.contains { $0.isEnabled })"
+        )
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
         player.actionAtItemEnd = .pause
