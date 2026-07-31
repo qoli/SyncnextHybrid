@@ -22,7 +22,6 @@ public final class HybridPlaybackSession:
     private let surface: AetherPlayerView
     private let proxyPlayer: AVPlayer
     private let forceAVKitProxy: Bool
-    private let sourceIsConfirmedHLS: Bool
     private let proxyFeedbackGate = HybridProxyFeedbackGate()
     private let eventContinuation: AsyncStream<HybridPlaybackEvent>.Continuation
 
@@ -30,7 +29,6 @@ public final class HybridPlaybackSession:
     private weak var previousControllerDelegate:
         (any AVPlayerViewControllerDelegate)?
     private var previousCustomMenuItems: [UIMenuElement] = []
-    private var previousRequiresLinearPlayback = false
     private var observations = Set<AnyCancellable>()
     private var proxyRateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var nativeMediaSelectionObserver:
@@ -79,7 +77,6 @@ public final class HybridPlaybackSession:
                 httpHeaders: request.httpHeaders
             )
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
-        sourceIsConfirmedHLS = admission.isConfirmedHLS
         let options = HybridPlaybackLoadOptions.make(
             request: request,
             externalSubtitles: externalSubtitles,
@@ -145,12 +142,10 @@ public final class HybridPlaybackSession:
         attachedController = controller
         previousControllerDelegate = controller.delegate
         previousCustomMenuItems = controller.transportBarCustomMenuItems
-        previousRequiresLinearPlayback = controller.requiresLinearPlayback
         controller.delegate = self
         controller.player = avPlayer
         controller.transportBarCustomMenuItems =
             previousCustomMenuItems + makeTrackMenus()
-        updateAVKitNavigationPolicy(for: snapshot.route)
         try updateSurfaceAttachment(for: snapshot.route)
     }
 
@@ -161,13 +156,11 @@ public final class HybridPlaybackSession:
         surface.removeFromSuperview()
         engine.unbind(view: surface)
         controller.transportBarCustomMenuItems = previousCustomMenuItems
-        controller.requiresLinearPlayback = previousRequiresLinearPlayback
         controller.delegate = previousControllerDelegate
         controller.player = nil
         attachedController = nil
         previousControllerDelegate = nil
         previousCustomMenuItems = []
-        previousRequiresLinearPlayback = false
     }
 
     public func playerViewController(
@@ -497,7 +490,6 @@ public final class HybridPlaybackSession:
         if attachedController?.player !== avPlayer {
             attachedController?.player = avPlayer
         }
-        updateAVKitNavigationPolicy(for: newRoute)
         do {
             try updateSurfaceAttachment(for: newRoute)
         } catch {
@@ -571,23 +563,6 @@ public final class HybridPlaybackSession:
             }
             engine.bind(view: surface)
         }
-    }
-
-    private func updateAVKitNavigationPolicy(
-        for route: HybridPlaybackRoute
-    ) {
-        guard let controller = attachedController else {
-            return
-        }
-        // AVKit has no public thumbnail-only switch. Linear playback is the
-        // supported way to prevent the black proxy video from appearing as
-        // an HLS navigation preview. Keep all non-HLS proxy routes seekable.
-        controller.requiresLinearPlayback =
-            HybridAVKitNavigationPolicy.requiresLinearPlayback(
-                preserving: previousRequiresLinearPlayback,
-                route: route,
-                sourceIsConfirmedHLS: sourceIsConfirmedHLS
-            )
     }
 
     private func synchronizeProxyFromEngine(forceSeek: Bool) {

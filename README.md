@@ -81,12 +81,6 @@ proxy's own mirrored seeks and clock corrections emit the same notification.
 The regression contract includes an approximately 120-second navigation,
 exact landing, and continued authoritative media-time progress.
 
-Any content-confirmed HLS route that uses the AVKit proxy uses linear playback.
-AVKit has no public thumbnail-only switch, so this deliberately disables
-scanning, skipping, and scrubbing on that route to prevent the black proxy
-video from appearing as a navigation preview. Native HLS and non-HLS proxy
-routes retain their existing navigation behavior.
-
 ## Upstream update
 
 Follow [`Docs/HYBRID_MAINTENANCE_SOP.md`](Docs/HYBRID_MAINTENANCE_SOP.md).
