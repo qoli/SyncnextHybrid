@@ -41,8 +41,18 @@ implementation details.
 - otherwise Hybrid publishes a finite silent black AVPlayer for AVKit controls
   and installs Aether's video surface in `contentOverlayView`.
 
-Aether remains the owner of rendered video, audible audio, and the
-authoritative media clock. The proxy player is only an AVKit UI endpoint.
+On the native route, Aether's published `AVPlayer` remains the native playback
+timeline. On the proxy route, the HLS Proxy Server owns the AVKit-visible
+duration, playhead, rate, seek generation, and waiting state; Aether remains
+the controlled renderer and media-material provider. AVKit user navigation
+uses an explicit fast path to notify Aether immediately while preserving the
+same Server generation and acknowledgement gate.
+
+See
+[`Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md`](Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md)
+for the authority boundaries, seek event ordering, thumbnail suppression,
+known-invalid approaches, observability contract, and physical-device
+acceptance procedure.
 
 `HybridAudioAnalysisStream` opens a separate FFmpeg cursor for the audible
 selection captured when the request is made. It never reads the playback
