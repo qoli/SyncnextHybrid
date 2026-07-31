@@ -42,4 +42,34 @@ final class HybridProxyFeedbackGateTests: XCTestCase {
         gate.completeMirroredSeek(token)
         XCTAssertTrue(gate.shouldForwardRateObservation(0))
     }
+
+    func testDecisionIdentifiesMatchedMirroredRate() {
+        let gate = HybridProxyFeedbackGate()
+        gate.performMirroredRateChange(to: 0) {}
+
+        let decision = gate.rateObservationDecision(0)
+
+        XCTAssertEqual(
+            decision.disposition,
+            .suppressMirroredRate
+        )
+        XCTAssertNotNil(decision.matchedMirroredRateAge)
+        XCTAssertEqual(decision.pendingMirroredRateCount, 0)
+        XCTAssertEqual(decision.activeMirroredSeekCount, 0)
+    }
+
+    func testDecisionIdentifiesActiveMirroredSeek() {
+        let gate = HybridProxyFeedbackGate()
+        let token = gate.beginMirroredSeek()
+
+        let decision = gate.rateObservationDecision(0)
+
+        XCTAssertEqual(
+            decision.disposition,
+            .suppressActiveSeek
+        )
+        XCTAssertNil(decision.matchedMirroredRateAge)
+        XCTAssertEqual(decision.activeMirroredSeekCount, 1)
+        gate.completeMirroredSeek(token)
+    }
 }

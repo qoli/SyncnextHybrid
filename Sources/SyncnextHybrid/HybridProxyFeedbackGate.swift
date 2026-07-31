@@ -1,5 +1,22 @@
 import Foundation
 
+enum HybridProxyRateObservationDisposition: String, Equatable {
+    case forward
+    case suppressMirroredRate = "suppress-mirrored-rate"
+    case suppressActiveSeek = "suppress-active-seek"
+}
+
+struct HybridProxyRateObservationDecision: Equatable {
+    let disposition: HybridProxyRateObservationDisposition
+    let matchedMirroredRateAge: TimeInterval?
+    let pendingMirroredRateCount: Int
+    let activeMirroredSeekCount: Int
+
+    var shouldForward: Bool {
+        disposition == .forward
+    }
+}
+
 /// Keeps AVPlayer state mirrored by Hybrid from being interpreted as a new
 /// AVKit transport command. In particular, AVPlayer emits `rate == 0` while a
 /// mirrored seek is still in flight.
@@ -21,10 +38,11 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
     private var activeMirroredSeekTokens: Set<UInt64> = []
     private var nextMirroredSeekToken: UInt64 = 0
 
+    @discardableResult
     func performMirroredRateChange(
         to rate: Float,
         _ change: () -> Void
-    ) {
+    ) -> Int {
         lock.lock()
         pendingMirroredRates.append(
             PendingRate(
@@ -33,17 +51,25 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
             )
         )
         trimPendingObservations(&pendingMirroredRates)
+        let pendingCount = pendingMirroredRates.count
         lock.unlock()
         change()
+        return pendingCount
     }
 
     func shouldForwardRateObservation(_ rate: Float) -> Bool {
+        rateObservationDecision(rate).shouldForward
+    }
+
+    func rateObservationDecision(
+        _ rate: Float
+    ) -> HybridProxyRateObservationDecision {
         lock.lock()
         defer { lock.unlock() }
 
+        let now = ProcessInfo.processInfo.systemUptime
         let oldestAllowed =
-            ProcessInfo.processInfo.systemUptime
-            - Self.maximumPendingAge
+            now - Self.maximumPendingAge
         pendingMirroredRates.removeAll {
             $0.createdAt < oldestAllowed
         }
@@ -53,16 +79,31 @@ final class HybridProxyFeedbackGate: @unchecked Sendable {
                 abs($0.value - rate) <= Self.rateTolerance
             }
         ) {
-            pendingMirroredRates.remove(at: index)
-            return false
+            let matched = pendingMirroredRates.remove(at: index)
+            return HybridProxyRateObservationDecision(
+                disposition: .suppressMirroredRate,
+                matchedMirroredRateAge: now - matched.createdAt,
+                pendingMirroredRateCount: pendingMirroredRates.count,
+                activeMirroredSeekCount: activeMirroredSeekTokens.count
+            )
         }
 
         if abs(rate) <= Self.rateTolerance,
            !activeMirroredSeekTokens.isEmpty {
-            return false
+            return HybridProxyRateObservationDecision(
+                disposition: .suppressActiveSeek,
+                matchedMirroredRateAge: nil,
+                pendingMirroredRateCount: pendingMirroredRates.count,
+                activeMirroredSeekCount: activeMirroredSeekTokens.count
+            )
         }
 
-        return true
+        return HybridProxyRateObservationDecision(
+            disposition: .forward,
+            matchedMirroredRateAge: nil,
+            pendingMirroredRateCount: pendingMirroredRates.count,
+            activeMirroredSeekCount: activeMirroredSeekTokens.count
+        )
     }
 
     func beginMirroredSeek() -> UInt64 {
