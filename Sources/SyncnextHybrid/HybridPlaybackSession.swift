@@ -202,11 +202,11 @@ public final class HybridPlaybackSession:
 
     public func playerViewController(
         _ playerViewController: AVPlayerViewController,
-        willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime,
+        timeToSeekAfterUserNavigatedFrom oldTime: CMTime,
         to targetTime: CMTime
-    ) {
+    ) -> CMTime {
         proxyDiagnostics(
-            "navigation-received",
+            "navigation-target-received",
             "old=\(oldTime.seconds)",
             "target=\(targetTime.seconds)",
             "engineTime=\(engine.currentTime)",
@@ -218,22 +218,22 @@ public final class HybridPlaybackSession:
               attachedController === playerViewController,
               snapshot.route == .avKitProxy else {
             proxyDiagnostics(
-                "navigation-ignored",
+                "navigation-target-ignored",
                 "stopped=\(stopped)",
                 "controllerMatches=\(attachedController === playerViewController)",
                 "route=\(snapshot.route)"
             )
-            return
+            return targetTime
         }
         guard oldTime.seconds.isFinite,
               targetTime.seconds.isFinite,
               proxyDuration.isFinite,
               proxyDuration > 0 else {
             proxyDiagnostics(
-                "navigation-rejected",
+                "navigation-target-rejected",
                 "reason=invalid-time-or-duration"
             )
-            return
+            return targetTime
         }
 
         let boundedOld = max(0, min(oldTime.seconds, proxyDuration))
@@ -241,11 +241,49 @@ public final class HybridPlaybackSession:
             0,
             min(targetTime.seconds, proxyDuration)
         )
-        pendingServerSeekContext = PendingServerSeekContext(
-            oldTime: boundedOld,
-            origin: .avKit
+        // AVKit asks for its final user-selected time before it performs the
+        // client seek. This is the deliberate fast path: establish the same
+        // authoritative Server generation and waitingToPlay state, but send
+        // Aether the operation directly from the AVKit UI callback instead of
+        // reflecting it back through the Server's seekRequested event.
+        let generation = proxyTimeline.prepareSeek(
+            to: boundedTarget,
+            emitsSeekRequest: false
         )
-        proxyTimeline.prepareSeek(to: boundedTarget)
+        proxyDiagnostics(
+            "avkit-seek-projected",
+            "generation=\(generation)",
+            "target=\(boundedTarget)",
+            "serverPhase=\(proxyTimeline.state.phase)"
+        )
+        forwardProxySeekToAether(
+            HybridProxyNavigation(
+                generation: generation,
+                oldTime: boundedOld,
+                targetTime: boundedTarget,
+                origin: .avKit
+            )
+        )
+        return CMTime(seconds: boundedTarget, preferredTimescale: 600)
+    }
+
+    public func playerViewController(
+        _ playerViewController: AVPlayerViewController,
+        willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime,
+        to targetTime: CMTime
+    ) {
+        // Completion observation only. The operation was already accepted in
+        // timeToSeekAfterUserNavigatedFrom, before AVKit began its HLS seek.
+        proxyDiagnostics(
+            "navigation-will-resume",
+            "old=\(oldTime.seconds)",
+            "target=\(targetTime.seconds)",
+            "serverGeneration=\(proxyTimeline.state.seekGeneration)",
+            "serverPhase=\(proxyTimeline.state.phase)"
+        )
+        markAVKitProxyClientSeekCompleted(
+            generation: proxyTimeline.state.seekGeneration
+        )
     }
 
     public func play() {
@@ -753,14 +791,9 @@ public final class HybridPlaybackSession:
                     return
                 }
                 if finished {
-                    self.completedProxyClientSeekGenerations.insert(
-                        generation
+                    self.markAVKitProxyClientSeekCompleted(
+                        generation: generation
                     )
-                    if self.completedProxyClientSeekGenerations.count > 32,
-                       let oldest = self.completedProxyClientSeekGenerations
-                        .min() {
-                        self.completedProxyClientSeekGenerations.remove(oldest)
-                    }
                 }
                 self.proxyDiagnostics(
                     "seek-completed",
@@ -771,6 +804,16 @@ public final class HybridPlaybackSession:
                     "proxyTime=\(self.proxyPlayer.currentTime().seconds)"
                 )
             }
+        }
+    }
+
+    private func markAVKitProxyClientSeekCompleted(
+        generation: UInt64
+    ) {
+        completedProxyClientSeekGenerations.insert(generation)
+        if completedProxyClientSeekGenerations.count > 32,
+           let oldest = completedProxyClientSeekGenerations.min() {
+            completedProxyClientSeekGenerations.remove(oldest)
         }
     }
 
@@ -798,17 +841,12 @@ public final class HybridPlaybackSession:
     private func forwardProxySeekToAether(
         _ navigation: HybridProxyNavigation
     ) {
-        // The HLS Proxy Server has already accepted the seek and entered its
-        // authoritative waiting state. Freeze the controlled renderer before
-        // dispatching the seek so Aether cannot keep presenting the old
-        // position while the destination is being resolved.
-        engine.pause()
         proxyDiagnostics(
             "navigation-forwarded-to-aether",
             "generation=\(navigation.generation)",
             "origin=\(navigation.origin)",
             "target=\(navigation.targetTime)",
-            "transport=pause-then-seek",
+            "transport=seek-without-pause",
             "authoritativeRate=\(proxyTimeline.state.rate)"
         )
         proxyNavigationTasks[navigation.generation] = Task {

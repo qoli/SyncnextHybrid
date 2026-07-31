@@ -1004,10 +1004,18 @@ final class SmokeViewModel: ObservableObject {
             seconds: target,
             preferredTimescale: 600
         )
+        guard let adjustedTarget =
+                playerViewController.delegate?.playerViewController?(
+                    playerViewController,
+                    timeToSeekAfterUserNavigatedFrom: oldTime,
+                    to: targetTime
+                ) else {
+            throw SmokeFailure.avKitNavigationDelegateUnavailable
+        }
         let finished = await withCheckedContinuation {
             (continuation: CheckedContinuation<Bool, Never>) in
             player.seek(
-                to: targetTime,
+                to: adjustedTarget,
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             ) { completed in
@@ -1018,13 +1026,11 @@ final class SmokeViewModel: ObservableObject {
             throw SmokeFailure.avKitNavigationCancelled
         }
 
-        guard playerViewController.delegate?.playerViewController?(
+        playerViewController.delegate?.playerViewController?(
             playerViewController,
             willResumePlaybackAfterUserNavigatedFrom: oldTime,
-            to: targetTime
-        ) != nil else {
-            throw SmokeFailure.avKitNavigationDelegateUnavailable
-        }
+            to: adjustedTarget
+        )
         player.play()
     }
 

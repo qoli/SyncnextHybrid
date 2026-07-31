@@ -538,7 +538,10 @@ final class HybridHLSTimelineProxy {
     /// the destination segment. Aether still decides whether that material
     /// is available through `bufferedThrough`; it does not choose the time.
     @discardableResult
-    func prepareSeek(to seconds: Double) -> UInt64 {
+    func prepareSeek(
+        to seconds: Double,
+        emitsSeekRequest: Bool = true
+    ) -> UInt64 {
         let target = min(state.duration, max(0, seconds))
         let generation = server.seekTimeline(to: target)
         server.updatePlayhead(target)
@@ -547,9 +550,11 @@ final class HybridHLSTimelineProxy {
                 + "event=seek-prepared generation=\(generation) "
                 + "target=\(target)"
         )
-        eventHandler?(
-            .seekRequested(generation: generation, target: target)
-        )
+        if emitsSeekRequest {
+            eventHandler?(
+                .seekRequested(generation: generation, target: target)
+            )
+        }
         emitStateIfChanged()
         return generation
     }
