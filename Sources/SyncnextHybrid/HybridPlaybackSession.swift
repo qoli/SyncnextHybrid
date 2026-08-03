@@ -60,7 +60,7 @@ public final class HybridPlaybackSession:
         }
         return proxyContext.duration
     }
-    private let proxyDiagnosticsID = String(
+    private let diagnosticsID = String(
         UUID().uuidString.prefix(8)
     )
     private let eventContinuation: AsyncStream<HybridPlaybackEvent>.Continuation
@@ -124,6 +124,14 @@ public final class HybridPlaybackSession:
             externalSubtitles: externalSubtitles,
             admission: admission
         )
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_ADMISSION "
+                + "session=\(diagnosticsID) "
+                + "\(admission.diagnosticFields) "
+                + "nativeRemoteHLS=\(options.nativeRemoteHLS) "
+                + "isLive=\(options.isLive) "
+                + "forceAVKitProxy=\(forceAVKitProxy)"
+        )
         do {
             try await engine.load(
                 url: request.url,
@@ -131,6 +139,13 @@ public final class HybridPlaybackSession:
                 options: options
             )
         } catch {
+            let nsError = error as NSError
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_LOAD "
+                    + "session=\(diagnosticsID) event=failed "
+                    + "errorType=\(String(describing: type(of: error))) "
+                    + "domain=\(nsError.domain) code=\(nsError.code)"
+            )
             engine.unbind(view: surface)
             throw HybridPlaybackError.sourceLoadFailed(
                 String(describing: error)
@@ -982,7 +997,7 @@ public final class HybridPlaybackSession:
     ) {
         HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_PROXY_CONTROL "
-                + "session=\(proxyDiagnosticsID) "
+                + "session=\(diagnosticsID) "
                 + "event=\(event) "
                 + fields.joined(separator: " ")
         )

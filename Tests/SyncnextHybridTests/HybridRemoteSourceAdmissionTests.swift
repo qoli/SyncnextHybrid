@@ -101,6 +101,35 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         XCTAssertFalse(options.isLive)
     }
 
+    func testAdmissionDiagnosticFieldsDescribeTerminalDecision() {
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission.hlsVOD.diagnosticFields,
+            "result=hls-vod"
+        )
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission
+                .hlsVODHEVCMPEGTS(duration: 10.5)
+                .diagnosticFields,
+            "result=hls-vod-hevc-mpegts duration=10.500"
+        )
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission.hlsLive.diagnosticFields,
+            "result=hls-live"
+        )
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission
+                .aetherDefault(.requestFailed)
+                .diagnosticFields,
+            "result=aether-default reason=request-failed"
+        )
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission
+                .aetherDefault(.httpStatus(503))
+                .diagnosticFields,
+            "result=aether-default reason=http-status status=503"
+        )
+    }
+
     func testForcedProxyUsesPlaylistDurationInsteadOfTransientEngineValue()
         throws
     {

@@ -53,6 +53,25 @@ enum HybridRemoteSourceAdmission: Equatable {
         return duration
     }
 
+    var diagnosticFields: String {
+        switch self {
+        case .hlsVOD:
+            return "result=hls-vod"
+        case .hlsVODHEVCMPEGTS(let duration):
+            return "result=hls-vod-hevc-mpegts duration="
+                + String(
+                    format: "%.3f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    duration
+                )
+        case .hlsLive:
+            return "result=hls-live"
+        case .aetherDefault(let reason):
+            return "result=aether-default "
+                + reason.diagnosticFields
+        }
+    }
+
     static func classify(
         url: URL,
         httpHeaders: [String: String],
@@ -335,6 +354,29 @@ enum HybridRemoteSourceAdmission: Equatable {
     private struct PlaylistCandidate {
         let text: String
         let responseURL: URL
+    }
+}
+
+private extension HybridRemoteSourceAdmission.AetherDefaultReason {
+    var diagnosticFields: String {
+        switch self {
+        case .nonHTTPSource:
+            return "reason=non-http-source"
+        case .confirmedNonHLS:
+            return "reason=confirmed-non-hls"
+        case .requestFailed:
+            return "reason=request-failed"
+        case .invalidHTTPResponse:
+            return "reason=invalid-http-response"
+        case .httpStatus(let status):
+            return "reason=http-status status=\(status)"
+        case .responseTooLarge:
+            return "reason=response-too-large"
+        case .invalidPlaylist:
+            return "reason=invalid-playlist"
+        case .variantUnavailable:
+            return "reason=variant-unavailable"
+        }
     }
 }
 
