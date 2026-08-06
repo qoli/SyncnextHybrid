@@ -12,6 +12,23 @@ struct HybridHLSProxyMaterial: Equatable {
     let bufferedThrough: Double
 }
 
+enum HybridHLSProxyMaterialPolicy {
+    static func bufferedThrough(
+        bufferedPosition: Double,
+        renderedSourceTime: Double
+    ) -> Double {
+        guard bufferedPosition.isFinite,
+              renderedSourceTime.isFinite else {
+            return 0
+        }
+        // Aether declares both values on the source axis and guarantees that
+        // the buffer frontier never trails the rendered frame. During 6.4.0
+        // seek recovery the published frontier can briefly regress; preserve
+        // the declared invariant at the integration boundary.
+        return max(bufferedPosition, renderedSourceTime)
+    }
+}
+
 enum HybridHLSProxyPlaylist {
     static let segmentDuration: Double = 1
 
@@ -58,6 +75,19 @@ enum HybridHLSProxyReleasePolicy {
     ) -> Bool {
         segmentStart < min(bufferedThrough, authoritativePlayhead + lead)
             || segmentStart >= duration - 0.001
+    }
+}
+
+enum HybridHLSProxyRateObservationPolicy {
+    static func shouldAccept(
+        rate: Float,
+        clientIsWaiting: Bool,
+        hasPendingNavigation: Bool
+    ) -> Bool {
+        guard rate == 0 else {
+            return true
+        }
+        return !clientIsWaiting && !hasPendingNavigation
     }
 }
 
@@ -141,6 +171,14 @@ struct HybridHLSTimelineAuthority {
         advance(to: uptime)
         guard requestGeneration == seekGeneration else {
             return false
+        }
+        if pendingSeekGeneration != nil {
+            let segmentStart = Double(index)
+                * HybridHLSProxyPlaylist.segmentDuration
+            guard abs(segmentStart - currentTime)
+                    <= HybridHLSProxyPlaylist.segmentDuration else {
+                return false
+            }
         }
         pendingSeekGeneration = nil
         resolvedSegmentIndices.removeAll { $0 == index }
@@ -670,9 +708,13 @@ private final class HybridHLSProxySupply: @unchecked Sendable {
         condition.unlock()
     }
 
-    func waitForSegment(at index: Int) -> Result {
+    func waitForSegment(
+        at index: Int,
+        requestGeneration: UInt64
+    ) -> Result {
         let segmentStart = Double(index)
             * HybridHLSProxyPlaylist.segmentDuration
+        var lastWaitReason: String?
         condition.lock()
         defer { condition.unlock() }
         while true {
@@ -680,6 +722,13 @@ private final class HybridHLSProxySupply: @unchecked Sendable {
                 return .stopped
             }
             if pendingSeekGeneration != nil {
+                emitWaitStateIfChanged(
+                    &lastWaitReason,
+                    reason: "seek-response-pending",
+                    index: index,
+                    requestGeneration: requestGeneration,
+                    segmentStart: segmentStart
+                )
                 condition.wait()
                 continue
             }
@@ -698,11 +747,49 @@ private final class HybridHLSProxySupply: @unchecked Sendable {
                 ) {
                     return segmentResult(at: index)
                 }
+                emitWaitStateIfChanged(
+                    &lastWaitReason,
+                    reason: "buffer-frontier-insufficient",
+                    index: index,
+                    requestGeneration: requestGeneration,
+                    segmentStart: segmentStart
+                )
             case .waiting:
-                break
+                emitWaitStateIfChanged(
+                    &lastWaitReason,
+                    reason: "aether-material-waiting",
+                    index: index,
+                    requestGeneration: requestGeneration,
+                    segmentStart: segmentStart
+                )
             }
             condition.wait()
         }
+    }
+
+    private func emitWaitStateIfChanged(
+        _ previousReason: inout String?,
+        reason: String,
+        index: Int,
+        requestGeneration: UInt64,
+        segmentStart: Double
+    ) {
+        guard previousReason != reason else {
+            return
+        }
+        previousReason = reason
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_PROXY_HLS_SUPPLY "
+                + "event=blocked reason=\(reason) "
+                + "segment=\(index) "
+                + "generation=\(requestGeneration) "
+                + "segmentStart=\(segmentStart) "
+                + "playhead=\(playhead) "
+                + "bufferedThrough=\(bufferedThrough) "
+                + "phase=\(phase) "
+                + "pendingSeekGeneration="
+                + "\(String(describing: pendingSeekGeneration))"
+        )
     }
 
     private func segmentResult(at index: Int) -> Result {
@@ -1042,7 +1129,10 @@ private final class HybridHLSProxyServer: @unchecked Sendable {
         )
         let requestGeneration = authority.snapshot().seekGeneration
         let waitStarted = ProcessInfo.processInfo.systemUptime
-        let result = supply.waitForSegment(at: index)
+        let result = supply.waitForSegment(
+            at: index,
+            requestGeneration: requestGeneration
+        )
         let waited = ProcessInfo.processInfo.systemUptime - waitStarted
         let outcome: String
         switch result {

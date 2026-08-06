@@ -176,7 +176,11 @@ public final class HybridPlaybackSession:
             let timeline = try await ProxyMediaFactory.makeTimeline(
                 duration: proxyDuration,
                 initialPosition: request.initialPosition ?? 0,
-                initialBufferedThrough: engine.bufferedPosition
+                initialBufferedThrough:
+                    HybridHLSProxyMaterialPolicy.bufferedThrough(
+                        bufferedPosition: engine.bufferedPosition,
+                        renderedSourceTime: engine.sourceTime
+                    )
             )
             let context = ProxyContext(
                 timeline: timeline,
@@ -586,13 +590,25 @@ public final class HybridPlaybackSession:
                     guard self.snapshot.route == .avKitProxy else {
                         return
                     }
-                    if rate == 0,
-                       proxyContext.player.timeControlStatus
-                        == .waitingToPlayAtSpecifiedRate {
+                    let clientIsWaiting =
+                        proxyContext.player.timeControlStatus
+                        == .waitingToPlayAtSpecifiedRate
+                    let hasPendingNavigation =
+                        !self.proxyNavigationTasks.isEmpty
+                    guard HybridHLSProxyRateObservationPolicy.shouldAccept(
+                        rate: rate,
+                        clientIsWaiting: clientIsWaiting,
+                        hasPendingNavigation: hasPendingNavigation
+                    ) else {
                         self.proxyDiagnostics(
                             "rate-forward-ignored",
-                            "reason=waiting-to-play",
-                            "rate=\(rate)"
+                            "reason="
+                                + (hasPendingNavigation
+                                    ? "seek-in-flight"
+                                    : "waiting-to-play"),
+                            "rate=\(rate)",
+                            "serverRate="
+                                + "\(proxyContext.timeline.state.rate)"
                         )
                         return
                     }
@@ -738,9 +754,14 @@ public final class HybridPlaybackSession:
             // HLS timeline. They are consequences of Server commands.
             supplyPhase = .flowing
         }
+        let effectiveBufferedThrough =
+            HybridHLSProxyMaterialPolicy.bufferedThrough(
+                bufferedPosition: engine.bufferedPosition,
+                renderedSourceTime: engine.sourceTime
+            )
         let material = HybridHLSProxyMaterial(
             phase: supplyPhase,
-            bufferedThrough: engine.bufferedPosition
+            bufferedThrough: effectiveBufferedThrough
         )
         proxyTimeline.update(material: material)
         let shouldLog: Bool
@@ -761,8 +782,10 @@ public final class HybridPlaybackSession:
             "hls-material-updated",
             "enginePhase=\(engine.playbackPhase)",
             "supplyPhase=\(supplyPhase)",
-            "bufferedThrough=\(engine.bufferedPosition)",
+            "bufferedPosition=\(engine.bufferedPosition)",
+            "effectiveBufferedThrough=\(effectiveBufferedThrough)",
             "engineTime=\(engine.currentTime)",
+            "engineSourceTime=\(engine.sourceTime)",
             "proxyTime=\(proxyPlayer.currentTime().seconds)"
         )
     }

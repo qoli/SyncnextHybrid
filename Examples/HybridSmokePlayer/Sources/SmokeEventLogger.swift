@@ -121,6 +121,10 @@ struct SmokeEventEmitter {
             "phase": snapshot.phase.smokeName,
             "current_time_seconds":
                 Self.number(snapshot.currentTime),
+            "source_time_seconds":
+                Self.number(snapshot.sourceTime),
+            "buffered_position_seconds":
+                Self.number(snapshot.bufferedPosition),
             "duration_seconds": Self.number(snapshot.duration),
             "requested_rate":
                 Self.number(Double(snapshot.requestedRate)),

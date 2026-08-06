@@ -152,10 +152,10 @@ index 0000000..152aed1
 +    case remoteHLSPreparationRequired
 +}
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 1ae003c..80c1582 100644
+index 6d5a12a..05293c5 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -163,7 +163,9 @@ public final class Demuxer: @unchecked Sendable {
+@@ -179,7 +179,9 @@ public final class Demuxer: @unchecked Sendable {
      var avioBytesFetched: Int64 { avioProvider?.cumulativeBytesFetched ?? 0 }
  
      // Forward-only custom sources report false.
@@ -166,7 +166,7 @@ index 1ae003c..80c1582 100644
  
      /// Timestamp of last unplanned reconnect (drop/stall, not a seek).
      /// Live producer correlates with backward source-PTS reset to detect
-@@ -307,6 +309,12 @@ public final class Demuxer: @unchecked Sendable {
+@@ -323,6 +325,12 @@ public final class Demuxer: @unchecked Sendable {
          }
      }
  
@@ -179,7 +179,7 @@ index 1ae003c..80c1582 100644
      // MARK: - Open Strategies
  
      private func openLocal(url: URL) throws {
-@@ -347,6 +355,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -363,6 +371,11 @@ public final class Demuxer: @unchecked Sendable {
          try openWithProvider(bridge, inputFormat: inputFormat, isLive: isLive)
      }
  
@@ -191,7 +191,7 @@ index 1ae003c..80c1582 100644
      /// A remote disc image (ISO 9660 / UDF / BDMV) by URL extension. Gates the HTTP disc-adapter
      /// path so a normal media URL keeps the optimized streaming AVIOReader open with no probe cost.
      static func isDiscImageURL(_ url: URL) -> Bool {
-@@ -555,6 +568,15 @@ public final class Demuxer: @unchecked Sendable {
+@@ -577,6 +590,15 @@ public final class Demuxer: @unchecked Sendable {
          return ctx.pointee.start_time
      }
  
@@ -207,7 +207,7 @@ index 1ae003c..80c1582 100644
      /// Index of the best video stream, or -1.
      /// Clamped: av_find_best_stream returns AVERROR_STREAM_NOT_FOUND (-1381258232)
      /// on failure, not -1; normalize to -1 to avoid garbage in logs.
-@@ -595,7 +617,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -617,7 +639,7 @@ public final class Demuxer: @unchecked Sendable {
          return -1
      }
  
@@ -216,7 +216,7 @@ index 1ae003c..80c1582 100644
          guard let ctx = formatContext else { return [] }
          var tracks: [TrackInfo] = []
          for i in 0..<Int(ctx.pointee.nb_streams) {
-@@ -840,7 +862,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -931,7 +953,7 @@ public final class Demuxer: @unchecked Sendable {
          return 0
      }
  
@@ -225,7 +225,7 @@ index 1ae003c..80c1582 100644
          guard let ctx = formatContext, index >= 0, index < ctx.pointee.nb_streams else {
              return nil
          }
-@@ -854,7 +876,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -945,7 +967,7 @@ public final class Demuxer: @unchecked Sendable {
      /// `pacing`, when >= 0 and not already in `keep`, is delivered at `AVDISCARD_NONKEY` instead of
      /// being dropped: keyframes only, enough to give a side reader a read-position control point
      /// between sparse target packets (#230). -1 keeps the original all-or-nothing behavior.
@@ -234,7 +234,7 @@ index 1ae003c..80c1582 100644
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return }
-@@ -903,7 +925,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -994,7 +1016,7 @@ public final class Demuxer: @unchecked Sendable {
          return result
      }
  
@@ -243,7 +243,7 @@ index 1ae003c..80c1582 100644
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return nil }
-@@ -981,10 +1003,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1072,14 +1094,17 @@ public final class Demuxer: @unchecked Sendable {
  
      /// Seek via avformat_seek_file (not av_seek_frame: assertion failures
      /// in matroskadec.c with nested elements).
@@ -254,10 +254,18 @@ index 1ae003c..80c1582 100644
          defer { accessLock.unlock() }
 -        guard let ctx = formatContext else { return }
 +        guard let ctx = formatContext else { return false }
+         if let reader = timeSeekableReader {
+-            guard repositionTimeSeekable(reader, toSourceSeconds: seconds, streamIndex: -1) else { return }
++            guard repositionTimeSeekable(reader, toSourceSeconds: seconds, streamIndex: -1) else {
++                return false
++            }
+             resetAfterTimeSeek(ctx)
+-            return
++            return true
+         }
          let timestamp = Int64(seconds * Double(AV_TIME_BASE))
          let ret = avformat_seek_file(ctx, -1, Int64.min, timestamp, Int64.max, 0)
-         if ret < 0 {
-@@ -994,6 +1017,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1090,6 +1115,7 @@ public final class Demuxer: @unchecked Sendable {
          }
          avformat_flush(ctx)  // prevents assertion failures in matroskadec.c
          lastReadClipIdx = -1  // AE#105: post-seek reads may land mid-clip; require a fresh clean crossing
@@ -265,7 +273,7 @@ index 1ae003c..80c1582 100644
      }
  
      /// Seek on one stream's native timestamp axis, never before `timestamp`.
-@@ -1301,11 +1325,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1508,11 +1534,11 @@ public final class Demuxer: @unchecked Sendable {
  
      /// Fast lock-free unblock: AVIO read callback returns -1, av_read_frame returns
      /// at once. No resource freeing. Call before close() when cancelling a pump.

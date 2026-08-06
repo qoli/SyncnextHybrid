@@ -6,6 +6,10 @@ enum SmokePolicy {
     static let minimumPostSeekProgressSeconds = 2.0
     static let maximumZeroProgressSeconds = 60.5
     static let seekLandingToleranceSeconds = 1.0
+    static let strictRenderedLandingToleranceSeconds = 1.0
+    static let strictClockAlignmentToleranceSeconds = 0.25
+    static let strictPostSeekSustainSeconds = 10.0
+    static let bufferInvariantToleranceSeconds = 0.001
     static let minimumInitialTimeSeconds = -0.25
     static let readinessDiagnosticCheckpointsSeconds = [5.0, 15.0, 30.0]
     static let diagnosticCheckpointsSeconds = [15.0, 30.0, 45.0, 60.5]
@@ -100,6 +104,7 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
         actual: Double,
         tolerance: Double
     )
+    case aetherContractViolation(String)
 
     var code: String {
         switch self {
@@ -139,6 +144,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "no_media_progress"
         case .seekLandingMismatch:
             "seek_landing_mismatch"
+        case .aetherContractViolation:
+            "aether_contract_violation"
         }
     }
 
@@ -196,6 +203,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             let tolerance
         ):
             "Seek landed at \(actual), expected \(target) ± \(tolerance)s"
+        case .aetherContractViolation(let message):
+            "AetherEngine strict seek contract failed: \(message)"
         }
     }
 }

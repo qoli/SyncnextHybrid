@@ -1,13 +1,13 @@
 {
-  "originHash" : "3e1d3b1c43b3af86a42c59afa244b96803b44519a564fc2805919897070c9262",
+  "originHash" : "8b56f7bd1a7603f7d18c7fb4d09620f6f858ac3a17cde636eb8d3a888327778d",
   "pins" : [
     {
       "identity" : "libdovi",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/superuser404notfound/LibDovi",
       "state" : {
-        "revision" : "bebab0af0e3633b0002fcc7106ea6fc7ceea8277",
-        "version" : "1.0.2"
+        "revision" : "89be93431c2a5f2e54fb77e93059071b8d2ddb3a",
+        "version" : "2.0.0"
       }
     },
     {

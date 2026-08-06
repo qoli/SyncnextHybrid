@@ -1,10 +1,17 @@
 # AetherEngine HEVC MPEG-TS HLS VOD temporary workaround
 
-Status: approved temporary downstream patch
+Status: removed; superseded by AetherEngine 6.4.2
 
 Upstream tracker: https://github.com/superuser404notfound/AetherEngine/issues/246
 
 Baseline: AetherEngine `5.29.0` (`38c480e2c64ec6911a0c2a9246e50ae63856bd77`)
+
+Resolution: AetherEngine `6.4.2`
+(`996d8d3b616039f8ce17ebd527df14a9b2cd6a21`) provides the upstream finite
+HEVC-in-MPEG-TS HLS ingest and timeline behavior required by this workaround.
+Physical-device acceptance on 2026-08-06 proved the Syncnext AVKit proxy path
+with four fast-forward seeks and four long-distance forward seeks. Patch 0003
+is therefore no longer part of the applied series.
 
 ## Problem and boundary
 
@@ -59,7 +66,7 @@ fast-forward support and retains the audio-capable transport contract.
 
 Physical device: study-room Apple TV (`AppleTV6,2`).
 
-Fixture: `鹿鼎记修复版(粤)`, episode 01, signed MDD HEVC MPEG-TS HLS VOD.
+Fixture: original private signed MDD HEVC MPEG-TS HLS VOD.
 
 - Direct AetherEngine remux: 4K HEVC video plus AAC audio, finite duration
   `2698.760`, startup progress, exact seek to `122.000`, and post-seek progress.
@@ -72,19 +79,20 @@ Fixture: `鹿鼎记修复版(粤)`, episode 01, signed MDD HEVC MPEG-TS HLS VOD.
 The smoke logs identify the source only by SHA-256 and list header names without
 values.
 
-## Removal procedure
+## Completed removal
 
-Remove this workaround when an AetherEngine release linked from issue #246
-provides an upstream-supported, seekable finite-HLS non-native route.
+The removal gate was completed against AetherEngine 6.4.2 on 2026-08-06.
 
-1. Validate that release in an isolated worktree against the same title.
-2. Prove startup, a long seek, post-seek progress, and 2.0x playback on the
-   physical Apple TV with no downstream patch 0003.
-3. Remove patch 0003 from `series` and `manifest.sha256`.
-4. Remove the HEVC TS admission case and forced-proxy branch only if the upstream
-   API now owns those decisions; keep generic proxy race fixes if they remain
-   independently required.
-5. Run `Scripts/apply-patches.sh` twice and rebuild the real Syncnext app.
+1. The 6.4.2 release was reconstructed in an isolated worktree against the
+   original private source.
+2. Direct and AVKit-proxy startup, seek landing, and post-seek progress passed
+   without downstream patch 0003.
+3. Patch 0003 was removed from `series` and `manifest.sha256`.
+4. Hybrid-owned admission and generic proxy ordering remain at the integration
+   layer; upstream-owned ingest is no longer duplicated downstream.
+5. Patch replay, Hybrid tests/builds, and the real Syncnext device integration
+   were rerun before promotion.
 
-Do not remove the workaround merely because a newer tag exists; removal requires
-the physical acceptance evidence above.
+The known backward-restart behavior remains outside this workaround and is
+tracked independently; it was explicitly excluded from the 6.4.2 promotion
+decision.

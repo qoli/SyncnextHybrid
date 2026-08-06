@@ -24,6 +24,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let urlEnvironmentKey = "HYBRID_SMOKE_URL"
     static let headersEnvironmentKey = "HYBRID_SMOKE_HEADERS_JSON"
     static let seekEnvironmentKey = "HYBRID_SMOKE_SEEK_SECONDS"
+    static let preseekEnvironmentKey = "HYBRID_SMOKE_PRESEEK_SECONDS"
     static let rateEnvironmentKey = "HYBRID_SMOKE_RATE"
     static let expectedRouteEnvironmentKey =
         "HYBRID_SMOKE_EXPECTED_ROUTE"
@@ -35,6 +36,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     let sourceURL: URL
     let httpHeaders: [String: String]
     let seekSeconds: Double
+    let preseekSeconds: Double?
     let playbackRate: Float
     let expectedRoute: SmokeExpectedRoute?
 
@@ -74,6 +76,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawSeekSeconds:
                 environment[seekEnvironmentKey]
                 ?? String(defaultSeekSeconds),
+            rawPreseekSeconds: environment[preseekEnvironmentKey],
             rawPlaybackRate:
                 environment[rateEnvironmentKey]
                 ?? String(defaultPlaybackRate),
@@ -93,6 +96,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawURL: rawURL,
             rawHeaders: rawHeaders,
             rawSeekSeconds: rawSeekSeconds,
+            rawPreseekSeconds: nil,
             rawPlaybackRate: String(defaultPlaybackRate),
             rawExpectedRoute: nil
         )
@@ -103,6 +107,7 @@ struct SmokeConfiguration: Sendable, Equatable {
         rawURL: String,
         rawHeaders: String,
         rawSeekSeconds: String,
+        rawPreseekSeconds: String?,
         rawPlaybackRate: String,
         rawExpectedRoute: String?
     ) throws -> SmokeConfiguration {
@@ -112,6 +117,7 @@ struct SmokeConfiguration: Sendable, Equatable {
         let sourceURL = try parseURL(rawURL)
         let headers = try parseHeaders(rawHeaders)
         let seekSeconds = try parseSeekSeconds(rawSeekSeconds)
+        let preseekSeconds = try rawPreseekSeconds.map(parseSeekSeconds)
         let playbackRate = try parsePlaybackRate(rawPlaybackRate)
 
         let expectedRoute: SmokeExpectedRoute?
@@ -135,6 +141,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             sourceURL: sourceURL,
             httpHeaders: headers,
             seekSeconds: seekSeconds,
+            preseekSeconds: preseekSeconds,
             playbackRate: playbackRate,
             expectedRoute: expectedRoute
         )

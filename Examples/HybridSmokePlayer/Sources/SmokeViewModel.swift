@@ -69,6 +69,23 @@ final class SmokeViewModel: ObservableObject {
     private var aetherObservations = Set<AnyCancellable>()
 
     init() {
+        EngineLog.handler = { line in
+            let isMaintainerEvidence =
+                line.contains("[AetherEngine] AE#268:")
+                || line.contains(
+                    "[HLSVODIngest] resolved finite MPEG-TS VOD"
+                )
+                || line.contains("[HLSVODIngest] seek elapsed=")
+                || line.contains(
+                    "[HLSVideoEngine] producer restarted at idx="
+                )
+                || line.contains(
+                    "[HLSSegmentProducer] video gate open:"
+                )
+            if isMaintainerEvidence {
+                print("AETHER_MAINTAINER_EVIDENCE \(line)")
+            }
+        }
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = true
         playerViewController = controller
@@ -379,6 +396,12 @@ final class SmokeViewModel: ObservableObject {
             snapshot.duration,
             seekSeconds: configuration.seekSeconds
         )
+        if let preseekSeconds = configuration.preseekSeconds {
+            try SmokePolicy.validateDuration(
+                snapshot.duration,
+                seekSeconds: preseekSeconds
+            )
+        }
         try SmokePolicy.validateInitialTime(snapshot.currentTime)
 
         runState = .checkingStartup
@@ -410,6 +433,71 @@ final class SmokeViewModel: ObservableObject {
                 ]
             )
         )
+        let preSeekSnapshot = try validatedAetherSnapshot(for: engine)
+        let sourceAxisOffset =
+            preSeekSnapshot.sourceTime - preSeekSnapshot.currentTime
+
+        if let preseekSeconds = configuration.preseekSeconds {
+            aetherRequestedRate = 0
+            engine.pause()
+            emitter.emit(
+                "preseek_requested",
+                metrics: emitter.metrics(
+                    for: try validatedAetherSnapshot(for: engine),
+                    extra: [
+                        "target_seconds":
+                            SmokeEventEmitter.number(preseekSeconds),
+                    ]
+                )
+            )
+            await engine.seek(to: preseekSeconds)
+            try Task.checkCancellation()
+            let preseekSnapshot = try validatedAetherSnapshot(for: engine)
+            try SmokePolicy.validateSeekLanding(
+                target: preseekSeconds,
+                actual: preseekSnapshot.currentTime
+            )
+            emitter.emit(
+                "preseek_landed",
+                metrics: emitter.metrics(
+                    for: preseekSnapshot,
+                    extra: [
+                        "target_seconds":
+                            SmokeEventEmitter.number(preseekSeconds),
+                        "landing_error_seconds":
+                            SmokeEventEmitter.number(
+                                abs(
+                                    preseekSnapshot.currentTime
+                                    - preseekSeconds
+                                )
+                            ),
+                    ]
+                )
+            )
+            aetherRequestedRate = configuration.playbackRate
+            engine.play()
+            engine.setRate(configuration.playbackRate)
+            let preseekAdvance = try await requireStrictAetherSeekRecovery(
+                engine,
+                target: preseekSeconds,
+                sourceAxisOffset: sourceAxisOffset,
+                minimumAdvance:
+                    SmokePolicy.minimumPostSeekProgressSeconds,
+                emitter: emitter
+            )
+            emitter.emit(
+                "preseek_progress_passed",
+                metrics: emitter.metrics(
+                    for: try validatedAetherSnapshot(for: engine),
+                    extra: [
+                        "target_seconds":
+                            SmokeEventEmitter.number(preseekSeconds),
+                        "progress_seconds":
+                            SmokeEventEmitter.number(preseekAdvance),
+                    ]
+                )
+            )
+        }
 
         runState = .seeking
         statusMessage =
@@ -462,11 +550,12 @@ final class SmokeViewModel: ObservableObject {
         aetherRequestedRate = configuration.playbackRate
         engine.play()
         engine.setRate(configuration.playbackRate)
-        let postSeekAdvance = try await requireAetherProgress(
+        let postSeekAdvance = try await requireStrictAetherSeekRecovery(
             engine,
+            target: configuration.seekSeconds,
+            sourceAxisOffset: sourceAxisOffset,
             minimumAdvance:
                 SmokePolicy.minimumPostSeekProgressSeconds,
-            stage: "post_seek",
             emitter: emitter
         )
 
@@ -876,6 +965,154 @@ final class SmokeViewModel: ObservableObject {
                 )
             }
 
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func requireStrictAetherSeekRecovery(
+        _ engine: AetherEngine,
+        target: Double,
+        sourceAxisOffset: Double,
+        minimumAdvance: Double,
+        emitter: SmokeEventEmitter
+    ) async throws -> Double {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        var stableBaseline: Double?
+        var progressReachedAt: TimeInterval?
+        var latestAdvance = 0.0
+        var checkpointIndex = 0
+
+        while true {
+            try Task.checkCancellation()
+            let snapshot = try validatedAetherSnapshot(for: engine)
+            updateSnapshot(snapshot)
+
+            if case .error(let message) = snapshot.phase {
+                throw SmokeFailure.playerFailed(message)
+            }
+            if snapshot.phase == .ended {
+                throw SmokeFailure.endedBeforeProgress(
+                    stage: "strict_post_seek"
+                )
+            }
+            guard snapshot.sourceTime.isFinite,
+                  snapshot.bufferedPosition.isFinite else {
+                throw SmokeFailure.aetherContractViolation(
+                    "non-finite source or buffer clock"
+                )
+            }
+            let renderedDisplayTime =
+                snapshot.sourceTime - sourceAxisOffset
+            if snapshot.bufferedPosition
+                + SmokePolicy.bufferInvariantToleranceSeconds
+                < renderedDisplayTime {
+                throw SmokeFailure.aetherContractViolation(
+                    "bufferedPosition \(snapshot.bufferedPosition) trails "
+                        + "rendered display time \(renderedDisplayTime)"
+                )
+            }
+
+            let clockDelta =
+                renderedDisplayTime - snapshot.currentTime
+            let clocksAligned = abs(clockDelta)
+                <= SmokePolicy.strictClockAlignmentToleranceSeconds
+
+            if stableBaseline == nil,
+               snapshot.phase == .playing,
+               clocksAligned {
+                let landingError = abs(renderedDisplayTime - target)
+                guard landingError
+                        <= SmokePolicy
+                            .strictRenderedLandingToleranceSeconds else {
+                    throw SmokeFailure.aetherContractViolation(
+                        "rendered landing \(renderedDisplayTime) is "
+                            + "\(landingError)s from target \(target)"
+                    )
+                }
+                stableBaseline = snapshot.currentTime
+                emitter.emit(
+                    "strict_seek_stabilized",
+                    metrics: emitter.metrics(
+                        for: snapshot,
+                        extra: [
+                            "rendered_display_time_seconds":
+                                SmokeEventEmitter.number(
+                                    renderedDisplayTime
+                                ),
+                            "source_axis_offset_seconds":
+                                SmokeEventEmitter.number(sourceAxisOffset),
+                        ]
+                    )
+                )
+            }
+
+            if let stableBaseline {
+                guard snapshot.phase == .playing, clocksAligned else {
+                    throw SmokeFailure.aetherContractViolation(
+                        "playback left stable playing after seek "
+                            + "(phase \(snapshot.phase.smokeName), "
+                            + "clock delta \(clockDelta))"
+                    )
+                }
+                latestAdvance = try SmokePolicy.progress(
+                    from: stableBaseline,
+                    to: snapshot.currentTime
+                )
+                if latestAdvance >= minimumAdvance,
+                   progressReachedAt == nil {
+                    progressReachedAt =
+                        ProcessInfo.processInfo.systemUptime
+                    emitter.emit(
+                        "strict_post_seek_progress_reached",
+                        metrics: emitter.metrics(
+                            for: snapshot,
+                            extra: [
+                                "progress_seconds":
+                                    SmokeEventEmitter.number(latestAdvance),
+                            ]
+                        )
+                    )
+                }
+                if let progressReachedAt,
+                   ProcessInfo.processInfo.systemUptime
+                    - progressReachedAt
+                    >= SmokePolicy.strictPostSeekSustainSeconds {
+                    return latestAdvance
+                }
+            }
+
+            let elapsed =
+                ProcessInfo.processInfo.systemUptime - startedAt
+            while checkpointIndex
+                    < SmokePolicy.diagnosticCheckpointsSeconds.count,
+                  elapsed >= SmokePolicy
+                    .diagnosticCheckpointsSeconds[checkpointIndex] {
+                let checkpoint = SmokePolicy
+                    .diagnosticCheckpointsSeconds[checkpointIndex]
+                emitter.emit(
+                    "awaiting_strict_seek_recovery",
+                    metrics: emitter.metrics(
+                        for: snapshot,
+                        extra: [
+                            "elapsed_seconds":
+                                SmokeEventEmitter.number(checkpoint),
+                            "rendered_display_time_seconds":
+                                SmokeEventEmitter.number(
+                                    renderedDisplayTime
+                                ),
+                            "stable_baseline":
+                                stableBaseline == nil ? "absent" : "present",
+                        ]
+                    )
+                )
+                checkpointIndex += 1
+            }
+            if elapsed >= SmokePolicy.maximumZeroProgressSeconds {
+                throw SmokeFailure.aetherContractViolation(
+                    "did not reach stable post-seek playing within "
+                        + "\(SmokePolicy.maximumZeroProgressSeconds)s"
+                )
+            }
             try await Task.sleep(for: .milliseconds(100))
         }
     }

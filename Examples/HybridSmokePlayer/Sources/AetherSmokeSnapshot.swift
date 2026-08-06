@@ -5,6 +5,8 @@ import Foundation
 struct AetherSmokeSnapshot {
     let phase: PlaybackPhase
     let currentTime: Double
+    let sourceTime: Double
+    let bufferedPosition: Double
     let duration: Double
     let requestedRate: Float
     let backend: PlaybackBackend
@@ -35,6 +37,8 @@ struct AetherSmokeSnapshot {
 
         phase = engine.playbackPhase
         currentTime = engine.clock.currentTime
+        sourceTime = engine.clock.sourceTime
+        bufferedPosition = engine.clock.bufferedPosition
         duration = engine.duration
         self.requestedRate = requestedRate
         backend = engine.playbackBackend
@@ -48,6 +52,8 @@ struct AetherSmokeSnapshot {
     init(
         phase: PlaybackPhase,
         currentTime: Double,
+        sourceTime: Double,
+        bufferedPosition: Double,
         duration: Double,
         requestedRate: Float,
         backend: PlaybackBackend,
@@ -59,6 +65,8 @@ struct AetherSmokeSnapshot {
     ) {
         self.phase = phase
         self.currentTime = currentTime
+        self.sourceTime = sourceTime
+        self.bufferedPosition = bufferedPosition
         self.duration = duration
         self.requestedRate = requestedRate
         self.backend = backend

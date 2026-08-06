@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -33,7 +33,7 @@
 /* Begin PBXFileReference section */
 		08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HybridSmokePlayerApp.swift; sourceTree = "<group>"; };
 		2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfigurationTests.swift; sourceTree = "<group>"; };
-		257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HybridSmokePlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HybridSmokePlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		39D24F4344829401094C42EF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicyTests.swift; sourceTree = "<group>"; };
 		86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfiguration.swift; sourceTree = "<group>"; };
@@ -42,7 +42,7 @@
 		AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicy.swift; sourceTree = "<group>"; };
 		B90583E2D295C9144488C957 /* SyncnextHybrid */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SyncnextHybrid; path = ../..; sourceTree = SOURCE_ROOT; };
 		C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeEventLogger.swift; sourceTree = "<group>"; };
-		CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HybridSmokePlayerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HybridSmokePlayerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E537BE7BAFD478A0C955B8E9 /* AetherSmokeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherSmokeSnapshot.swift; sourceTree = "<group>"; };
 		FD0730942075C43FFD8C1DD0 /* AetherEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AetherEngine; path = ../../AetherEngine; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -163,6 +163,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					5690926E547F1D962E1E58F7 = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -181,6 +182,7 @@
 				11D50DF94FA54126972465EF /* XCLocalSwiftPackageReference "../../AetherEngine" */,
 				6C9E2AD879D36E67DB7EFEA7 /* XCLocalSwiftPackageReference "../.." */,
 			);
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -284,7 +286,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
-				TVOS_DEPLOYMENT_TARGET = 16.0;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
 			};
 			name = Debug;
 		};
@@ -292,7 +294,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				DEVELOPMENT_TEAM = WQY45CL427;
 				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -313,7 +314,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = WQY45CL427;
+				DEVELOPMENT_TEAM = "";
 				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
@@ -332,7 +333,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				DEVELOPMENT_TEAM = WQY45CL427;
 				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -399,7 +399,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
-				TVOS_DEPLOYMENT_TARGET = 16.0;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
 			};
 			name = Release;
 		};
@@ -409,7 +409,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = WQY45CL427;
+				DEVELOPMENT_TEAM = "";
 				"EXCLUDED_ARCHS[sdk=appletvsimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/Info.plist;

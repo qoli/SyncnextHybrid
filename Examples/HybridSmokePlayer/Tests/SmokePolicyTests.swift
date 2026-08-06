@@ -165,6 +165,8 @@ final class SmokePolicyTests: XCTestCase {
         let snapshot = AetherSmokeSnapshot(
             phase: .paused,
             currentTime: 0,
+            sourceTime: 0,
+            bufferedPosition: 10,
             duration: 300,
             requestedRate: 0,
             backend: .software,

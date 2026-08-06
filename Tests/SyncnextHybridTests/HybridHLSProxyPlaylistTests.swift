@@ -102,6 +102,54 @@ final class HybridHLSProxyPlaylistTests: XCTestCase {
         )
     }
 
+    func testMaterialFrontierNeverTrailsRenderedSourceTime() {
+        XCTAssertEqual(
+            HybridHLSProxyMaterialPolicy.bufferedThrough(
+                bufferedPosition: 1_059.823222,
+                renderedSourceTime: 1_061.28
+            ),
+            1_061.28
+        )
+        XCTAssertEqual(
+            HybridHLSProxyMaterialPolicy.bufferedThrough(
+                bufferedPosition: 1_100,
+                renderedSourceTime: 1_061.28
+            ),
+            1_100
+        )
+    }
+
+    func testSeekTransientZeroRateDoesNotReplaceServerIntent() {
+        XCTAssertFalse(
+            HybridHLSProxyRateObservationPolicy.shouldAccept(
+                rate: 0,
+                clientIsWaiting: false,
+                hasPendingNavigation: true
+            )
+        )
+        XCTAssertFalse(
+            HybridHLSProxyRateObservationPolicy.shouldAccept(
+                rate: 0,
+                clientIsWaiting: true,
+                hasPendingNavigation: false
+            )
+        )
+        XCTAssertTrue(
+            HybridHLSProxyRateObservationPolicy.shouldAccept(
+                rate: 0,
+                clientIsWaiting: false,
+                hasPendingNavigation: false
+            )
+        )
+        XCTAssertTrue(
+            HybridHLSProxyRateObservationPolicy.shouldAccept(
+                rate: 1,
+                clientIsWaiting: true,
+                hasPendingNavigation: true
+            )
+        )
+    }
+
     func testServerAuthorityOwnsClockRateWaitingAndSeekGeneration() {
         var authority = HybridHLSTimelineAuthority(
             duration: 2_000,
@@ -191,6 +239,40 @@ final class HybridHLSProxyPlaylistTests: XCTestCase {
             authority.snapshot(uptime: 136).currentTime,
             61,
             accuracy: 0.001
+        )
+    }
+
+    func testOldSegmentCannotResolveCurrentSeekGeneration() {
+        var authority = HybridHLSTimelineAuthority(
+            duration: 2_000,
+            initialPosition: 2,
+            uptime: 100
+        )
+        authority.markReady(uptime: 100)
+        authority.setRate(1, uptime: 100)
+
+        XCTAssertEqual(authority.seek(to: 1_055.79, uptime: 102), 1)
+        XCTAssertFalse(
+            authority.recordResolvedSegment(
+                5,
+                requestGeneration: 1,
+                uptime: 103
+            )
+        )
+        let stillWaiting = authority.snapshot(uptime: 104)
+        XCTAssertEqual(stillWaiting.phase, .waitingToPlay)
+        XCTAssertEqual(stillWaiting.resolvedSegmentIndices, [])
+
+        XCTAssertTrue(
+            authority.recordResolvedSegment(
+                1_055,
+                requestGeneration: 1,
+                uptime: 104
+            )
+        )
+        XCTAssertEqual(
+            authority.snapshot(uptime: 104).resolvedSegmentIndices,
+            [1_055]
         )
     }
 
