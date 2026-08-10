@@ -1,0 +1,384 @@
+diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
+new file mode 100644
+index 0000000..57c436b
+--- /dev/null
++++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
+@@ -0,0 +1,263 @@
++import Foundation
++import AVFAudio
++
++/// One finite, cache-backed PCM result intended only for fingerprint analysis.
++/// Buffers use `AetherEngine.audioTapFormat` and carry source-axis timestamps.
++public struct AetherFingerprintAudioBatch: @unchecked Sendable {
++    public let buffers: [AudioTapBuffer]
++    public let sourceRange: Range<Double>
++    public let segmentCount: Int
++    public let cacheWaitSeconds: Double
++    public let decodeSeconds: Double
++}
++
++public enum AetherFingerprintAudioError: Error, Sendable, Equatable {
++    case invalidRange
++    case loopbackVODRequired
++    case audioTrackUnavailable
++    case segmentUnavailable(Int)
++    case segmentDecodeFailed(Int)
++    case discontinuousRange
++    case incompleteRange
++    case sessionChanged
++}
++
++extension AetherEngine {
++
++    /// Decode a bounded source-time range from the active loopback VOD cache as
++    /// fast as segments become available. Unlike `installAudioTap()`, this is a
++    /// one-shot batch operation and is not paced to the playhead. It never opens
++    /// another source URL or silently switches to the remote-HLS tap reader.
++    @MainActor
++    public func fingerprintAudio(
++        in sourceRange: Range<Double>,
++        timeoutSeconds: Double = 30
++    ) async throws -> AetherFingerprintAudioBatch {
++        let duration = sourceRange.upperBound - sourceRange.lowerBound
++        guard sourceRange.lowerBound.isFinite,
++              sourceRange.upperBound.isFinite,
++              sourceRange.lowerBound >= 0,
++              duration > 0,
++              duration <= 180,
++              timeoutSeconds.isFinite,
++              timeoutSeconds > 0 else {
++            throw AetherFingerprintAudioError.invalidRange
++        }
++        guard !isLive,
++              let session = nativeVideoSession,
++              let cache = session.cache,
++              let provider = session.provider else {
++            throw AetherFingerprintAudioError.loopbackVODRequired
++        }
++        guard session.audioPipelineDescription != nil else {
++            throw AetherFingerprintAudioError.audioTrackUnavailable
++        }
++
++        let generation = loadGeneration
++        let shift = session.playlistShiftSeconds
++        let displayShift = shift - sourcePresentationOrigin
++        let playlistRange = (sourceRange.lowerBound - displayShift)..<(sourceRange.upperBound - displayShift)
++        let firstIndex = provider.segmentIndex(
++            forPlaylistTime: playlistRange.lowerBound
++        )
++        let lastIndex = provider.segmentIndex(
++            forPlaylistTime: max(
++                playlistRange.lowerBound,
++                playlistRange.upperBound - 0.000_001
++            )
++        )
++        let reader = CachedFingerprintAudioReader(
++            cache: cache,
++            firstIndex: firstIndex,
++            lastIndex: lastIndex,
++            sourceRange: sourceRange,
++            displayShiftSeconds: displayShift,
++            timeoutSeconds: timeoutSeconds
++        )
++        let startedAt = ProcessInfo.processInfo.systemUptime
++        EngineLog.emit(
++            "[FingerprintAudio] phase=started range="
++                + "\(String(format: "%.3f", sourceRange.lowerBound))..."
++                + "\(String(format: "%.3f", sourceRange.upperBound)) "
++                + "segments=\(firstIndex)...\(lastIndex)",
++            category: .engine
++        )
++        let worker = Task.detached(priority: .utility) {
++            try reader.read()
++        }
++        do {
++            let batch = try await withTaskCancellationHandler {
++                try await worker.value
++            } onCancel: {
++                worker.cancel()
++                cache.wakeWaiters()
++            }
++            guard loadGeneration == generation,
++                  nativeVideoSession === session else {
++                throw AetherFingerprintAudioError.sessionChanged
++            }
++            EngineLog.emit(
++                "[FingerprintAudio] phase=completed range="
++                    + "\(String(format: "%.3f", sourceRange.lowerBound))..."
++                    + "\(String(format: "%.3f", sourceRange.upperBound)) "
++                    + "segments=\(batch.segmentCount) "
++                    + "cacheWait=\(String(format: "%.3f", batch.cacheWaitSeconds)) "
++                    + "decode=\(String(format: "%.3f", batch.decodeSeconds)) "
++                    + "elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))",
++                category: .engine
++            )
++            return batch
++        } catch {
++            if loadGeneration != generation || nativeVideoSession !== session {
++                throw AetherFingerprintAudioError.sessionChanged
++            }
++            throw error
++        }
++    }
++}
++
++private final class CachedFingerprintAudioReader: @unchecked Sendable {
++    private let cache: SegmentCache
++    private let firstIndex: Int
++    private let lastIndex: Int
++    private let sourceRange: Range<Double>
++    private let displayShiftSeconds: Double
++    private let timeoutSeconds: Double
++    private let decoder = AudioTapSegmentDecoder()
++
++    init(
++        cache: SegmentCache,
++        firstIndex: Int,
++        lastIndex: Int,
++        sourceRange: Range<Double>,
++        displayShiftSeconds: Double,
++        timeoutSeconds: Double
++    ) {
++        self.cache = cache
++        self.firstIndex = firstIndex
++        self.lastIndex = lastIndex
++        self.sourceRange = sourceRange
++        self.displayShiftSeconds = displayShiftSeconds
++        self.timeoutSeconds = timeoutSeconds
++    }
++
++    func read() throws -> AetherFingerprintAudioBatch {
++        let deadline = Date().addingTimeInterval(timeoutSeconds)
++        let demand = cache.beginAnalysisDemand(through: lastIndex)
++        defer { cache.endAnalysisDemand(demand) }
++
++        let collector = FingerprintAudioCollector()
++        let filter = AudioTapMonotonicFilter { buffer in
++            collector.append(buffer)
++        }
++        var pendingDiscontinuity = true
++        var cacheWaitSeconds = 0.0
++        var decodeSeconds = 0.0
++
++        for index in firstIndex...lastIndex {
++            try Task.checkCancellation()
++            let waitStartedAt = ProcessInfo.processInfo.systemUptime
++            guard let segment = try waitForSegment(index, deadline: deadline) else {
++                throw AetherFingerprintAudioError.segmentUnavailable(index)
++            }
++            cacheWaitSeconds +=
++                ProcessInfo.processInfo.systemUptime - waitStartedAt
++
++            let version = cache.initVersionID(forSegment: index)
++            guard let initData = cache.initData(versionID: version)
++                    ?? cache.fetchInit(timeout: remaining(until: deadline)) else {
++                throw AetherFingerprintAudioError.segmentUnavailable(index)
++            }
++            let decodeStartedAt = ProcessInfo.processInfo.systemUptime
++            let chunks = decoder.decode(initData: initData, segment: segment)
++            decodeSeconds += ProcessInfo.processInfo.systemUptime - decodeStartedAt
++            guard !chunks.isEmpty else {
++                throw AetherFingerprintAudioError.segmentDecodeFailed(index)
++            }
++            for chunk in chunks {
++                filter.accept(
++                    AudioTapBuffer(
++                        buffer: chunk.buffer,
++                        sourceTime: chunk.ptsSeconds + displayShiftSeconds,
++                        discontinuity: pendingDiscontinuity
++                    )
++                )
++                pendingDiscontinuity = false
++            }
++        }
++
++        let relevant = collector.snapshot().filter { buffer in
++            let end = buffer.sourceTime
++                + Double(buffer.buffer.frameLength)
++                    / buffer.buffer.format.sampleRate
++            return end > sourceRange.lowerBound
++                && buffer.sourceTime < sourceRange.upperBound
++        }
++        try validateCoverage(relevant)
++        return AetherFingerprintAudioBatch(
++            buffers: relevant,
++            sourceRange: sourceRange,
++            segmentCount: lastIndex - firstIndex + 1,
++            cacheWaitSeconds: cacheWaitSeconds,
++            decodeSeconds: decodeSeconds
++        )
++    }
++
++    private func waitForSegment(
++        _ index: Int,
++        deadline: Date
++    ) throws -> Data? {
++        while Date() < deadline {
++            try Task.checkCancellation()
++            if let segment = cache.fetch(
++                index: index,
++                timeout: min(0.25, remaining(until: deadline))
++            ) {
++                return segment
++            }
++        }
++        return nil
++    }
++
++    private func remaining(until deadline: Date) -> Double {
++        max(0.001, deadline.timeIntervalSinceNow)
++    }
++
++    private func validateCoverage(_ buffers: [AudioTapBuffer]) throws {
++        let tolerance = 0.05
++        var coveredThrough = sourceRange.lowerBound
++        for (index, buffer) in buffers.enumerated() {
++            let start = buffer.sourceTime
++            let end = start + Double(buffer.buffer.frameLength)
++                / buffer.buffer.format.sampleRate
++            if index > 0, buffer.discontinuity {
++                throw AetherFingerprintAudioError.discontinuousRange
++            }
++            if start > coveredThrough + tolerance {
++                throw AetherFingerprintAudioError.discontinuousRange
++            }
++            coveredThrough = max(coveredThrough, end)
++            if coveredThrough >= sourceRange.upperBound - tolerance {
++                return
++            }
++        }
++        throw AetherFingerprintAudioError.incompleteRange
++    }
++}
++
++private final class FingerprintAudioCollector: @unchecked Sendable {
++    private let lock = NSLock()
++    private var buffers: [AudioTapBuffer] = []
++
++    func append(_ buffer: AudioTapBuffer) {
++        lock.lock()
++        buffers.append(buffer)
++        lock.unlock()
++    }
++
++    func snapshot() -> [AudioTapBuffer] {
++        lock.lock()
++        defer { lock.unlock() }
++        return buffers
++    }
++}
+diff --git a/Sources/AetherEngine/Video/SegmentCache.swift b/Sources/AetherEngine/Video/SegmentCache.swift
+index 7cd0b99..e64565f 100644
+--- a/Sources/AetherEngine/Video/SegmentCache.swift
++++ b/Sources/AetherEngine/Video/SegmentCache.swift
+@@ -38,6 +38,11 @@ final class SegmentCache: @unchecked Sendable {
+     /// Declared by provider at top of each mediaSegment(at:); non-monotonic (backward scrub is valid).
+     private var currentTargetIndex: Int = -1
+ 
++    /// One-shot host analysis requests that may extend producer race-ahead
++    /// without changing AVPlayer's fetch target or the session's normal
++    /// forward-buffer policy. Values are inclusive segment indices.
++    private var analysisDemands: [UUID: Int] = [:]
++
+     /// Lowest index of the consumer's current uninterrupted fetch sequence, and the highest index it has
+     /// reached in it. A seek flushes the consumer's buffer, so only within one sequence does everything
+     /// between the playhead and the target sit in that buffer, which is what
+@@ -210,6 +215,7 @@ final class SegmentCache: @unchecked Sendable {
+         initVersions.removeAll(keepingCapacity: false)
+         _totalBytes = 0
+         _highestStoredIndex = -1
++        analysisDemands.removeAll(keepingCapacity: false)
+         condition.broadcast()
+         condition.unlock()
+ 
+@@ -231,6 +237,24 @@ final class SegmentCache: @unchecked Sendable {
+         for url in doomed { try? FileManager.default.removeItem(at: url) }
+     }
+ 
++    /// Extend production through `index` for one bounded cache-backed analysis.
++    /// The returned token must be released when the reader finishes or fails.
++    func beginAnalysisDemand(through index: Int) -> UUID {
++        condition.lock()
++        defer { condition.unlock() }
++        let token = UUID()
++        analysisDemands[token] = index
++        condition.broadcast()
++        return token
++    }
++
++    func endAnalysisDemand(_ token: UUID) {
++        condition.lock()
++        analysisDemands.removeValue(forKey: token)
++        condition.broadcast()
++        condition.unlock()
++    }
++
+     /// Must be called with condition held.
+     ///
+     /// A fetch that leaves a gap above the front, or that drops further back than a handover refetch
+@@ -298,11 +322,21 @@ final class SegmentCache: @unchecked Sendable {
+     func awaitFetchHighWater(reaching target: Int, timeout: TimeInterval = 1.0) -> Bool {
+         condition.lock()
+         defer { condition.unlock() }
+-        if currentTargetIndex >= target { return true }
++        if productionTargetLocked >= target { return true }
+         if closed { return false }
+         let deadline = Date().addingTimeInterval(timeout)
+         _ = condition.wait(until: deadline)
+-        return currentTargetIndex >= target
++        return productionTargetLocked >= target
++    }
++
++    /// Consumer-target equivalent used only by producer backpressure. A
++    /// demand through segment N must let a producer with forward window W
++    /// advance until N, hence N - W on the existing target axis.
++    private var productionTargetLocked: Int {
++        let analysisTarget = analysisDemands.values.max().map {
++            $0 - forwardWindow
++        } ?? Int.min
++        return max(currentTargetIndex, analysisTarget)
+     }
+ 
+     /// Evict segments strictly below cutoff (= live firstVisible). Bounded by firstVisible <= currentTargetIndex
+diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngineTests/SegmentCacheTests.swift
+index 6b133da..24f8ba7 100644
+--- a/Tests/AetherEngineTests/SegmentCacheTests.swift
++++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
+@@ -129,6 +129,37 @@ struct SegmentCacheTests {
+         #expect(c.peek(index: 0) == nil)
+     }
+ 
++    @Test("bounded analysis demand extends producer high water without moving consumer target")
++    func analysisDemandExtendsProduction() {
++        let c = SegmentCache(forwardWindow: 10, backwardWindow: 20)
++        defer { c.close() }
++        c.declareTarget(0)
++        #expect(!c.awaitFetchHighWater(reaching: 1, timeout: 0.001))
++
++        let token = c.beginAnalysisDemand(through: 15)
++        #expect(c.targetIndex == 0)
++        #expect(c.awaitFetchHighWater(reaching: 5, timeout: 0.001))
++        #expect(!c.awaitFetchHighWater(reaching: 6, timeout: 0.001))
++
++        c.endAnalysisDemand(token)
++        #expect(!c.awaitFetchHighWater(reaching: 1, timeout: 0.001))
++    }
++
++    @Test("overlapping analysis demands keep the furthest bound until its token ends")
++    func overlappingAnalysisDemands() {
++        let c = SegmentCache(forwardWindow: 10, backwardWindow: 20)
++        defer { c.close() }
++        c.declareTarget(0)
++        let near = c.beginAnalysisDemand(through: 12)
++        let far = c.beginAnalysisDemand(through: 18)
++
++        #expect(c.awaitFetchHighWater(reaching: 8, timeout: 0.001))
++        c.endAnalysisDemand(far)
++        #expect(c.awaitFetchHighWater(reaching: 2, timeout: 0.001))
++        #expect(!c.awaitFetchHighWater(reaching: 3, timeout: 0.001))
++        c.endAnalysisDemand(near)
++    }
++
+     @Test("contiguousForwardFrontier stops at the first gap ahead of target")
+     func contiguousForwardFrontierStopsAtGap() {
+         let c = SegmentCache(forwardWindow: 200, backwardWindow: 20)

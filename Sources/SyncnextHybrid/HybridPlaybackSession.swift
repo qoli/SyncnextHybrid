@@ -431,6 +431,50 @@ public final class HybridPlaybackSession:
         engine.selectAudioTrack(index: id)
     }
 
+    /// One-shot PCM for fingerprint v2. The engine reads only its active
+    /// loopback VOD cache; unsupported routes fail and never open a second
+    /// source cursor.
+    public func fingerprintAudio(
+        in sourceRange: Range<Double>
+    ) async throws -> HybridFingerprintAudioBatch {
+        guard !stopped else {
+            throw HybridFingerprintAudioError.sessionStopped
+        }
+        do {
+            let batch = try await engine.fingerprintAudio(in: sourceRange)
+            return HybridFingerprintAudioBatch(
+                buffers: batch.buffers.map {
+                    HybridFingerprintAudioBuffer(
+                        buffer: $0.buffer,
+                        sourceTime: $0.sourceTime,
+                        discontinuity: $0.discontinuity
+                    )
+                },
+                sourceRange: batch.sourceRange,
+                segmentCount: batch.segmentCount,
+                cacheWaitSeconds: batch.cacheWaitSeconds,
+                decodeSeconds: batch.decodeSeconds
+            )
+        } catch let error as AetherFingerprintAudioError {
+            switch error {
+            case .invalidRange:
+                throw HybridFingerprintAudioError.invalidRange
+            case .loopbackVODRequired:
+                throw HybridFingerprintAudioError.loopbackVODRequired
+            case .audioTrackUnavailable:
+                throw HybridFingerprintAudioError.audioTrackUnavailable
+            case .segmentUnavailable, .segmentDecodeFailed:
+                throw HybridFingerprintAudioError.sourceUnavailable
+            case .discontinuousRange:
+                throw HybridFingerprintAudioError.discontinuousRange
+            case .incompleteRange:
+                throw HybridFingerprintAudioError.incompleteRange
+            case .sessionChanged:
+                throw HybridFingerprintAudioError.sessionChanged
+            }
+        }
+    }
+
     public func selectSubtitleTrack(id: Int?) {
         guard !stopped else {
             return

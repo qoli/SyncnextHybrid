@@ -40,7 +40,7 @@ Syncnext-specific 行為，都必須實作在：
 
 ### 2.2 現有 Patch 是凍結例外，不是擴張先例
 
-目前唯一已批准的 AetherEngine Patch 是：
+目前已批准的 AetherEngine Patch 是：
 
 1. `0001-local-ffmpegbuild.patch`
    - 將 AetherEngine 的 FFmpegBuild dependency 改為 sibling local path。
@@ -53,6 +53,11 @@ Syncnext-specific 行為，都必須實作在：
      的 TS ingest，再沿 AetherEngine fMP4 remux 路徑播放。
    - 此項是可拋棄的下游 workaround；移除條件與驗收證據記錄於
      `Docs/Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md`。
+4. `0004-cache-backed-fingerprint-audio.patch`
+   - 為 fingerprint v2 暴露最小、有限、可取消的 loopback VOD cache PCM
+     batch；一次性 material demand 不改寫 AVPlayer consumer target。
+   - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
+     不回退至獨立來源下載。
 
 FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責任，不得順便加入：
 

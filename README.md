@@ -69,6 +69,14 @@ V1 is tvOS-only. Pure-audio sessions and proxy-route PiP/AirPlay are explicit
 unsupported states. An analysis failure never changes playback route, audio
 selection, or playback state.
 
+Fingerprint v2 uses `HybridPlaybackSession.fingerprintAudio(in:)` instead of
+the independent V1 cursor. The bounded operation asks the active loopback VOD
+`SegmentCache` to produce only the requested source-time range, decodes the
+selected cached audio as fast as it becomes available, and returns timestamped
+PCM directly to SyncnextHybrid. It never opens a second source URL. Native
+remote HLS and incomplete cache coverage fail as typed unsupported/unavailable
+states; there is no implicit V1 or remote-reader fallback.
+
 ## tvOS smoke player
 
 [`Examples/HybridSmokePlayer`](Examples/HybridSmokePlayer) is a standalone

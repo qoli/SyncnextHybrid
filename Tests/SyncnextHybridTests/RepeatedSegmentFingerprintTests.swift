@@ -1,3 +1,4 @@
+import AVFAudio
 import XCTest
 @testable import SyncnextHybrid
 
@@ -19,16 +20,19 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
               let currentPath = environment["FINGERPRINT_GOLDEN_CURRENT"] else {
             throw XCTSkip("Set the two FINGERPRINT_GOLDEN_* paths for explorer parity")
         }
+        let startedAt = Date.timeIntervalSinceReferenceDate
         let previous = try RepeatedSegmentFingerprint.compute(
             audioFileURL: URL(fileURLWithPath: previousPath),
             label: "explorer-ep07-front",
             sourceStartSeconds: 0
         )
+        let previousReadyAt = Date.timeIntervalSinceReferenceDate
         let current = try RepeatedSegmentFingerprint.compute(
             audioFileURL: URL(fileURLWithPath: currentPath),
             label: "explorer-ep08-front",
             sourceStartSeconds: 0
         )
+        let currentReadyAt = Date.timeIntervalSinceReferenceDate
 
         let match = try XCTUnwrap(
             RepeatedSegmentFingerprint.findBestPairwiseMatch(
@@ -36,6 +40,19 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
                 current: current
             )
         )
+        let matchReadyAt = Date.timeIntervalSinceReferenceDate
+
+        if environment["FINGERPRINT_BENCHMARK"] == "1" {
+            print(
+                String(
+                    format: "fingerprint-benchmark previous=%.6f current=%.6f match=%.6f total=%.6f",
+                    previousReadyAt - startedAt,
+                    currentReadyAt - previousReadyAt,
+                    matchReadyAt - currentReadyAt,
+                    matchReadyAt - startedAt
+                )
+            )
+        }
 
         XCTAssertEqual(match.rightRange.lowerBound, 0, accuracy: 0.5)
         XCTAssertEqual(match.rightRange.upperBound, 86.8, accuracy: 1.0)
@@ -135,6 +152,86 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         } / Double(original.fingerprints.count - 2)
         XCTAssertGreaterThan(averageSimilarity, 0.70)
         XCTAssertEqual(original.validity, quieter.validity)
+    }
+
+    func testCacheBackedPCMBuildsFingerprintWithoutFileArtifact() throws {
+        let first = makePCMBuffer(startSeconds: 0, duration: 6)
+        let second = makePCMBuffer(startSeconds: 6, duration: 6)
+        let batch = HybridFingerprintAudioBatch(
+            buffers: [first, second],
+            sourceRange: 0..<12,
+            segmentCount: 2,
+            cacheWaitSeconds: 0,
+            decodeSeconds: 0
+        )
+
+        let artifact = try RepeatedSegmentFingerprint.compute(
+            audioBatch: batch,
+            label: "cache-backed"
+        )
+
+        XCTAssertEqual(artifact.sourceStartSeconds, 0)
+        XCTAssertGreaterThanOrEqual(artifact.fingerprints.count, 118)
+        XCTAssertEqual(artifact.fingerprints.count, artifact.validity.count)
+    }
+
+    func testCacheBackedPCMRejectsMidRangeDiscontinuity() throws {
+        let first = makePCMBuffer(startSeconds: 0, duration: 6)
+        var second = makePCMBuffer(startSeconds: 6, duration: 6)
+        second = HybridFingerprintAudioBuffer(
+            buffer: second.buffer,
+            sourceTime: second.sourceTime,
+            discontinuity: true
+        )
+        let batch = HybridFingerprintAudioBatch(
+            buffers: [first, second],
+            sourceRange: 0..<12,
+            segmentCount: 2,
+            cacheWaitSeconds: 0,
+            decodeSeconds: 0
+        )
+
+        XCTAssertThrowsError(
+            try RepeatedSegmentFingerprint.compute(
+                audioBatch: batch,
+                label: "discontinuous"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? RepeatedSegmentFingerprintError,
+                .discontinuousAudio
+            )
+        }
+    }
+
+    private func makePCMBuffer(
+        startSeconds: Double,
+        duration: Double
+    ) -> HybridFingerprintAudioBuffer {
+        let sampleRate = 48_000.0
+        let frames = Int(duration * sampleRate)
+        let format = AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: 1
+        )!
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(frames)
+        )!
+        buffer.frameLength = AVAudioFrameCount(frames)
+        let channel = buffer.floatChannelData![0]
+        for index in 0..<frames {
+            let time = startSeconds + Double(index) / sampleRate
+            channel[index] = Float(
+                0.4 * sin(2 * Double.pi * 440 * time)
+                    + 0.2 * sin(2 * Double.pi * 1_137 * time)
+            )
+        }
+        return HybridFingerprintAudioBuffer(
+            buffer: buffer,
+            sourceTime: startSeconds,
+            discontinuity: startSeconds == 0
+        )
     }
 }
 

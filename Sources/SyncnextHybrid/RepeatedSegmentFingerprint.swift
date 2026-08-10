@@ -66,6 +66,7 @@ public struct RepeatedSegmentMatch: Sendable, Equatable {
 public enum RepeatedSegmentFingerprintError: Error, Sendable, Equatable {
     case invalidAudio
     case audioDecodeFailed
+    case discontinuousAudio
     case incompatibleArtifacts
     case insufficientValidFrames
 }
@@ -106,6 +107,17 @@ public enum RepeatedSegmentFingerprint {
             throw RepeatedSegmentFingerprintError.audioDecodeFailed
         }
         var samples: [Float] = []
+        let ratio = outputFormat.sampleRate / file.processingFormat.sampleRate
+        samples.reserveCapacity(Int(ceil(Double(file.length) * ratio)))
+        let outputCapacity = AVAudioFrameCount(
+            ceil(Double(inputCapacity) * ratio) + 32
+        )
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: outputCapacity
+        ) else {
+            throw RepeatedSegmentFingerprintError.audioDecodeFailed
+        }
         while file.framePosition < file.length {
             input.frameLength = 0
             do {
@@ -114,16 +126,7 @@ public enum RepeatedSegmentFingerprint {
                 throw RepeatedSegmentFingerprintError.audioDecodeFailed
             }
             guard input.frameLength > 0 else { break }
-            let ratio = outputFormat.sampleRate / file.processingFormat.sampleRate
-            let outputCapacity = AVAudioFrameCount(
-                ceil(Double(input.frameLength) * ratio) + 32
-            )
-            guard let output = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: outputCapacity
-            ) else {
-                throw RepeatedSegmentFingerprintError.audioDecodeFailed
-            }
+            output.frameLength = 0
             let inputState = AudioConverterInputState(buffer: input)
             var conversionError: NSError?
             let status = converter.convert(
@@ -199,6 +202,8 @@ public enum RepeatedSegmentFingerprint {
         var frame = [Float](repeating: 0, count: configuration.windowSamples)
         var real = [Float](repeating: 0, count: configuration.windowSamples / 2)
         var imaginary = real
+        var bandPower = [Double](repeating: 0, count: configuration.bandCount)
+        var contrast = [Float](repeating: 0, count: logBandCount)
 
         for frameIndex in 0..<frameCount {
             let start = frameIndex * configuration.hopSamples
@@ -239,7 +244,6 @@ public enum RepeatedSegmentFingerprint {
                 }
             }
 
-            var bandPower = [Double](repeating: 0, count: configuration.bandCount)
             for (bandIndex, range) in bandRanges.enumerated() {
                 var total = 0.0
                 for bin in range {
@@ -257,7 +261,6 @@ public enum RepeatedSegmentFingerprint {
             }
             entropy /= logEntropyDenominator
 
-            var contrast = [Float](repeating: 0, count: logBandCount)
             for index in 0..<logBandCount {
                 contrast[index] = Float(
                     log(max(bandPower[index], 1e-20))
@@ -278,8 +281,8 @@ public enum RepeatedSegmentFingerprint {
                 && sqrt(squaredSum / Double(configuration.windowSamples))
                     >= configuration.minimumRMS
                 && entropy >= configuration.minimumSpectralEntropy
-            twoBackContrast = previousContrast
-            previousContrast = contrast
+            swap(&twoBackContrast, &previousContrast)
+            swap(&previousContrast, &contrast)
         }
 
         return RepeatedSegmentFingerprintArtifact(
@@ -287,6 +290,137 @@ public enum RepeatedSegmentFingerprint {
             sourceStartSeconds: sourceStartSeconds,
             fingerprints: fingerprints,
             validity: validity,
+            configuration: configuration
+        )
+    }
+
+    /// Build the same format-v1 artifact directly from Aether's cache-backed
+    /// PCM batch. This removes the intermediate AAC/WAV artifact and preserves
+    /// the requested source-time range exactly.
+    public static func compute(
+        audioBatch: HybridFingerprintAudioBatch,
+        label: String,
+        configuration: RepeatedSegmentFingerprintConfiguration = .v1
+    ) throws -> RepeatedSegmentFingerprintArtifact {
+        guard let first = audioBatch.buffers.first,
+              let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Double(configuration.sampleRate),
+                channels: 1,
+                interleaved: false
+              ),
+              let converter = AVAudioConverter(
+                from: first.buffer.format,
+                to: outputFormat
+              ) else {
+            throw RepeatedSegmentFingerprintError.audioDecodeFailed
+        }
+
+        let sourceRange = audioBatch.sourceRange
+        let tolerance = 0.05
+        var coveredThrough = sourceRange.lowerBound
+        var relevantBufferCount = 0
+        var samples: [Float] = []
+        samples.reserveCapacity(
+            Int((sourceRange.upperBound - sourceRange.lowerBound)
+                * Double(configuration.sampleRate))
+        )
+
+        for timedBuffer in audioBatch.buffers {
+            let input = timedBuffer.buffer
+            let format = input.format
+            guard format.commonFormat == .pcmFormatFloat32,
+                  !format.isInterleaved,
+                  format.channelCount == 1,
+                  format.sampleRate == first.buffer.format.sampleRate,
+                  let channel = input.floatChannelData?[0] else {
+                throw RepeatedSegmentFingerprintError.invalidAudio
+            }
+            let rate = format.sampleRate
+            let start = timedBuffer.sourceTime
+            let end = start + Double(input.frameLength) / rate
+            guard end > sourceRange.lowerBound,
+                  start < sourceRange.upperBound else {
+                continue
+            }
+            if relevantBufferCount > 0, timedBuffer.discontinuity {
+                throw RepeatedSegmentFingerprintError.discontinuousAudio
+            }
+            let clippedStart = max(start, sourceRange.lowerBound)
+            if clippedStart > coveredThrough + tolerance {
+                throw RepeatedSegmentFingerprintError.discontinuousAudio
+            }
+            let firstFrame = max(
+                0,
+                Int(ceil((clippedStart - start) * rate))
+            )
+            let clippedEnd = min(end, sourceRange.upperBound)
+            let endFrame = min(
+                Int(input.frameLength),
+                Int(floor((clippedEnd - start) * rate))
+            )
+            let frameCount = endFrame - firstFrame
+            guard frameCount > 0,
+                  let clipped = AVAudioPCMBuffer(
+                    pcmFormat: format,
+                    frameCapacity: AVAudioFrameCount(frameCount)
+                  ) else {
+                continue
+            }
+            clipped.frameLength = AVAudioFrameCount(frameCount)
+            clipped.floatChannelData![0].update(
+                from: channel + firstFrame,
+                count: frameCount
+            )
+
+            let ratio = outputFormat.sampleRate / format.sampleRate
+            let outputCapacity = AVAudioFrameCount(
+                ceil(Double(frameCount) * ratio) + 32
+            )
+            guard let output = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: outputCapacity
+            ) else {
+                throw RepeatedSegmentFingerprintError.audioDecodeFailed
+            }
+            let inputState = AudioConverterInputState(buffer: clipped)
+            var conversionError: NSError?
+            let status = converter.convert(
+                to: output,
+                error: &conversionError
+            ) { _, inputStatus in
+                guard !inputState.supplied else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                inputState.supplied = true
+                inputStatus.pointee = .haveData
+                return inputState.buffer
+            }
+            guard conversionError == nil,
+                  status != .error,
+                  let outputChannel = output.floatChannelData?[0] else {
+                throw RepeatedSegmentFingerprintError.audioDecodeFailed
+            }
+            samples.append(
+                contentsOf: UnsafeBufferPointer(
+                    start: outputChannel,
+                    count: Int(output.frameLength)
+                )
+            )
+            coveredThrough = max(coveredThrough, clippedEnd)
+            relevantBufferCount += 1
+            if coveredThrough >= sourceRange.upperBound - tolerance {
+                break
+            }
+        }
+        guard coveredThrough >= sourceRange.upperBound - tolerance else {
+            throw RepeatedSegmentFingerprintError.discontinuousAudio
+        }
+        return try compute(
+            monoSamples: samples,
+            label: label,
+            sourceStartSeconds: sourceRange.lowerBound,
             configuration: configuration
         )
     }
@@ -321,10 +455,18 @@ public enum RepeatedSegmentFingerprint {
             windowFrames: windowFrames,
             estimatedTestCount: estimatedTestCount
         )
-        var best: Candidate?
+        var bestSeed: SeedCandidate?
         let minimumOffset = -(previous.fingerprints.count - windowFrames)
         let maximumOffset = current.fingerprints.count - windowFrames
         let minimumValid = Int(ceil(Double(windowFrames) * 0.8))
+        let maximumLength = min(
+            previous.fingerprints.count,
+            current.fingerprints.count
+        )
+        var similarities = [Double](repeating: 0, count: maximumLength)
+        var validity = [Bool](repeating: false, count: maximumLength)
+        var prefixSums = [Double](repeating: 0, count: maximumLength + 1)
+        var prefixCounts = [Int](repeating: 0, count: maximumLength + 1)
 
         for offset in minimumOffset...maximumOffset {
             let leftStart = max(0, -offset)
@@ -334,8 +476,8 @@ public enum RepeatedSegmentFingerprint {
                 current.fingerprints.count - rightStart
             )
             guard length >= windowFrames else { continue }
-            var similarities = [Double](repeating: 0, count: length)
-            var validity = [Bool](repeating: false, count: length)
+            prefixSums[0] = 0
+            prefixCounts[0] = 0
             for index in 0..<length {
                 let valid = previous.validity[leftStart + index]
                     && current.validity[rightStart + index]
@@ -346,39 +488,62 @@ public enum RepeatedSegmentFingerprint {
                             ^ current.fingerprints[rightStart + index])
                             .nonzeroBitCount
                     ) / 64
+                } else {
+                    similarities[index] = 0
                 }
+                prefixSums[index + 1] = prefixSums[index]
+                    + (valid ? similarities[index] : 0)
+                prefixCounts[index + 1] = prefixCounts[index] + (valid ? 1 : 0)
             }
-            let rolling = rollingWeightedMean(
-                similarities,
-                validity: validity,
-                window: windowFrames
-            )
-            for local in rolling.means.indices
-                where rolling.counts[local] >= minimumValid
-            {
-                let score = rolling.means[local]
+            let resultCount = length - windowFrames + 1
+            for local in 0..<resultCount {
+                let validCount = prefixCounts[local + windowFrames]
+                    - prefixCounts[local]
+                guard validCount >= minimumValid else { continue }
+                let score = (
+                    prefixSums[local + windowFrames] - prefixSums[local]
+                ) / Double(validCount)
                 guard score >= null.threshold,
-                      best == nil || score > best!.score else { continue }
-                let expansion = expand(
-                    similarities: similarities,
-                    validity: validity,
-                    seedStart: local,
-                    seedWindowFrames: windowFrames,
-                    seedScore: score,
-                    hop: hop,
-                    null: null
-                )
-                best = Candidate(
+                      bestSeed == nil || score > bestSeed!.score else { continue }
+                bestSeed = SeedCandidate(
                     score: score,
-                    leftStart: leftStart + expansion.start,
-                    rightStart: rightStart + expansion.start,
-                    frameCount: expansion.end - expansion.start,
-                    validFraction: Double(rolling.counts[local])
-                        / Double(windowFrames)
+                    leftStart: leftStart,
+                    rightStart: rightStart,
+                    length: length,
+                    localStart: local,
+                    validCount: validCount
                 )
             }
         }
-        guard let best else { return nil }
+        guard let bestSeed else { return nil }
+        for index in 0..<bestSeed.length {
+            let valid = previous.validity[bestSeed.leftStart + index]
+                && current.validity[bestSeed.rightStart + index]
+            validity[index] = valid
+            similarities[index] = valid
+                ? 1 - Double(
+                    (previous.fingerprints[bestSeed.leftStart + index]
+                        ^ current.fingerprints[bestSeed.rightStart + index])
+                        .nonzeroBitCount
+                ) / 64
+                : 0
+        }
+        let expansion = expand(
+            similarities: Array(similarities.prefix(bestSeed.length)),
+            validity: Array(validity.prefix(bestSeed.length)),
+            seedStart: bestSeed.localStart,
+            seedWindowFrames: windowFrames,
+            seedScore: bestSeed.score,
+            hop: hop,
+            null: null
+        )
+        let best = Candidate(
+            score: bestSeed.score,
+            leftStart: bestSeed.leftStart + expansion.start,
+            rightStart: bestSeed.rightStart + expansion.start,
+            frameCount: expansion.end - expansion.start,
+            validFraction: Double(bestSeed.validCount) / Double(windowFrames)
+        )
         return RepeatedSegmentMatch(
             score: best.score,
             nullThreshold: null.threshold,
@@ -397,6 +562,15 @@ public enum RepeatedSegmentFingerprint {
             seedDuration: Double(windowFrames) * hop,
             validFraction: best.validFraction
         )
+    }
+
+    private struct SeedCandidate {
+        let score: Double
+        let leftStart: Int
+        let rightStart: Int
+        let length: Int
+        let localStart: Int
+        let validCount: Int
     }
 
     private struct Candidate {
