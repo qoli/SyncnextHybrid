@@ -55,8 +55,12 @@ public struct HybridIntroAudioExtractionRequest:
 {
     public let url: URL
     public let httpHeaders: [String: String]
-    public let maximumDuration: Double
+    public let sourceRange: Range<Double>
     public let outputURL: URL
+
+    public var maximumDuration: Double {
+        sourceRange.upperBound - sourceRange.lowerBound
+    }
 
     public init(
         url: URL,
@@ -66,7 +70,19 @@ public struct HybridIntroAudioExtractionRequest:
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
-        self.maximumDuration = maximumDuration
+        self.sourceRange = 0..<maximumDuration
+        self.outputURL = outputURL
+    }
+
+    public init(
+        url: URL,
+        httpHeaders: [String: String] = [:],
+        sourceRange: Range<Double>,
+        outputURL: URL
+    ) {
+        self.url = url
+        self.httpHeaders = httpHeaders
+        self.sourceRange = sourceRange
         self.outputURL = outputURL
     }
 }
@@ -101,7 +117,10 @@ public enum HybridIntroAudioExtractor {
         request: HybridIntroAudioExtractionRequest
     ) async throws -> HybridIntroAudioArtifact {
         let maximumDuration = request.maximumDuration
-        guard maximumDuration.isFinite,
+        guard request.sourceRange.lowerBound.isFinite,
+              request.sourceRange.upperBound.isFinite,
+              request.sourceRange.lowerBound >= 0,
+              maximumDuration.isFinite,
               maximumDuration > 0,
               maximumDuration <= 180 else {
             throw HybridIntroAudioExtractionError.invalidDuration
@@ -156,7 +175,7 @@ public enum HybridIntroAudioExtractor {
                 let prepared = try await
                     HybridHLSVODAudioSource.prepare(
                         request: hlsRequest,
-                        range: 0..<maximumDuration
+                        range: request.sourceRange
                     )
                 preparedHLSCursor = prepared
                 try Task.checkCancellation()
@@ -189,6 +208,14 @@ public enum HybridIntroAudioExtractor {
         guard selected.codec == "aac" else {
             throw HybridIntroAudioExtractionError
                 .unsupportedAudioCodec(selected.codec)
+        }
+        let timelineOrigin = demuxer.formatStartTimeSeconds
+        if request.sourceRange.lowerBound > 0,
+           preparedHLSCursor == nil,
+           !demuxer.seek(
+               to: request.sourceRange.lowerBound + timelineOrigin
+           ) {
+            throw HybridIntroAudioExtractionError.sourceUnavailable
         }
         demuxer.discardAllStreamsExcept([Int32(selected.id)])
 
