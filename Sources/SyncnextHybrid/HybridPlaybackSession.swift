@@ -42,6 +42,7 @@ public final class HybridPlaybackSession:
     private let surface: AetherPlayerView
     private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
+    private let sourceAdmission: HybridRemoteSourceAdmission
     private var proxyTimeline: HybridHLSTimelineProxy {
         guard let proxyContext else {
             preconditionFailure("Proxy timeline requested by native AVPlayer route")
@@ -118,6 +119,7 @@ public final class HybridPlaybackSession:
                 url: request.url,
                 httpHeaders: request.httpHeaders
             )
+        sourceAdmission = admission
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
         let options = HybridPlaybackLoadOptions.make(
             request: request,
@@ -431,36 +433,94 @@ public final class HybridPlaybackSession:
         engine.selectAudioTrack(index: id)
     }
 
-    /// One-shot PCM for fingerprint v2. The engine reads only its active
-    /// loopback VOD cache; unsupported routes fail and never open a second
-    /// source cursor.
+    /// One-shot PCM for fingerprint v2. Provider resolution is explicit:
+    /// loopback VOD reuses Aether's SegmentCache, while native HLS and normal
+    /// seekable sources use an independent bounded cursor bound to the same
+    /// audible-selection revision.
     public func fingerprintAudio(
-        in sourceRange: Range<Double>
+        request fingerprintRequest: HybridFingerprintAudioRequest
     ) async throws -> HybridFingerprintAudioBatch {
         guard !stopped else {
             throw HybridFingerprintAudioError.sessionStopped
         }
+        guard fingerprintRequest.audioSelectionRevision
+                == audioSelectionRevision else {
+            throw HybridFingerprintAudioError.audioSelectionChanged
+        }
+        let provider = try HybridFingerprintAudioProviderResolver.resolve(
+            admission: sourceAdmission
+        )
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_PROVIDER "
+                + "session=\(diagnosticsID) "
+                + "provider=\(provider.rawValue) "
+                + "revision=\(fingerprintRequest.audioSelectionRevision) "
+                + "range=\(String(format: "%.3f", fingerprintRequest.sourceRange.lowerBound))..."
+                + "\(String(format: "%.3f", fingerprintRequest.sourceRange.upperBound))"
+        )
+
+        let batch: HybridFingerprintAudioBatch
         do {
-            let batch = try await engine.fingerprintAudio(in: sourceRange)
-            return HybridFingerprintAudioBatch(
-                buffers: batch.buffers.map {
-                    HybridFingerprintAudioBuffer(
-                        buffer: $0.buffer,
-                        sourceTime: $0.sourceTime,
-                        discontinuity: $0.discontinuity
+            switch provider {
+            case .segmentCache:
+                let cached = try await engine.fingerprintAudio(
+                    in: fingerprintRequest.sourceRange
+                )
+                batch = HybridFingerprintAudioBatch(
+                    buffers: cached.buffers.map {
+                        HybridFingerprintAudioBuffer(
+                            buffer: $0.buffer,
+                            sourceTime: $0.sourceTime,
+                            discontinuity: $0.discontinuity
+                        )
+                    },
+                    sourceRange: cached.sourceRange,
+                    provider: .segmentCache,
+                    segmentCount: cached.segmentCount,
+                    preparationSeconds: cached.cacheWaitSeconds,
+                    cacheWaitSeconds: cached.cacheWaitSeconds,
+                    decodeSeconds: cached.decodeSeconds
+                )
+            case .independentRemoteHLS:
+                let selection = try await nativeHLSAudioSelection(
+                    expectedRevision:
+                        fingerprintRequest.audioSelectionRevision
+                )
+                let source = HybridIndependentFingerprintAudioSource.remoteHLS(
+                    AetherRemoteHLSAudioRequest(
+                        url: request.url,
+                        httpHeaders: request.httpHeaders,
+                        selection: selection
                     )
-                },
-                sourceRange: batch.sourceRange,
-                segmentCount: batch.segmentCount,
-                cacheWaitSeconds: batch.cacheWaitSeconds,
-                decodeSeconds: batch.decodeSeconds
-            )
+                )
+                batch = try await Task.detached(priority: .utility) {
+                    try await HybridIndependentFingerprintAudio.decode(
+                        source: source,
+                        range: fingerprintRequest.sourceRange
+                    )
+                }.value
+            case .independentDemuxer:
+                let selectedTrack = engine.audioTracks.first {
+                    $0.id == engine.activeAudioTrackIndex
+                }
+                let source = HybridIndependentFingerprintAudioSource.demuxer(
+                    url: request.url,
+                    httpHeaders: request.httpHeaders,
+                    selectedTrack: selectedTrack
+                )
+                batch = try await Task.detached(priority: .utility) {
+                    try await HybridIndependentFingerprintAudio.decode(
+                        source: source,
+                        range: fingerprintRequest.sourceRange
+                    )
+                }.value
+            }
         } catch let error as AetherFingerprintAudioError {
             switch error {
             case .invalidRange:
                 throw HybridFingerprintAudioError.invalidRange
             case .loopbackVODRequired:
-                throw HybridFingerprintAudioError.loopbackVODRequired
+                throw HybridFingerprintAudioError.sourceUnavailable
             case .audioTrackUnavailable:
                 throw HybridFingerprintAudioError.audioTrackUnavailable
             case .segmentUnavailable, .segmentDecodeFailed:
@@ -473,6 +533,14 @@ public final class HybridPlaybackSession:
                 throw HybridFingerprintAudioError.sessionChanged
             }
         }
+        guard !stopped else {
+            throw HybridFingerprintAudioError.sessionStopped
+        }
+        guard fingerprintRequest.audioSelectionRevision
+                == audioSelectionRevision else {
+            throw HybridFingerprintAudioError.audioSelectionChanged
+        }
+        return batch
     }
 
     public func selectSubtitleTrack(id: Int?) {
@@ -1105,6 +1173,47 @@ public final class HybridPlaybackSession:
                     self.refreshMenusAndSnapshot()
                 }
             }
+    }
+
+    private func nativeHLSAudioSelection(
+        expectedRevision: UInt64
+    ) async throws -> AetherRemoteHLSAudioSelection {
+        guard let item = engine.currentAVPlayer?.currentItem else {
+            throw HybridFingerprintAudioError.sourceUnavailable
+        }
+        let expectedItem = ObjectIdentifier(item)
+        let group: AVMediaSelectionGroup?
+        do {
+            group = try await item.asset.loadMediaSelectionGroup(
+                for: .audible
+            )
+        } catch {
+            throw HybridFingerprintAudioError.sourceUnavailable
+        }
+        guard !stopped,
+              expectedRevision == audioSelectionRevision,
+              engine.currentAVPlayer?.currentItem.map(ObjectIdentifier.init)
+                == expectedItem else {
+            throw HybridFingerprintAudioError.audioSelectionChanged
+        }
+        guard let group else {
+            return AetherRemoteHLSAudioSelection(
+                displayName: nil,
+                language: nil,
+                optionOrdinal: nil
+            )
+        }
+        let selected = item.currentMediaSelection.selectedMediaOption(
+            in: group
+        )
+        let ordinal = selected.flatMap { selected in
+            group.options.firstIndex { $0 === selected }
+        }
+        return AetherRemoteHLSAudioSelection(
+            displayName: selected?.displayName,
+            language: selected?.extendedLanguageTag,
+            optionOrdinal: ordinal
+        )
     }
 
     private func makeTrackMenus() -> [UIMenuElement] {

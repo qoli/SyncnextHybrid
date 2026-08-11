@@ -5,6 +5,37 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridHLSVODAudioSourceTests: XCTestCase {
+    func testFingerprintProviderResolutionIsExplicitPerAdmission() throws {
+        XCTAssertEqual(
+            try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .hlsVOD
+            ),
+            .independentRemoteHLS
+        )
+        XCTAssertEqual(
+            try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .hlsVODHEVCMPEGTS(duration: 120)
+            ),
+            .segmentCache
+        )
+        XCTAssertEqual(
+            try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .aetherDefault(.confirmedNonHLS)
+            ),
+            .independentDemuxer
+        )
+        XCTAssertThrowsError(
+            try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .hlsLive
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? HybridFingerprintAudioError,
+                .liveOrDVRUnsupported
+            )
+        }
+    }
+
     func testDedicatedHLSVODRenditionBuildsIndependentFFmpegCursor()
         async throws
     {
@@ -103,6 +134,66 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         } catch let error as HybridAudioAnalysisError {
             XCTAssertEqual(error, .liveOrDVRUnsupported)
         }
+    }
+
+    func testRemoteHLSFingerprintAdapterReturnsBoundedPCM() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [
+            HybridHLSFixtureURLProtocol.self,
+        ]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let request = AetherRemoteHLSAudioRequest(
+            url: try XCTUnwrap(
+                URL(string: "https://hybrid-fixture.invalid/master.m3u8")
+            ),
+            httpHeaders: ["X-Hybrid-Fixture": "allowed"],
+            selection: AetherRemoteHLSAudioSelection(
+                displayName: "English",
+                language: "en",
+                optionOrdinal: 0
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.remoteHLS(
+            request
+        )
+        let batch = try await HybridIndependentFingerprintAudio.decode(
+            source: source,
+            range: 0..<2,
+            hlsSession: session
+        )
+
+        XCTAssertEqual(batch.provider, .independentRemoteHLS)
+        XCTAssertGreaterThan(batch.segmentCount, 0)
+        XCTAssertFalse(batch.buffers.isEmpty)
+        XCTAssertEqual(batch.sourceRange, 0..<2)
+        XCTAssertEqual(batch.cacheWaitSeconds, 0)
+    }
+
+    func testDirectDemuxFingerprintAdapterReturnsBoundedPCM() async throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+        let batch = try await HybridIndependentFingerprintAudio.decode(
+            source: source,
+            range: 0..<1
+        )
+
+        XCTAssertEqual(batch.provider, .independentDemuxer)
+        XCTAssertEqual(batch.segmentCount, 0)
+        XCTAssertFalse(batch.buffers.isEmpty)
+        XCTAssertEqual(batch.sourceRange, 0..<1)
+        XCTAssertEqual(batch.cacheWaitSeconds, 0)
     }
 }
 

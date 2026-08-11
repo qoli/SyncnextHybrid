@@ -6,6 +6,7 @@ struct HybridHLSPreparedAudioCursor {
     let formatHint: String
     let selection: AetherRemoteHLSAudioSelection
     let usesDedicatedAudioRendition: Bool
+    let segmentCount: Int
 
     func close() {
         reader.close()
@@ -126,7 +127,8 @@ enum HybridHLSVODAudioSource {
             formatHint: media.formatHint,
             selection: request.selection,
             usesDedicatedAudioRendition:
-                usesDedicatedAudioRendition
+                usesDedicatedAudioRendition,
+            segmentCount: selectedSegments.count
         )
     }
 

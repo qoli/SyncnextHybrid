@@ -160,7 +160,9 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         let batch = HybridFingerprintAudioBatch(
             buffers: [first, second],
             sourceRange: 0..<12,
+            provider: .segmentCache,
             segmentCount: 2,
+            preparationSeconds: 0,
             cacheWaitSeconds: 0,
             decodeSeconds: 0
         )
@@ -186,7 +188,9 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         let batch = HybridFingerprintAudioBatch(
             buffers: [first, second],
             sourceRange: 0..<12,
+            provider: .segmentCache,
             segmentCount: 2,
+            preparationSeconds: 0,
             cacheWaitSeconds: 0,
             decodeSeconds: 0
         )
