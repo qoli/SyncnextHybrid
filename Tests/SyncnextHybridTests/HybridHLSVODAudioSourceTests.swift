@@ -5,6 +5,60 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridHLSVODAudioSourceTests: XCTestCase {
+    func testBoundedHLSCursorIncludesOneLookaheadSegment() throws {
+        let document = try HLSMediaDocument(
+            lines: """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:1
+            #EXTINF:1,
+            audio-00.ts
+            #EXTINF:1,
+            audio-01.ts
+            #EXTINF:1,
+            audio-02.ts
+            #EXT-X-ENDLIST
+            """.split(whereSeparator: \.isNewline).map(String.init)
+        )
+
+        let selected = document.prefixCovering(
+            2,
+            lookaheadSegmentCount: 1
+        )
+
+        XCTAssertEqual(selected.count, 3)
+        XCTAssertEqual(selected.last?.resource.uri, "audio-02.ts")
+    }
+
+    func testBoundedHLSWindowPreservesGlobalTimelineOffset() throws {
+        let document = try HLSMediaDocument(
+            lines: """
+            #EXTM3U
+            #EXT-X-VERSION:3
+            #EXT-X-TARGETDURATION:10
+            #EXTINF:10,
+            audio-00.ts
+            #EXTINF:10,
+            audio-01.ts
+            #EXTINF:10,
+            audio-02.ts
+            #EXTINF:10,
+            audio-03.ts
+            #EXT-X-ENDLIST
+            """.split(whereSeparator: \.isNewline).map(String.init)
+        )
+
+        let window = document.windowCovering(
+            21..<29,
+            lookaheadSegmentCount: 1
+        )
+
+        XCTAssertEqual(window.timelineOffset, 20, accuracy: 0.001)
+        XCTAssertEqual(window.segments.count, 2)
+        XCTAssertEqual(window.segments.first?.resource.uri, "audio-02.ts")
+        XCTAssertEqual(window.segments.last?.resource.uri, "audio-03.ts")
+    }
+
     func testFingerprintProviderResolutionIsExplicitPerAdmission() throws {
         XCTAssertEqual(
             try HybridFingerprintAudioProviderResolver.resolve(

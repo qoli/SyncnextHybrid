@@ -55,12 +55,14 @@ enum HybridIndependentFingerprintAudio {
                     prepared = try await HybridHLSVODAudioSource.prepare(
                         request: request,
                         range: range,
+                        scope: .boundedRange,
                         session: hlsSession
                     )
                 } else {
                     prepared = try await HybridHLSVODAudioSource.prepare(
                         request: request,
-                        range: range
+                        range: range,
+                        scope: .boundedRange
                     )
                 }
                 preparedHLSCursor = prepared
@@ -99,6 +101,7 @@ enum HybridIndependentFingerprintAudio {
             throw HybridFingerprintAudioError.audioTrackUnavailable
         }
         let timelineOrigin = demuxer.formatStartTimeSeconds
+        let timelineOffset = preparedHLSCursor?.timelineOffset ?? 0
         if range.lowerBound > 0,
            preparedHLSCursor == nil,
            !demuxer.seek(to: range.lowerBound + timelineOrigin) {
@@ -131,7 +134,8 @@ enum HybridIndependentFingerprintAudio {
                 let result = clip(
                     chunk,
                     to: range,
-                    timelineOrigin: timelineOrigin
+                    timelineOrigin: timelineOrigin,
+                    timelineOffset: timelineOffset
                 )
                 switch result {
                 case .skip:
@@ -224,14 +228,16 @@ enum HybridIndependentFingerprintAudio {
     private static func clip(
         _ chunk: HybridDecodedAudioChunk,
         to range: Range<Double>,
-        timelineOrigin: Double
+        timelineOrigin: Double,
+        timelineOffset: Double
     ) -> ClipResult {
         let frameCount = Int(chunk.buffer.frameLength)
         guard frameCount > 0 else {
             return .skip
         }
         let sampleRate = HybridAudioAnalysisFormat.sampleRate
-        let chunkStart = chunk.ptsSeconds - timelineOrigin
+        let chunkStart =
+            chunk.ptsSeconds - timelineOrigin + timelineOffset
         let chunkEnd = chunkStart + Double(frameCount) / sampleRate
         if chunkEnd <= range.lowerBound {
             return .skip
@@ -276,8 +282,32 @@ enum HybridIndependentFingerprintAudio {
         }
         let lastEnd = last.sourceTime
             + Double(last.buffer.frameLength) / last.buffer.format.sampleRate
-        guard first.sourceTime <= range.lowerBound + coverageTolerance,
-              lastEnd >= range.upperBound - coverageTolerance else {
+        let coversStart =
+            first.sourceTime <= range.lowerBound + coverageTolerance
+        let coversEnd = lastEnd >= range.upperBound - coverageTolerance
+        guard coversStart, coversEnd else {
+            let requestedStart = String(
+                format: "%.6f",
+                range.lowerBound
+            )
+            let requestedEnd = String(
+                format: "%.6f",
+                range.upperBound
+            )
+            let actualStart = String(
+                format: "%.6f",
+                first.sourceTime
+            )
+            let actualEnd = String(format: "%.6f", lastEnd)
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_FINGERPRINT_COVERAGE "
+                    + "result=incomplete "
+                    + "requestedStart=\(requestedStart) "
+                    + "requestedEnd=\(requestedEnd) "
+                    + "actualStart=\(actualStart) "
+                    + "actualEnd=\(actualEnd) "
+                    + "buffers=\(buffers.count)"
+            )
             throw HybridFingerprintAudioError.incompleteRange
         }
         if buffers.dropFirst().contains(where: \.discontinuity) {

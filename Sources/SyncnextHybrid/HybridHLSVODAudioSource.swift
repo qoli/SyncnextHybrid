@@ -7,10 +7,16 @@ struct HybridHLSPreparedAudioCursor {
     let selection: AetherRemoteHLSAudioSelection
     let usesDedicatedAudioRendition: Bool
     let segmentCount: Int
+    let timelineOffset: Double
 
     func close() {
         reader.close()
     }
+}
+
+enum HybridHLSAudioCursorScope {
+    case prefix
+    case boundedRange
 }
 
 enum HybridHLSVODAudioSource {
@@ -22,6 +28,7 @@ enum HybridHLSVODAudioSource {
     static func prepare(
         request: AetherRemoteHLSAudioRequest,
         range: Range<Double>,
+        scope: HybridHLSAudioCursorScope = .prefix,
         session: URLSession = makeSession()
     ) async throws -> HybridHLSPreparedAudioCursor {
         let rootText = try await fetchPlaylist(
@@ -74,7 +81,23 @@ enum HybridHLSVODAudioSource {
             throw HybridAudioAnalysisError.rangeOutsideSource
         }
 
-        let selectedSegments = media.prefix(through: range.upperBound)
+        let selectedSegments: ArraySlice<HLSSegmentDocument>
+        let timelineOffset: Double
+        switch scope {
+        case .prefix:
+            selectedSegments = media.prefixCovering(
+                range.upperBound,
+                lookaheadSegmentCount: 1
+            )
+            timelineOffset = 0
+        case .boundedRange:
+            let window = media.windowCovering(
+                range,
+                lookaheadSegmentCount: 1
+            )
+            selectedSegments = window.segments
+            timelineOffset = window.timelineOffset
+        }
         let reader = HybridHLSVODResourceReader()
         var resources: [HLSByteResource] = []
         var lastMap: HLSByteResource?
@@ -128,7 +151,8 @@ enum HybridHLSVODAudioSource {
             selection: request.selection,
             usesDedicatedAudioRendition:
                 usesDedicatedAudioRendition,
-            segmentCount: selectedSegments.count
+            segmentCount: selectedSegments.count,
+            timelineOffset: timelineOffset
         )
     }
 
@@ -546,6 +570,11 @@ struct HLSMasterDocument {
 }
 
 struct HLSMediaDocument {
+    struct SegmentWindow {
+        let segments: ArraySlice<HLSSegmentDocument>
+        let timelineOffset: Double
+    }
+
     let segments: [HLSSegmentDocument]
     let hasEndList: Bool
     let totalDuration: Double
@@ -658,7 +687,10 @@ struct HLSMediaDocument {
         }
     }
 
-    func prefix(through upperBound: Double)
+    func prefixCovering(
+        _ upperBound: Double,
+        lookaheadSegmentCount: Int
+    )
         -> ArraySlice<HLSSegmentDocument>
     {
         var duration = 0.0
@@ -670,7 +702,48 @@ struct HLSMediaDocument {
                 break
             }
         }
+        for _ in 0..<max(0, lookaheadSegmentCount)
+            where endIndex < segments.endIndex {
+            endIndex = segments.index(after: endIndex)
+        }
         return segments[..<endIndex]
+    }
+
+    func windowCovering(
+        _ range: Range<Double>,
+        lookaheadSegmentCount: Int
+    ) -> SegmentWindow {
+        var timeline = 0.0
+        var startIndex = segments.startIndex
+        var endIndex = segments.endIndex
+        var timelineOffset = 0.0
+
+        for index in segments.indices {
+            let segmentEnd = timeline + segments[index].duration
+            if segmentEnd > range.lowerBound {
+                startIndex = index
+                timelineOffset = timeline
+                break
+            }
+            timeline = segmentEnd
+        }
+
+        timeline = timelineOffset
+        for index in startIndex..<segments.endIndex {
+            timeline += segments[index].duration
+            endIndex = segments.index(after: index)
+            if timeline + 0.001 >= range.upperBound {
+                break
+            }
+        }
+        for _ in 0..<max(0, lookaheadSegmentCount)
+            where endIndex < segments.endIndex {
+            endIndex = segments.index(after: endIndex)
+        }
+        return SegmentWindow(
+            segments: segments[startIndex..<endIndex],
+            timelineOffset: timelineOffset
+        )
     }
 
     var fileExtension: String {
