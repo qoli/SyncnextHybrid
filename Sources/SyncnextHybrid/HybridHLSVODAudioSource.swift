@@ -386,6 +386,8 @@ struct HLSMasterDocument {
         let bandwidth: Int
         let uri: String
         let audioGroupID: String?
+        let videoRange: String?
+        let resolution: String?
     }
 
     struct Rendition {
@@ -398,12 +400,16 @@ struct HLSMasterDocument {
 
     let variants: [Variant]
     let renditions: [Rendition]
+    let hasPlaybackContractRequiringMaster: Bool
 
     init(lines: [String]) throws {
         var variants: [Variant] = []
         var renditions: [Rendition] = []
         var pendingBandwidth: Int?
         var pendingAudioGroupID: String?
+        var pendingVideoRange: String?
+        var pendingResolution: String?
+        var hasPlaybackContractRequiringMaster = false
 
         for line in lines {
             if line.hasPrefix("#EXT-X-STREAM-INF:") {
@@ -414,6 +420,19 @@ struct HLSMasterDocument {
                     ).flatMap(Int.init) ?? 0
                 pendingAudioGroupID =
                     HLSAttributeParser.value("AUDIO", in: line)
+                pendingVideoRange =
+                    HLSAttributeParser.value("VIDEO-RANGE", in: line)
+                pendingResolution =
+                    HLSAttributeParser.value("RESOLUTION", in: line)
+                if pendingAudioGroupID != nil
+                    || HLSAttributeParser.value("VIDEO", in: line) != nil
+                    || HLSAttributeParser.value("SUBTITLES", in: line) != nil
+                    || HLSAttributeParser.value(
+                        "CLOSED-CAPTIONS",
+                        in: line
+                    ).map({ $0 != "NONE" }) == true {
+                    hasPlaybackContractRequiringMaster = true
+                }
             } else if line.hasPrefix("#EXT-X-MEDIA:"),
                       HLSAttributeParser.value("TYPE", in: line)
                         == "AUDIO",
@@ -443,17 +462,29 @@ struct HLSMasterDocument {
                             ) == "YES"
                     )
                 )
+                hasPlaybackContractRequiringMaster = true
+            } else if line.hasPrefix("#EXT-X-MEDIA:")
+                || line.hasPrefix("#EXT-X-SESSION-KEY:")
+                || line.hasPrefix("#EXT-X-CONTENT-STEERING:")
+                || line.hasPrefix("#EXT-X-DEFINE:")
+                || line.hasPrefix("#EXT-X-START:")
+                || line == "#EXT-X-INDEPENDENT-SEGMENTS" {
+                hasPlaybackContractRequiringMaster = true
             } else if !line.hasPrefix("#"),
                       let bandwidth = pendingBandwidth {
                 variants.append(
                     Variant(
                         bandwidth: bandwidth,
                         uri: line,
-                        audioGroupID: pendingAudioGroupID
+                        audioGroupID: pendingAudioGroupID,
+                        videoRange: pendingVideoRange,
+                        resolution: pendingResolution
                     )
                 )
                 pendingBandwidth = nil
                 pendingAudioGroupID = nil
+                pendingVideoRange = nil
+                pendingResolution = nil
             }
         }
         guard !variants.isEmpty else {
@@ -463,6 +494,19 @@ struct HLSMasterDocument {
         }
         self.variants = variants
         self.renditions = renditions
+        self.hasPlaybackContractRequiringMaster =
+            hasPlaybackContractRequiringMaster
+    }
+
+    var singlePQVideoVariant: Variant? {
+        guard variants.count == 1,
+              !hasPlaybackContractRequiringMaster,
+              let variant = variants.first,
+              variant.resolution != nil,
+              variant.videoRange?.uppercased() == "PQ" else {
+            return nil
+        }
+        return variant
     }
 
     func resolveAudioPlaylist(

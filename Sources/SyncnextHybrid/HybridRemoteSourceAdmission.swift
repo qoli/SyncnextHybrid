@@ -1,4 +1,5 @@
 import AetherEngine
+import CryptoKit
 import Foundation
 
 /// Content-backed route admission owned by SyncnextHybrid.
@@ -20,6 +21,14 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     case hlsVOD
+    /// A single-variant finite HLS VOD whose master advertises only PQ video
+    /// and owns no rendition, key, steering, or timeline contract. AVPlayer
+    /// rejects the master on an SDR display route, while the validated media
+    /// playlist remains a truthful PQ source and is directly playable.
+    case hlsVODPQOnlyMaster(
+        mediaPlaylistURL: URL,
+        duration: Double
+    )
     /// Finite MPEG-TS HLS whose PMT contains positive HEVC evidence.
     /// AetherEngine owns the seekable TS -> fMP4 path.
     case hlsVODHEVCMPEGTS(
@@ -31,7 +40,8 @@ enum HybridRemoteSourceAdmission: Equatable {
 
     var isConfirmedHLS: Bool {
         switch self {
-        case .hlsVOD, .hlsVODHEVCMPEGTS, .hlsLive:
+        case .hlsVOD, .hlsVODPQOnlyMaster,
+             .hlsVODHEVCMPEGTS, .hlsLive:
             true
         case .aetherDefault:
             false
@@ -60,6 +70,14 @@ enum HybridRemoteSourceAdmission: Equatable {
         switch self {
         case .hlsVOD:
             return "result=hls-vod"
+        case .hlsVODPQOnlyMaster(_, let duration):
+            return "result=hls-vod-pq-only-master duration="
+                + String(
+                    format: "%.3f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    duration
+                )
+                + " source=resolved-media-playlist"
         case .hlsVODHEVCMPEGTS(let duration, let evidence):
             return "result=hls-vod-hevc-mpegts duration="
                 + String(
@@ -167,12 +185,26 @@ enum HybridRemoteSourceAdmission: Equatable {
                     !media.segments.isEmpty else {
                     return .aetherDefault(.variantUnavailable)
                 }
-                return await classifyMedia(
+                let mediaAdmission = await classifyMedia(
                     media,
                     responseURL: variantCandidate.responseURL,
                     httpHeaders: httpHeaders,
                     session: session
                 )
+                if case .hlsVOD = mediaAdmission,
+                   master.singlePQVideoVariant?.uri == variant.uri {
+                    let duration = media.segments.reduce(0) {
+                        $0 + $1.duration
+                    }
+                    guard duration.isFinite, duration > 0 else {
+                        return .aetherDefault(.invalidPlaylist)
+                    }
+                    return .hlsVODPQOnlyMaster(
+                        mediaPlaylistURL: variantCandidate.responseURL,
+                        duration: duration
+                    )
+                }
+                return mediaAdmission
             } catch {
                 return .aetherDefault(.variantUnavailable)
             }
@@ -411,13 +443,31 @@ private struct AdmissionProbeError: Error {
     let reason: HybridRemoteSourceAdmission.AetherDefaultReason
 }
 
-enum HybridPlaybackLoadOptions {
+struct HybridPlaybackPlan {
+    enum SourceResolution: Equatable {
+        case original
+        case resolvedPQMediaPlaylist
+    }
+
+    let url: URL
+    let options: LoadOptions
+    let sourceResolution: SourceResolution
+
     static func make(
         request: HybridPlaybackRequest,
         externalSubtitles: [ExternalSubtitleTrack],
         admission: HybridRemoteSourceAdmission
-    ) -> LoadOptions {
-        LoadOptions(
+    ) -> Self {
+        let url: URL
+        let sourceResolution: SourceResolution
+        if case .hlsVODPQOnlyMaster(let mediaPlaylistURL, _) = admission {
+            url = mediaPlaylistURL
+            sourceResolution = .resolvedPQMediaPlaylist
+        } else {
+            url = request.url
+            sourceResolution = .original
+        }
+        let options = LoadOptions(
             httpHeaders: request.httpHeaders,
             isLive: admission.isLiveHLS,
             nativeRemoteHLS:
@@ -429,6 +479,30 @@ enum HybridPlaybackLoadOptions {
             externalSubtitles: externalSubtitles,
             autoplay: false
         )
+        return Self(
+            url: url,
+            options: options,
+            sourceResolution: sourceResolution
+        )
+    }
+
+    var diagnosticFields: String {
+        "sourceResolution="
+            + {
+                switch sourceResolution {
+                case .original:
+                    "original"
+                case .resolvedPQMediaPlaylist:
+                    "resolved-pq-media-playlist"
+                }
+            }()
+            + " effectiveSourceID=" + Self.sourceID(url)
+    }
+
+    static func sourceID(_ url: URL) -> String {
+        SHA256.hash(data: Data(url.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }
 

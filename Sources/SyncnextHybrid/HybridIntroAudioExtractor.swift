@@ -162,7 +162,8 @@ public enum HybridIntroAudioExtractor {
                     httpHeaders: request.httpHeaders
                 )
             switch admission {
-            case .hlsVOD, .hlsVODHEVCMPEGTS:
+            case .hlsVOD, .hlsVODPQOnlyMaster,
+                 .hlsVODHEVCMPEGTS:
                 let hlsRequest = AetherRemoteHLSAudioRequest(
                     url: request.url,
                     httpHeaders: request.httpHeaders,

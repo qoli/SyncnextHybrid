@@ -68,6 +68,17 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         )
         XCTAssertEqual(
             try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .hlsVODPQOnlyMaster(
+                    mediaPlaylistURL: URL(
+                        string: "https://hybrid-fixture.invalid/video.m3u8"
+                    )!,
+                    duration: 120
+                )
+            ),
+            .independentRemoteHLS
+        )
+        XCTAssertEqual(
+            try HybridFingerprintAudioProviderResolver.resolve(
                 admission: .hlsVODHEVCMPEGTS(
                     duration: 120,
                     evidence: .standardStreamType(0x24)

@@ -34,18 +34,19 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
             url: url,
             httpHeaders: ["X-Admission-Fixture": "allowed"]
         )
-        let options = HybridPlaybackLoadOptions.make(
+        let plan = HybridPlaybackPlan.make(
             request: request,
             externalSubtitles: [],
             admission: admission
         )
-        XCTAssertTrue(options.nativeRemoteHLS)
-        XCTAssertFalse(options.isLive)
+        XCTAssertEqual(plan.url, request.url)
+        XCTAssertTrue(plan.options.nativeRemoteHLS)
+        XCTAssertFalse(plan.options.isLive)
         XCTAssertEqual(
-            options.httpHeaders["X-Admission-Fixture"],
+            plan.options.httpHeaders["X-Admission-Fixture"],
             "allowed"
         )
-        XCTAssertFalse(options.autoplay)
+        XCTAssertFalse(plan.options.autoplay)
     }
 
     func testLiveMediaPlaylistAdmitsNativeRemoteHLSAsLive()
@@ -69,6 +70,126 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         XCTAssertEqual(admission, .hlsLive)
         XCTAssertTrue(admission.isConfirmedHLS)
         XCTAssertTrue(admission.isLiveHLS)
+    }
+
+    func testSingleVariantPQOnlyMasterResolvesValidatedMediaPlaylist()
+        async throws
+    {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let url = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/pq-only-master")
+        )
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"],
+            session: session
+        )
+        let mediaURL = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/pq-video")
+        )
+
+        XCTAssertEqual(
+            admission,
+            .hlsVODPQOnlyMaster(
+                mediaPlaylistURL: mediaURL,
+                duration: 10.5
+            )
+        )
+        let request = try HybridPlaybackRequest(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"]
+        )
+        let plan = HybridPlaybackPlan.make(
+            request: request,
+            externalSubtitles: [],
+            admission: admission
+        )
+        XCTAssertEqual(plan.url, mediaURL)
+        XCTAssertEqual(plan.sourceResolution, .resolvedPQMediaPlaylist)
+        XCTAssertTrue(plan.options.nativeRemoteHLS)
+        XCTAssertFalse(plan.options.isLive)
+        XCTAssertEqual(
+            plan.options.httpHeaders["X-Admission-Fixture"],
+            "allowed"
+        )
+    }
+
+    func testPQMasterWithExternalRenditionKeepsOriginalSource()
+        async throws
+    {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let url = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/pq-audio-master")
+        )
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"],
+            session: session
+        )
+
+        XCTAssertEqual(admission, .hlsVOD)
+        let request = try HybridPlaybackRequest(url: url)
+        let plan = HybridPlaybackPlan.make(
+            request: request,
+            externalSubtitles: [],
+            admission: admission
+        )
+        XCTAssertEqual(plan.url, url)
+        XCTAssertEqual(plan.sourceResolution, .original)
+    }
+
+    func testMixedSDRAndPQMasterKeepsOriginalSource() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let url = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/mixed-master")
+        )
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"],
+            session: session
+        )
+
+        XCTAssertEqual(admission, .hlsVOD)
+        let request = try HybridPlaybackRequest(url: url)
+        XCTAssertEqual(
+            HybridPlaybackPlan.make(
+                request: request,
+                externalSubtitles: [],
+                admission: admission
+            ).url,
+            url
+        )
+    }
+
+    func testMultiplePQVariantsKeepOriginalSource() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+
+        let url = try XCTUnwrap(
+            URL(string: "https://admission-fixture.invalid/multi-pq-master")
+        )
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: url,
+            httpHeaders: ["X-Admission-Fixture": "allowed"],
+            session: session
+        )
+
+        XCTAssertEqual(admission, .hlsVOD)
+        let request = try HybridPlaybackRequest(url: url)
+        XCTAssertEqual(
+            HybridPlaybackPlan.make(
+                request: request,
+                externalSubtitles: [],
+                admission: admission
+            ).url,
+            url
+        )
     }
 
     func testFinitePrivateHEVCTransportStreamUsesAetherRemuxPath()
@@ -95,19 +216,31 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         )
         XCTAssertEqual(admission.avKitProxyDuration, 10.5)
         let request = try HybridPlaybackRequest(url: url)
-        let options = HybridPlaybackLoadOptions.make(
+        let plan = HybridPlaybackPlan.make(
             request: request,
             externalSubtitles: [],
             admission: admission
         )
-        XCTAssertFalse(options.nativeRemoteHLS)
-        XCTAssertFalse(options.isLive)
+        XCTAssertFalse(plan.options.nativeRemoteHLS)
+        XCTAssertFalse(plan.options.isLive)
     }
 
     func testAdmissionDiagnosticFieldsDescribeTerminalDecision() {
         XCTAssertEqual(
             HybridRemoteSourceAdmission.hlsVOD.diagnosticFields,
             "result=hls-vod"
+        )
+        XCTAssertEqual(
+            HybridRemoteSourceAdmission
+                .hlsVODPQOnlyMaster(
+                    mediaPlaylistURL: URL(
+                        string: "https://example.invalid/video.m3u8"
+                    )!,
+                    duration: 10.5
+                )
+                .diagnosticFields,
+            "result=hls-vod-pq-only-master duration=10.500 "
+                + "source=resolved-media-playlist"
         )
         XCTAssertEqual(
             HybridRemoteSourceAdmission
@@ -199,13 +332,13 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
                 )
             )
         )
-        let options = HybridPlaybackLoadOptions.make(
+        let plan = HybridPlaybackPlan.make(
             request: request,
             externalSubtitles: [],
             admission: admission
         )
-        XCTAssertFalse(options.nativeRemoteHLS)
-        XCTAssertFalse(options.isLive)
+        XCTAssertFalse(plan.options.nativeRemoteHLS)
+        XCTAssertFalse(plan.options.isLive)
     }
 
     func testRequestFailureFallsBackToAether() async throws {
@@ -408,6 +541,57 @@ private final class HybridAdmissionFixtureURLProtocol:
 
     private func fixtureData(for name: String) -> Data {
         switch name {
+        case "pq-only-master":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x535,VIDEO-RANGE=PQ
+                pq-video
+                """.utf8
+            )
+        case "pq-audio-master":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Main",DEFAULT=YES,URI="audio"
+                #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x535,VIDEO-RANGE=PQ,AUDIO="stereo"
+                pq-video
+                """.utf8
+            )
+        case "mixed-master":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=960x540,VIDEO-RANGE=SDR
+                sdr-video
+                #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x535,VIDEO-RANGE=PQ
+                pq-video
+                """.utf8
+            )
+        case "multi-pq-master":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=960x400,VIDEO-RANGE=PQ
+                pq-video-low
+                #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x535,VIDEO-RANGE=PQ
+                pq-video
+                """.utf8
+            )
+        case "pq-video", "pq-video-low", "sdr-video":
+            Data(
+                """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:6
+                #EXTINF:6,
+                avc-segment.ts
+                #EXTINF:4.5,
+                avc-segment.ts
+                #EXT-X-ENDLIST
+                """.utf8
+            )
+        case "avc-segment.ts":
+            hybridTransportStreamFixture(streamType: 0x1B)
         case "extensionless":
             Data(
                 """

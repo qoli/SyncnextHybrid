@@ -121,7 +121,7 @@ public final class HybridPlaybackSession:
             )
         sourceAdmission = admission
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
-        let options = HybridPlaybackLoadOptions.make(
+        let plan = HybridPlaybackPlan.make(
             request: request,
             externalSubtitles: externalSubtitles,
             admission: admission
@@ -130,15 +130,18 @@ public final class HybridPlaybackSession:
             "SYNCNEXT_HYBRID_ADMISSION "
                 + "session=\(diagnosticsID) "
                 + "\(admission.diagnosticFields) "
-                + "nativeRemoteHLS=\(options.nativeRemoteHLS) "
-                + "isLive=\(options.isLive) "
+                + "originalSourceID="
+                + HybridPlaybackPlan.sourceID(request.url) + " "
+                + "\(plan.diagnosticFields) "
+                + "nativeRemoteHLS=\(plan.options.nativeRemoteHLS) "
+                + "isLive=\(plan.options.isLive) "
                 + "forceAVKitProxy=\(forceAVKitProxy)"
         )
         do {
             try await engine.load(
-                url: request.url,
+                url: plan.url,
                 startPosition: request.initialPosition,
-                options: options
+                options: plan.options
             )
         } catch {
             let nsError = error as NSError
