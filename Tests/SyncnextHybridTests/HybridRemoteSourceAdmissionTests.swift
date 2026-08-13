@@ -301,6 +301,29 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         }
     }
 
+    func testPQOnlyMasterUsesValidatedPlaylistDurationForNativeSnapshot() {
+        let duration = HybridNativeSnapshotDurationPolicy.duration(
+            admission: .hlsVODPQOnlyMaster(
+                mediaPlaylistURL: URL(
+                    string: "https://example.invalid/video.m3u8"
+                )!,
+                duration: 2_691.564
+            ),
+            engineDuration: .nan
+        )
+
+        XCTAssertEqual(duration, 2_691.564)
+    }
+
+    func testOrdinaryHLSKeepsEngineDurationForNativeSnapshot() {
+        let duration = HybridNativeSnapshotDurationPolicy.duration(
+            admission: .hlsVOD,
+            engineDuration: 1_420.074
+        )
+
+        XCTAssertEqual(duration, 1_420.074)
+    }
+
     func testM3U8SuffixWithBinaryBodyFallsBackToAether()
         async throws
     {

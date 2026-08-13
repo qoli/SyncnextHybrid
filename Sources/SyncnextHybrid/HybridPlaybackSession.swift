@@ -201,6 +201,7 @@ public final class HybridPlaybackSession:
             engine: engine,
             route: initialRoute,
             proxyState: proxyContext?.timeline.state,
+            sourceAdmission: sourceAdmission,
             nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
@@ -781,7 +782,11 @@ public final class HybridPlaybackSession:
                         phase: .failed(error.localizedDescription),
                         route: newRoute,
                         currentTime: engine.currentTime,
-                        duration: engine.duration,
+                        duration:
+                            HybridNativeSnapshotDurationPolicy.duration(
+                                admission: sourceAdmission,
+                                engineDuration: engine.duration
+                            ),
                         rate: requestedRate,
                         selectedAudioTrackID:
                             engine.activeAudioTrackIndex,
@@ -1303,6 +1308,7 @@ public final class HybridPlaybackSession:
             engine: engine,
             route: route,
             proxyState: proxyContext?.timeline.state,
+            sourceAdmission: sourceAdmission,
             nativeRate: requestedRate,
             audioSelectionRevision: audioSelectionRevision
         )
@@ -1317,6 +1323,7 @@ public final class HybridPlaybackSession:
         engine: AetherEngine,
         route: HybridPlaybackRoute,
         proxyState: HybridHLSTimelineState?,
+        sourceAdmission: HybridRemoteSourceAdmission,
         nativeRate: Float,
         audioSelectionRevision: UInt64
     ) -> HybridPlaybackSnapshot {
@@ -1328,7 +1335,10 @@ public final class HybridPlaybackSession:
         case .nativeAVPlayer:
             phase = mapPhase(engine.playbackPhase)
             currentTime = engine.currentTime
-            duration = engine.duration
+            duration = HybridNativeSnapshotDurationPolicy.duration(
+                admission: sourceAdmission,
+                engineDuration: engine.duration
+            )
             rate = nativeRate
         case .avKitProxy:
             guard let proxyState else {

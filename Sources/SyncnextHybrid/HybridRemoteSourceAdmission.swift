@@ -66,6 +66,13 @@ enum HybridRemoteSourceAdmission: Equatable {
         return duration
     }
 
+    var nativeSnapshotDuration: Double? {
+        guard case .hlsVODPQOnlyMaster(_, let duration) = self else {
+            return nil
+        }
+        return duration
+    }
+
     var diagnosticFields: String {
         switch self {
         case .hlsVOD:
@@ -434,6 +441,20 @@ enum HybridProxyDurationPolicy {
               duration.isFinite,
               duration > 0 else {
             throw HybridPlaybackError.proxyDurationUnavailable
+        }
+        return duration
+    }
+}
+
+enum HybridNativeSnapshotDurationPolicy {
+    static func duration(
+        admission: HybridRemoteSourceAdmission,
+        engineDuration: Double
+    ) -> Double {
+        guard let duration = admission.nativeSnapshotDuration,
+              duration.isFinite,
+              duration > 0 else {
+            return engineDuration
         }
         return duration
     }
