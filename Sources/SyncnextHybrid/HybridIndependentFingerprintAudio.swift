@@ -22,7 +22,11 @@ enum HybridIndependentFingerprintAudioSource: Sendable {
 }
 
 enum HybridIndependentFingerprintAudio {
-    private static let coverageTolerance = 0.05
+    private static let leadingCoverageTolerance = 0.05
+    /// Container duration can exceed the selected audio track because of codec
+    /// padding or edit-list rounding. This remains negligible for a 180-second
+    /// fingerprint window and is emitted as a structured diagnostic below.
+    private static let trailingCoverageTolerance = 0.25
 
     static func decode(
         source: HybridIndependentFingerprintAudioSource,
@@ -283,8 +287,9 @@ enum HybridIndependentFingerprintAudio {
         let lastEnd = last.sourceTime
             + Double(last.buffer.frameLength) / last.buffer.format.sampleRate
         let coversStart =
-            first.sourceTime <= range.lowerBound + coverageTolerance
-        let coversEnd = lastEnd >= range.upperBound - coverageTolerance
+            first.sourceTime <= range.lowerBound + leadingCoverageTolerance
+        let trailingShortfall = max(0, range.upperBound - lastEnd)
+        let coversEnd = trailingShortfall <= trailingCoverageTolerance
         guard coversStart, coversEnd else {
             let requestedStart = String(
                 format: "%.6f",
@@ -309,6 +314,27 @@ enum HybridIndependentFingerprintAudio {
                     + "buffers=\(buffers.count)"
             )
             throw HybridFingerprintAudioError.incompleteRange
+        }
+        if trailingShortfall > leadingCoverageTolerance {
+            let requestedEnd = String(format: "%.6f", range.upperBound)
+            let actualEnd = String(format: "%.6f", lastEnd)
+            let acceptedShortfall = String(
+                format: "%.6f",
+                trailingShortfall
+            )
+            let acceptedTolerance = String(
+                format: "%.6f",
+                trailingCoverageTolerance
+            )
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_FINGERPRINT_COVERAGE "
+                    + "result=trailing-shortfall-accepted "
+                    + "requestedEnd=\(requestedEnd) "
+                    + "actualEnd=\(actualEnd) "
+                    + "shortfall=\(acceptedShortfall) "
+                    + "tolerance=\(acceptedTolerance) "
+                    + "buffers=\(buffers.count)"
+            )
         }
         if buffers.dropFirst().contains(where: \.discontinuity) {
             throw HybridFingerprintAudioError.discontinuousRange

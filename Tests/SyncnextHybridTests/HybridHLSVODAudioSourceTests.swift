@@ -263,6 +263,58 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         XCTAssertEqual(batch.sourceRange, 0..<1)
         XCTAssertEqual(batch.cacheWaitSeconds, 0)
     }
+
+    func testDirectDemuxFingerprintAdapterAcceptsSmallTrailingShortfall()
+        async throws
+    {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+
+        let batch = try await HybridIndependentFingerprintAudio.decode(
+            source: source,
+            range: 0..<2.18
+        )
+
+        XCTAssertEqual(batch.sourceRange, 0..<2.18)
+        XCTAssertFalse(batch.buffers.isEmpty)
+    }
+
+    func testDirectDemuxFingerprintAdapterRejectsLargeTrailingShortfall()
+        async throws
+    {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+
+        do {
+            _ = try await HybridIndependentFingerprintAudio.decode(
+                source: source,
+                range: 0..<2.3
+            )
+            XCTFail("large trailing shortfall unexpectedly admitted")
+        } catch let error as HybridFingerprintAudioError {
+            XCTAssertEqual(error, .incompleteRange)
+        }
+    }
 }
 
 private final class HybridHLSFixtureURLProtocol:
