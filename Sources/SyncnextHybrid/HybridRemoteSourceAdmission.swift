@@ -20,9 +20,12 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     case hlsVOD
-    /// Finite MPEG-TS HLS whose PMT declares HEVC (stream_type 0x24).
-    /// The temporary AetherEngine patch owns the seekable TS -> fMP4 path.
-    case hlsVODHEVCMPEGTS(duration: Double)
+    /// Finite MPEG-TS HLS whose PMT contains positive HEVC evidence.
+    /// AetherEngine owns the seekable TS -> fMP4 path.
+    case hlsVODHEVCMPEGTS(
+        duration: Double,
+        evidence: MPEGTransportStreamCodecProbe.HEVCEvidence
+    )
     case hlsLive
     case aetherDefault(AetherDefaultReason)
 
@@ -47,7 +50,7 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     var avKitProxyDuration: Double? {
-        guard case .hlsVODHEVCMPEGTS(let duration) = self else {
+        guard case .hlsVODHEVCMPEGTS(let duration, _) = self else {
             return nil
         }
         return duration
@@ -57,13 +60,14 @@ enum HybridRemoteSourceAdmission: Equatable {
         switch self {
         case .hlsVOD:
             return "result=hls-vod"
-        case .hlsVODHEVCMPEGTS(let duration):
+        case .hlsVODHEVCMPEGTS(let duration, let evidence):
             return "result=hls-vod-hevc-mpegts duration="
                 + String(
                     format: "%.3f",
                     locale: Locale(identifier: "en_US_POSIX"),
                     duration
                 )
+                + " evidence=\(evidence.diagnosticValue)"
         case .hlsLive:
             return "result=hls-live"
         case .aetherDefault(let reason):
@@ -214,11 +218,17 @@ enum HybridRemoteSourceAdmission: Equatable {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode),
-                  MPEGTransportStreamCodecProbe.containsHEVC(data) else {
+                  (200...299).contains(http.statusCode) else {
                 return .hlsVOD
             }
-            return .hlsVODHEVCMPEGTS(duration: duration)
+            guard case .hevcInMPEGTS(let evidence) =
+                MPEGTransportStreamCodecProbe.classify(data) else {
+                return .hlsVOD
+            }
+            return .hlsVODHEVCMPEGTS(
+                duration: duration,
+                evidence: evidence
+            )
         } catch {
             return .hlsVOD
         }
@@ -422,12 +432,39 @@ enum HybridPlaybackLoadOptions {
     }
 }
 
-/// Bounded PMT inspection used only by the disposable HEVC MPEG-TS HLS
-/// workaround. It never guesses from a URL suffix or MIME type.
+/// Bounded PMT inspection for HEVC MPEG-TS HLS admission. The interface keeps
+/// uncertain, non-HEVC, and positively identified HEVC carriage distinct.
 enum MPEGTransportStreamCodecProbe {
     private static let packetSize = 188
 
-    static func containsHEVC(_ data: Data) -> Bool {
+    enum HEVCEvidence: Equatable {
+        case standardStreamType(UInt8)
+        case registrationDescriptor(streamType: UInt8)
+        case hevcVideoDescriptor(streamType: UInt8)
+
+        var diagnosticValue: String {
+            switch self {
+            case .standardStreamType(let value):
+                "stream-type-\(hex(value))"
+            case .registrationDescriptor(let streamType):
+                "registration-HEVC-stream-type-\(hex(streamType))"
+            case .hevcVideoDescriptor(let streamType):
+                "hevc-descriptor-stream-type-\(hex(streamType))"
+            }
+        }
+
+        private func hex(_ value: UInt8) -> String {
+            String(format: "%02X", value)
+        }
+    }
+
+    enum Verdict: Equatable {
+        case hevcInMPEGTS(HEVCEvidence)
+        case otherCarriage
+        case inconclusive
+    }
+
+    static func classify(_ data: Data) -> Verdict {
         let bytes = [UInt8](data)
         guard let syncOffset = (0..<min(packetSize, bytes.count)).first(
             where: { offset in
@@ -436,66 +473,193 @@ enum MPEGTransportStreamCodecProbe {
                     && bytes[offset + packetSize] == 0x47
                     && bytes[offset + packetSize * 2] == 0x47
             }
-        ) else {
-            return false
-        }
+        ) else { return .inconclusive }
 
         var packetStart = syncOffset
+        var sawPMT = false
         while packetStart + packetSize <= bytes.count {
-            if packetContainsHEVC(
-                bytes,
-                packetStart: packetStart
-            ) {
-                return true
+            switch programMapVerdict(bytes, packetStart: packetStart) {
+            case .hevcInMPEGTS(let evidence):
+                return .hevcInMPEGTS(evidence)
+            case .otherCarriage:
+                sawPMT = true
+            case .inconclusive:
+                break
             }
             packetStart += packetSize
         }
-        return false
+        return sawPMT ? .otherCarriage : .inconclusive
     }
 
-    private static func packetContainsHEVC(
+    private static func programMapVerdict(
         _ bytes: [UInt8],
         packetStart: Int
-    ) -> Bool {
+    ) -> Verdict {
         guard bytes[packetStart] == 0x47,
               bytes[packetStart + 1] & 0x40 != 0 else {
-            return false
-        }
-        let adaptationControl = (bytes[packetStart + 3] >> 4) & 0x03
-        guard adaptationControl == 1 || adaptationControl == 3 else {
-            return false
-        }
-        var payload = packetStart + 4
-        if adaptationControl == 3 {
-            payload += 1 + Int(bytes[payload])
+            return .inconclusive
         }
         let packetEnd = packetStart + packetSize
-        guard payload < packetEnd else {
-            return false
-        }
+        guard var payload = payloadStart(
+            bytes,
+            packetStart: packetStart
+        ) else { return .inconclusive }
+        guard payload < packetEnd else { return .inconclusive }
         payload += 1 + Int(bytes[payload])
-        guard payload + 12 <= packetEnd,
+        guard payload + 3 <= packetEnd,
               bytes[payload] == 0x02 else {
-            return false
+            return .inconclusive
         }
 
         let sectionLength =
             (Int(bytes[payload + 1] & 0x0F) << 8)
                 | Int(bytes[payload + 2])
-        let sectionEnd = min(packetEnd, payload + 3 + sectionLength - 4)
+        guard sectionLength >= 13 else { return .inconclusive }
+        let expectedCount = 3 + sectionLength
+        var section = Array(
+            bytes[payload..<min(packetEnd, payload + expectedCount)]
+        )
+        let pid = packetPID(bytes, packetStart: packetStart)
+        var continuation = packetStart + packetSize
+        while section.count < expectedCount,
+              continuation + packetSize <= bytes.count {
+            guard bytes[continuation] == 0x47 else { return .inconclusive }
+            defer { continuation += packetSize }
+            guard packetPID(bytes, packetStart: continuation) == pid,
+                  let continuationPayload = payloadStart(
+                      bytes,
+                      packetStart: continuation
+                  ) else { continue }
+            let continuationEnd = continuation + packetSize
+            if bytes[continuation + 1] & 0x40 != 0 {
+                guard continuationPayload < continuationEnd else {
+                    return .inconclusive
+                }
+                let pointer = Int(bytes[continuationPayload])
+                let previousSectionEnd = min(
+                    continuationEnd,
+                    continuationPayload + 1 + pointer
+                )
+                section.append(
+                    contentsOf: bytes[
+                        (continuationPayload + 1)..<previousSectionEnd
+                    ]
+                )
+                break
+            }
+            section.append(
+                contentsOf: bytes[continuationPayload..<continuationEnd]
+            )
+        }
+        guard section.count >= expectedCount else { return .inconclusive }
+        return classifyProgramMapSection(Array(section.prefix(expectedCount)))
+    }
+
+    private static func classifyProgramMapSection(
+        _ section: [UInt8]
+    ) -> Verdict {
+        let sectionEnd = section.count - 4
         let programInfoLength =
-            (Int(bytes[payload + 10] & 0x0F) << 8)
-                | Int(bytes[payload + 11])
-        var stream = payload + 12 + programInfoLength
-        while stream + 5 <= sectionEnd {
-            if bytes[stream] == 0x24 {
-                return true
+            (Int(section[10] & 0x0F) << 8)
+                | Int(section[11])
+        var stream = 12 + programInfoLength
+        guard stream <= sectionEnd else { return .inconclusive }
+
+        var malformedDescriptor = false
+        while stream < sectionEnd {
+            guard stream + 5 <= sectionEnd else { return .inconclusive }
+            let streamType = section[stream]
+            if isStandardHEVCStreamType(streamType) {
+                return .hevcInMPEGTS(.standardStreamType(streamType))
             }
             let infoLength =
-                (Int(bytes[stream + 3] & 0x0F) << 8)
-                    | Int(bytes[stream + 4])
-            stream += 5 + infoLength
+                (Int(section[stream + 3] & 0x0F) << 8)
+                    | Int(section[stream + 4])
+            let descriptorStart = stream + 5
+            let entryEnd = descriptorStart + infoLength
+            guard entryEnd <= sectionEnd else { return .inconclusive }
+            switch descriptorEvidence(
+                section,
+                streamType: streamType,
+                start: descriptorStart,
+                end: entryEnd
+            ) {
+            case .hevcInMPEGTS(let evidence):
+                return .hevcInMPEGTS(evidence)
+            case .inconclusive:
+                malformedDescriptor = true
+            case .otherCarriage:
+                break
+            }
+            stream = entryEnd
         }
-        return false
+        return malformedDescriptor ? .inconclusive : .otherCarriage
+    }
+
+    private static func packetPID(
+        _ bytes: [UInt8],
+        packetStart: Int
+    ) -> Int {
+        (Int(bytes[packetStart + 1] & 0x1F) << 8)
+            | Int(bytes[packetStart + 2])
+    }
+
+    private static func payloadStart(
+        _ bytes: [UInt8],
+        packetStart: Int
+    ) -> Int? {
+        let packetEnd = packetStart + packetSize
+        let adaptationControl = (bytes[packetStart + 3] >> 4) & 0x03
+        switch adaptationControl {
+        case 1:
+            return packetStart + 4
+        case 3:
+            let lengthOffset = packetStart + 4
+            guard lengthOffset < packetEnd else { return nil }
+            let start = lengthOffset + 1 + Int(bytes[lengthOffset])
+            return start <= packetEnd ? start : nil
+        default:
+            return nil
+        }
+    }
+
+    private static func isStandardHEVCStreamType(_ value: UInt8) -> Bool {
+        switch value {
+        case 0x24, 0x25, 0x28, 0x29, 0x2A, 0x2B, 0x31:
+            true
+        default:
+            false
+        }
+    }
+
+    private static func descriptorEvidence(
+        _ bytes: [UInt8],
+        streamType: UInt8,
+        start: Int,
+        end: Int
+    ) -> Verdict {
+        var descriptor = start
+        while descriptor < end {
+            guard descriptor + 2 <= end else { return .inconclusive }
+            let tag = bytes[descriptor]
+            let length = Int(bytes[descriptor + 1])
+            let payload = descriptor + 2
+            let descriptorEnd = payload + length
+            guard descriptorEnd <= end else { return .inconclusive }
+
+            if tag == 0x05, length >= 4,
+               bytes[payload..<(payload + 4)].elementsEqual([0x48, 0x45, 0x56, 0x43]) {
+                return .hevcInMPEGTS(
+                    .registrationDescriptor(streamType: streamType)
+                )
+            }
+            if tag == 0x38, length >= 13 {
+                return .hevcInMPEGTS(
+                    .hevcVideoDescriptor(streamType: streamType)
+                )
+            }
+            descriptor = descriptorEnd
+        }
+        return .otherCarriage
     }
 }

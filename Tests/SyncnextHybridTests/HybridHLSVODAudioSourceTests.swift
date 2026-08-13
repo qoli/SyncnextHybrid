@@ -68,7 +68,10 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         )
         XCTAssertEqual(
             try HybridFingerprintAudioProviderResolver.resolve(
-                admission: .hlsVODHEVCMPEGTS(duration: 120)
+                admission: .hlsVODHEVCMPEGTS(
+                    duration: 120,
+                    evidence: .standardStreamType(0x24)
+                )
             ),
             .segmentCache
         )

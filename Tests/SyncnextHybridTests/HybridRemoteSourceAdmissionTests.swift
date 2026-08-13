@@ -71,7 +71,7 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         XCTAssertTrue(admission.isLiveHLS)
     }
 
-    func testFiniteHEVCTransportStreamUsesAetherRemuxPath()
+    func testFinitePrivateHEVCTransportStreamUsesAetherRemuxPath()
         async throws
     {
         let session = makeSession()
@@ -88,7 +88,10 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
 
         XCTAssertEqual(
             admission,
-            .hlsVODHEVCMPEGTS(duration: 10.5)
+            .hlsVODHEVCMPEGTS(
+                duration: 10.5,
+                evidence: .registrationDescriptor(streamType: 0x06)
+            )
         )
         XCTAssertEqual(admission.avKitProxyDuration, 10.5)
         let request = try HybridPlaybackRequest(url: url)
@@ -108,9 +111,13 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         )
         XCTAssertEqual(
             HybridRemoteSourceAdmission
-                .hlsVODHEVCMPEGTS(duration: 10.5)
+                .hlsVODHEVCMPEGTS(
+                    duration: 10.5,
+                    evidence: .registrationDescriptor(streamType: 0x06)
+                )
                 .diagnosticFields,
-            "result=hls-vod-hevc-mpegts duration=10.500"
+            "result=hls-vod-hevc-mpegts duration=10.500 "
+                + "evidence=registration-HEVC-stream-type-06"
         )
         XCTAssertEqual(
             HybridRemoteSourceAdmission.hlsLive.diagnosticFields,
@@ -134,7 +141,10 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         throws
     {
         let duration = try HybridProxyDurationPolicy.duration(
-            admission: .hlsVODHEVCMPEGTS(duration: 1_423.75),
+            admission: .hlsVODHEVCMPEGTS(
+                duration: 1_423.75,
+                evidence: .standardStreamType(0x24)
+            ),
             engineDuration: 0.01
         )
 
@@ -144,7 +154,10 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
     func testForcedProxyRejectsInvalidPlaylistDuration() {
         XCTAssertThrowsError(
             try HybridProxyDurationPolicy.duration(
-                admission: .hlsVODHEVCMPEGTS(duration: 0),
+                admission: .hlsVODHEVCMPEGTS(
+                    duration: 0,
+                    evidence: .standardStreamType(0x24)
+                ),
                 engineDuration: 0.01
             )
         ) { error in
@@ -254,6 +267,74 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
         XCTAssertEqual(
             admission,
             .aetherDefault(.invalidPlaylist)
+        )
+    }
+
+    func testProbeRecognizesEveryStandardHEVCStreamType() {
+        for streamType: UInt8 in [0x24, 0x25, 0x28, 0x29, 0x2A, 0x2B, 0x31] {
+            XCTAssertEqual(
+                MPEGTransportStreamCodecProbe.classify(
+                    hybridTransportStreamFixture(streamType: streamType)
+                ),
+                .hevcInMPEGTS(.standardStreamType(streamType)),
+                "stream_type \(String(format: "%02X", streamType))"
+            )
+        }
+    }
+
+    func testProbeRecognizesPrivateHEVCRegistration() {
+        let registration = Data([0x05, 0x04, 0x48, 0x45, 0x56, 0x43])
+        for streamType: UInt8 in [0x06, 0x80, 0xFF] {
+            XCTAssertEqual(
+                MPEGTransportStreamCodecProbe.classify(
+                    hybridTransportStreamFixture(
+                        streamType: streamType,
+                        descriptors: registration
+                    )
+                ),
+                .hevcInMPEGTS(
+                    .registrationDescriptor(streamType: streamType)
+                )
+            )
+        }
+    }
+
+    func testProbeKeepsOrdinaryAVCAndUnregisteredPrivateCarriageNative() {
+        XCTAssertEqual(
+            MPEGTransportStreamCodecProbe.classify(
+                hybridTransportStreamFixture(streamType: 0x1B)
+            ),
+            .otherCarriage
+        )
+        XCTAssertEqual(
+            MPEGTransportStreamCodecProbe.classify(
+                hybridTransportStreamFixture(
+                    streamType: 0x06,
+                    descriptors: Data([0x05, 0x04, 0x41, 0x43, 0x2D, 0x33])
+                )
+            ),
+            .otherCarriage
+        )
+    }
+
+    func testProbeTreatsMalformedDescriptorAsInconclusive() {
+        XCTAssertEqual(
+            MPEGTransportStreamCodecProbe.classify(
+                hybridTransportStreamFixture(
+                    streamType: 0x06,
+                    descriptors: Data([0x05, 0x04, 0x48])
+                )
+            ),
+            .inconclusive
+        )
+    }
+
+    func testProbeReassemblesSplitPMTBeforeClassification() {
+        XCTAssertEqual(
+            MPEGTransportStreamCodecProbe.classify(
+                splitHybridTransportStreamFixture()
+            ),
+            .hevcInMPEGTS(.registrationDescriptor(streamType: 0x06))
         )
     }
 }
@@ -367,7 +448,10 @@ private final class HybridAdmissionFixtureURLProtocol:
                 """.utf8
             )
         case "hevc-segment.ts":
-            hevcTransportStreamFixture()
+            hybridTransportStreamFixture(
+                streamType: 0x06,
+                descriptors: Data([0x05, 0x04, 0x48, 0x45, 0x56, 0x43])
+            )
         case "malformed":
             Data(
                 """
@@ -385,32 +469,80 @@ private final class HybridAdmissionFixtureURLProtocol:
         }
     }
 
-    private func hevcTransportStreamFixture() -> Data {
-        var bytes = [UInt8](repeating: 0xFF, count: 188 * 3)
-        for packet in 0..<3 {
-            bytes[packet * 188] = 0x47
-            bytes[packet * 188 + 3] = 0x10
-        }
-        bytes[1] = 0x40
-        bytes[2] = 0x64
-        bytes[4] = 0
-        bytes[5] = 0x02
-        bytes[6] = 0xB0
-        bytes[7] = 18
-        bytes[8] = 0
-        bytes[9] = 1
-        bytes[10] = 0xC1
-        bytes[11] = 0
-        bytes[12] = 0
-        bytes[13] = 0xE1
-        bytes[14] = 0
-        bytes[15] = 0xF0
-        bytes[16] = 0
-        bytes[17] = 0x24
-        bytes[18] = 0xE1
-        bytes[19] = 1
-        bytes[20] = 0xF0
-        bytes[21] = 0
-        return Data(bytes)
+}
+
+private func hybridTransportStreamFixture(
+    streamType: UInt8,
+    descriptors: Data = Data()
+) -> Data {
+    var bytes = [UInt8](repeating: 0xFF, count: 188 * 3)
+    for packet in 0..<3 {
+        bytes[packet * 188] = 0x47
+        bytes[packet * 188 + 3] = 0x10
     }
+    bytes[1] = 0x40
+    bytes[2] = 0x64
+    bytes[4] = 0
+    bytes[5] = 0x02
+    bytes[6] = 0xB0
+    bytes[7] = UInt8(18 + descriptors.count)
+    bytes[8] = 0
+    bytes[9] = 1
+    bytes[10] = 0xC1
+    bytes[11] = 0
+    bytes[12] = 0
+    bytes[13] = 0xE1
+    bytes[14] = 0
+    bytes[15] = 0xF0
+    bytes[16] = 0
+    bytes[17] = streamType
+    bytes[18] = 0xE1
+    bytes[19] = 1
+    bytes[20] = 0xF0 | UInt8((descriptors.count >> 8) & 0x0F)
+    bytes[21] = UInt8(descriptors.count & 0xFF)
+    bytes.replaceSubrange(22..<(22 + descriptors.count), with: descriptors)
+    return Data(bytes)
+}
+
+private func splitHybridTransportStreamFixture() -> Data {
+    let descriptors = Data(
+        [0x40, 0xA0]
+            + [UInt8](repeating: 0, count: 160)
+            + [0x05, 0x04, 0x48, 0x45, 0x56, 0x43]
+    )
+    let sectionLength = 18 + descriptors.count
+    var section = [UInt8](repeating: 0, count: 3 + sectionLength)
+    section[0] = 0x02
+    section[1] = 0xB0 | UInt8((sectionLength >> 8) & 0x0F)
+    section[2] = UInt8(sectionLength & 0xFF)
+    section[4] = 1
+    section[5] = 0xC1
+    section[8] = 0xE1
+    section[10] = 0xF0
+    section[12] = 0x06
+    section[13] = 0xE1
+    section[14] = 1
+    section[15] = 0xF0 | UInt8((descriptors.count >> 8) & 0x0F)
+    section[16] = UInt8(descriptors.count & 0xFF)
+    section.replaceSubrange(17..<(17 + descriptors.count), with: descriptors)
+
+    var packets = [UInt8](repeating: 0xFF, count: 188 * 3)
+    packets[0] = 0x47
+    packets[1] = 0x40
+    packets[2] = 0x64
+    packets[3] = 0x10
+    packets[4] = 0
+    let firstCount = min(183, section.count)
+    packets.replaceSubrange(5..<(5 + firstCount), with: section[..<firstCount])
+
+    packets[188] = 0x47
+    packets[189] = 0x00
+    packets[190] = 0x64
+    packets[191] = 0x10
+    let remaining = section.dropFirst(firstCount)
+    packets.replaceSubrange(192..<(192 + remaining.count), with: remaining)
+
+    packets[376] = 0x47
+    packets[379] = 0x10
+    return Data(packets)
 }
