@@ -442,7 +442,8 @@ public final class HybridPlaybackSession:
     /// seekable sources use an independent bounded cursor bound to the same
     /// audible-selection revision.
     public func fingerprintAudio(
-        request fingerprintRequest: HybridFingerprintAudioRequest
+        request fingerprintRequest: HybridFingerprintAudioRequest,
+        onProgress: HybridFingerprintAudioProgressHandler? = nil
     ) async throws -> HybridFingerprintAudioBatch {
         guard !stopped else {
             throw HybridFingerprintAudioError.sessionStopped
@@ -450,6 +451,10 @@ public final class HybridPlaybackSession:
         guard fingerprintRequest.audioSelectionRevision
                 == audioSelectionRevision else {
             throw HybridFingerprintAudioError.audioSelectionChanged
+        }
+        guard fingerprintRequest.deadlineSeconds.isFinite,
+              fingerprintRequest.deadlineSeconds > 0 else {
+            throw HybridFingerprintAudioError.invalidDeadline
         }
         let provider = try HybridFingerprintAudioProviderResolver.resolve(
             admission: sourceAdmission
@@ -500,7 +505,9 @@ public final class HybridPlaybackSession:
                 batch = try await Task.detached(priority: .utility) {
                     try await HybridIndependentFingerprintAudio.decode(
                         source: source,
-                        range: fingerprintRequest.sourceRange
+                        range: fingerprintRequest.sourceRange,
+                        deadlineSeconds: fingerprintRequest.deadlineSeconds,
+                        onProgress: onProgress
                     )
                 }.value
             case .independentDemuxer:
@@ -515,7 +522,9 @@ public final class HybridPlaybackSession:
                 batch = try await Task.detached(priority: .utility) {
                     try await HybridIndependentFingerprintAudio.decode(
                         source: source,
-                        range: fingerprintRequest.sourceRange
+                        range: fingerprintRequest.sourceRange,
+                        deadlineSeconds: fingerprintRequest.deadlineSeconds,
+                        onProgress: onProgress
                     )
                 }.value
             }

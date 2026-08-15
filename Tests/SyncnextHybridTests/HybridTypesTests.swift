@@ -3,6 +3,18 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridTypesTests: XCTestCase {
+    func testFingerprintRequestPreservesExplicitDeadline() {
+        let request = HybridFingerprintAudioRequest(
+            audioSelectionRevision: 11,
+            sourceRange: 0..<180,
+            deadlineSeconds: 75
+        )
+
+        XCTAssertEqual(request.audioSelectionRevision, 11)
+        XCTAssertEqual(request.sourceRange, 0..<180)
+        XCTAssertEqual(request.deadlineSeconds, 75)
+    }
+
     func testAudioAnalysisRequestPreservesSelectionRevisionAndRange() {
         let request = HybridAudioAnalysisRequest(
             audioSelectionRevision: 11,

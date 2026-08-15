@@ -31,7 +31,10 @@ enum HybridIndependentFingerprintAudio {
     static func decode(
         source: HybridIndependentFingerprintAudioSource,
         range: Range<Double>,
-        hlsSession: URLSession? = nil
+        hlsSession: URLSession? = nil,
+        deadlineSeconds: Double = HybridFingerprintAudioRequest
+            .defaultDeadlineSeconds,
+        onProgress: HybridFingerprintAudioProgressHandler? = nil
     ) async throws -> HybridFingerprintAudioBatch {
         let duration = range.upperBound - range.lowerBound
         guard range.lowerBound.isFinite,
@@ -41,8 +44,17 @@ enum HybridIndependentFingerprintAudio {
               duration <= 180 else {
             throw HybridFingerprintAudioError.invalidRange
         }
+        guard deadlineSeconds.isFinite, deadlineSeconds > 0 else {
+            throw HybridFingerprintAudioError.invalidDeadline
+        }
 
         let preparationStartedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = preparationStartedAt + deadlineSeconds
+        func checkDeadline() throws {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw HybridFingerprintAudioError.deadlineExceeded
+            }
+        }
         let demuxer = Demuxer()
         var preparedHLSCursor: HybridHLSPreparedAudioCursor?
         defer {
@@ -100,6 +112,19 @@ enum HybridIndependentFingerprintAudio {
         }
         let preparationSeconds =
             ProcessInfo.processInfo.systemUptime - preparationStartedAt
+        try checkDeadline()
+        if let onProgress {
+            await onProgress(
+                HybridFingerprintAudioProgress(
+                    provider: source.provider,
+                    phase: .preparing,
+                    sourceTime: range.lowerBound,
+                    sourceRange: range,
+                    fraction: 0,
+                    elapsedSeconds: preparationSeconds
+                )
+            )
+        }
 
         guard let stream = demuxer.stream(at: Int32(selected.id)) else {
             throw HybridFingerprintAudioError.audioTrackUnavailable
@@ -132,8 +157,9 @@ enum HybridIndependentFingerprintAudio {
             )
         )
         var reachedRangeEnd = false
+        var lastReportedFraction = -1.0
 
-        func append(_ chunks: [HybridDecodedAudioChunk]) throws {
+        func append(_ chunks: [HybridDecodedAudioChunk]) async throws {
             for chunk in chunks {
                 let result = clip(
                     chunk,
@@ -161,6 +187,33 @@ enum HybridIndependentFingerprintAudio {
                             discontinuity: discontinuity
                         )
                     )
+                    guard let onProgress else { continue }
+                    let sourceTime = Double(sourcePosition)
+                        / HybridAudioAnalysisFormat.sampleRate
+                    let bufferEnd = sourceTime
+                        + Double(buffer.frameLength)
+                        / buffer.format.sampleRate
+                    let fraction = min(
+                        max((bufferEnd - range.lowerBound) / duration, 0),
+                        1
+                    )
+                    guard fraction >= 1
+                            || fraction - lastReportedFraction >= 0.025 else {
+                        continue
+                    }
+                    lastReportedFraction = fraction
+                    await onProgress(
+                        HybridFingerprintAudioProgress(
+                            provider: source.provider,
+                            phase: .decoding,
+                            sourceTime: min(bufferEnd, range.upperBound),
+                            sourceRange: range,
+                            fraction: fraction,
+                            elapsedSeconds:
+                                ProcessInfo.processInfo.systemUptime
+                                - preparationStartedAt
+                        )
+                    )
                 }
             }
         }
@@ -168,6 +221,7 @@ enum HybridIndependentFingerprintAudio {
         do {
             while !reachedRangeEnd {
                 try Task.checkCancellation()
+                try checkDeadline()
                 guard let packet = try demuxer.readPacket() else {
                     break
                 }
@@ -176,13 +230,15 @@ enum HybridIndependentFingerprintAudio {
                 guard packet.pointee.stream_index == selected.id else {
                     continue
                 }
-                try append(try decoder.decode(packet: packet))
+                try await append(try decoder.decode(packet: packet))
             }
             if !reachedRangeEnd {
-                try append(try decoder.drain())
+                try await append(try decoder.drain())
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as HybridFingerprintAudioError {
+            throw error
         } catch {
             throw HybridFingerprintAudioError.sourceUnavailable
         }

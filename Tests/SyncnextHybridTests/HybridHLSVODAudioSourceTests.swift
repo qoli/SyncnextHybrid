@@ -264,6 +264,98 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         XCTAssertEqual(batch.cacheWaitSeconds, 0)
     }
 
+    @MainActor
+    func testDirectDemuxFingerprintAdapterReportsSourceTimeProgress()
+        async throws
+    {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+        var updates = [HybridFingerprintAudioProgress]()
+
+        _ = try await HybridIndependentFingerprintAudio.decode(
+            source: source,
+            range: 0..<1,
+            onProgress: { progress in
+                updates.append(progress)
+            }
+        )
+
+        let decoding = updates.filter { $0.phase == .decoding }
+        XCTAssertFalse(decoding.isEmpty)
+        XCTAssertEqual(decoding.last?.provider, .independentDemuxer)
+        XCTAssertGreaterThan(decoding.last?.sourceTime ?? 0, 0.9)
+        XCTAssertGreaterThan(decoding.last?.fraction ?? 0, 0.9)
+        XCTAssertTrue(
+            zip(decoding, decoding.dropFirst()).allSatisfy { pair in
+                pair.0.fraction <= pair.1.fraction
+            }
+        )
+    }
+
+    func testDirectDemuxFingerprintAdapterEnforcesOverallDeadline()
+        async throws
+    {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+
+        do {
+            _ = try await HybridIndependentFingerprintAudio.decode(
+                source: source,
+                range: 0..<1,
+                deadlineSeconds: .leastNonzeroMagnitude
+            )
+            XCTFail("expired fingerprint deadline unexpectedly completed")
+        } catch let error as HybridFingerprintAudioError {
+            XCTAssertEqual(error, .deadlineExceeded)
+        }
+    }
+
+    func testFingerprintRequestRejectsInvalidDeadline() async throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "tone",
+                withExtension: "m4a",
+                subdirectory: "Fixtures"
+            )
+        )
+        let source = HybridIndependentFingerprintAudioSource.demuxer(
+            url: url,
+            httpHeaders: [:],
+            selectedTrack: nil
+        )
+
+        do {
+            _ = try await HybridIndependentFingerprintAudio.decode(
+                source: source,
+                range: 0..<1,
+                deadlineSeconds: 0
+            )
+            XCTFail("invalid fingerprint deadline unexpectedly completed")
+        } catch let error as HybridFingerprintAudioError {
+            XCTAssertEqual(error, .invalidDeadline)
+        }
+    }
+
     func testDirectDemuxFingerprintAdapterAcceptsSmallTrailingShortfall()
         async throws
     {
