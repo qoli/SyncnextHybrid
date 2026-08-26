@@ -105,6 +105,7 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
         tolerance: Double
     )
     case aetherContractViolation(String)
+    case fingerprintContractViolation(String)
 
     var code: String {
         switch self {
@@ -146,6 +147,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "seek_landing_mismatch"
         case .aetherContractViolation:
             "aether_contract_violation"
+        case .fingerprintContractViolation:
+            "fingerprint_contract_violation"
         }
     }
 
@@ -205,6 +208,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "Seek landed at \(actual), expected \(target) ± \(tolerance)s"
         case .aetherContractViolation(let message):
             "AetherEngine strict seek contract failed: \(message)"
+        case .fingerprintContractViolation(let message):
+            "Hybrid fingerprint PCM contract failed: \(message)"
         }
     }
 }

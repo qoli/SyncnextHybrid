@@ -19,6 +19,17 @@ enum SmokeExpectedRoute: String, Sendable, Equatable {
     case avKitProxy
 }
 
+enum SmokeExpectedFingerprintProvider: String, Sendable, Equatable {
+    case segmentCache
+    case independentRemoteHLS
+    case independentDemuxer
+}
+
+struct SmokeFingerprintConfiguration: Sendable, Equatable {
+    let sourceRange: Range<Double>
+    let expectedProvider: SmokeExpectedFingerprintProvider
+}
+
 struct SmokeConfiguration: Sendable, Equatable {
     static let modeEnvironmentKey = "HYBRID_SMOKE_MODE"
     static let urlEnvironmentKey = "HYBRID_SMOKE_URL"
@@ -28,6 +39,12 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let rateEnvironmentKey = "HYBRID_SMOKE_RATE"
     static let expectedRouteEnvironmentKey =
         "HYBRID_SMOKE_EXPECTED_ROUTE"
+    static let fingerprintStartEnvironmentKey =
+        "HYBRID_SMOKE_FINGERPRINT_START_SECONDS"
+    static let fingerprintEndEnvironmentKey =
+        "HYBRID_SMOKE_FINGERPRINT_END_SECONDS"
+    static let expectedFingerprintProviderEnvironmentKey =
+        "HYBRID_SMOKE_EXPECTED_FINGERPRINT_PROVIDER"
     static let environmentPrefix = "HYBRID_SMOKE_"
     static let defaultSeekSeconds = 10.0
     static let defaultPlaybackRate: Float = 1
@@ -39,6 +56,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     let preseekSeconds: Double?
     let playbackRate: Float
     let expectedRoute: SmokeExpectedRoute?
+    let fingerprint: SmokeFingerprintConfiguration?
 
     var displaySource: String {
         if sourceURL.isFileURL {
@@ -81,7 +99,13 @@ struct SmokeConfiguration: Sendable, Equatable {
                 environment[rateEnvironmentKey]
                 ?? String(defaultPlaybackRate),
             rawExpectedRoute:
-                environment[expectedRouteEnvironmentKey]
+                environment[expectedRouteEnvironmentKey],
+            rawFingerprintStart:
+                environment[fingerprintStartEnvironmentKey],
+            rawFingerprintEnd:
+                environment[fingerprintEndEnvironmentKey],
+            rawExpectedFingerprintProvider:
+                environment[expectedFingerprintProviderEnvironmentKey]
         )
     }
 
@@ -98,7 +122,10 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawSeekSeconds: rawSeekSeconds,
             rawPreseekSeconds: nil,
             rawPlaybackRate: String(defaultPlaybackRate),
-            rawExpectedRoute: nil
+            rawExpectedRoute: nil,
+            rawFingerprintStart: nil,
+            rawFingerprintEnd: nil,
+            rawExpectedFingerprintProvider: nil
         )
     }
 
@@ -109,7 +136,10 @@ struct SmokeConfiguration: Sendable, Equatable {
         rawSeekSeconds: String,
         rawPreseekSeconds: String?,
         rawPlaybackRate: String,
-        rawExpectedRoute: String?
+        rawExpectedRoute: String?,
+        rawFingerprintStart: String?,
+        rawFingerprintEnd: String?,
+        rawExpectedFingerprintProvider: String?
     ) throws -> SmokeConfiguration {
         guard let mode = SmokePlaybackMode(rawValue: rawMode) else {
             throw SmokeConfigurationError.invalidMode(rawMode)
@@ -136,6 +166,49 @@ struct SmokeConfiguration: Sendable, Equatable {
             throw SmokeConfigurationError.expectedRouteRequiresHybrid
         }
 
+        let fingerprintValues = [
+            rawFingerprintStart,
+            rawFingerprintEnd,
+            rawExpectedFingerprintProvider,
+        ]
+        let suppliedFingerprintValueCount = fingerprintValues.compactMap {
+            $0
+        }.count
+        let fingerprint: SmokeFingerprintConfiguration?
+        if suppliedFingerprintValueCount == 0 {
+            fingerprint = nil
+        } else {
+            guard suppliedFingerprintValueCount == fingerprintValues.count else {
+                throw SmokeConfigurationError.incompleteFingerprintConfiguration
+            }
+            guard mode == .hybridAVKit else {
+                throw SmokeConfigurationError.fingerprintRequiresHybrid
+            }
+            guard let rawFingerprintStart,
+                  let rawFingerprintEnd,
+                  let rawExpectedFingerprintProvider,
+                  let start = Double(rawFingerprintStart),
+                  let end = Double(rawFingerprintEnd),
+                  start.isFinite,
+                  end.isFinite,
+                  start >= 0,
+                  end > start,
+                  end - start <= 180 else {
+                throw SmokeConfigurationError.invalidFingerprintRange
+            }
+            guard let provider = SmokeExpectedFingerprintProvider(
+                rawValue: rawExpectedFingerprintProvider
+            ) else {
+                throw SmokeConfigurationError.invalidFingerprintProvider(
+                    rawExpectedFingerprintProvider
+                )
+            }
+            fingerprint = SmokeFingerprintConfiguration(
+                sourceRange: start..<end,
+                expectedProvider: provider
+            )
+        }
+
         return SmokeConfiguration(
             mode: mode,
             sourceURL: sourceURL,
@@ -143,7 +216,8 @@ struct SmokeConfiguration: Sendable, Equatable {
             seekSeconds: seekSeconds,
             preseekSeconds: preseekSeconds,
             playbackRate: playbackRate,
-            expectedRoute: expectedRoute
+            expectedRoute: expectedRoute,
+            fingerprint: fingerprint
         )
     }
 
@@ -253,6 +327,10 @@ enum SmokeConfigurationError:
     case invalidPlaybackRate
     case invalidExpectedRoute(String)
     case expectedRouteRequiresHybrid
+    case incompleteFingerprintConfiguration
+    case fingerprintRequiresHybrid
+    case invalidFingerprintRange
+    case invalidFingerprintProvider(String)
 
     var errorDescription: String? {
         switch self {
@@ -274,6 +352,14 @@ enum SmokeConfigurationError:
             "Expected route must be nativeAVPlayer or avKitProxy, not \(value)"
         case .expectedRouteRequiresHybrid:
             "HYBRID_SMOKE_EXPECTED_ROUTE is valid only in hybridAVKit mode"
+        case .incompleteFingerprintConfiguration:
+            "Fingerprint start, end, and expected provider must be supplied together"
+        case .fingerprintRequiresHybrid:
+            "Fingerprint smoke validation is valid only in hybridAVKit mode"
+        case .invalidFingerprintRange:
+            "Fingerprint range must be finite, non-negative, non-empty, and at most 180 seconds"
+        case .invalidFingerprintProvider(let value):
+            "Expected fingerprint provider is invalid: \(value)"
         }
     }
 }

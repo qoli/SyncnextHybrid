@@ -344,7 +344,7 @@ diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngin
 index 6b133da..24f8ba7 100644
 --- a/Tests/AetherEngineTests/SegmentCacheTests.swift
 +++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
-@@ -129,6 +129,37 @@ struct SegmentCacheTests {
+@@ -129,6 +129,58 @@ struct SegmentCacheTests {
          #expect(c.peek(index: 0) == nil)
      }
  
@@ -377,6 +377,27 @@ index 6b133da..24f8ba7 100644
 +        #expect(c.awaitFetchHighWater(reaching: 2, timeout: 0.001))
 +        #expect(!c.awaitFetchHighWater(reaching: 3, timeout: 0.001))
 +        c.endAnalysisDemand(near)
++    }
++
++    @Test("far analysis demand never replaces a backward-seek consumer target")
++    func analysisDemandPreservesBackwardSeekTarget() {
++        let c = SegmentCache(forwardWindow: 10, backwardWindow: 20)
++        defer { c.close() }
++        c.declareTarget(150)
++        let demand = c.beginAnalysisDemand(through: 270)
++
++        #expect(c.targetIndex == 150)
++        #expect(c.awaitFetchHighWater(reaching: 260, timeout: 0.001))
++
++        c.declareTarget(60)
++        c.store(index: 60, data: makeData(10))
++        #expect(c.targetIndex == 60)
++        #expect(c.peek(index: 60) != nil)
++        #expect(c.awaitFetchHighWater(reaching: 260, timeout: 0.001))
++
++        c.endAnalysisDemand(demand)
++        #expect(c.targetIndex == 60)
++        #expect(!c.awaitFetchHighWater(reaching: 61, timeout: 0.001))
 +    }
 +
      @Test("contiguousForwardFrontier stops at the first gap ahead of target")

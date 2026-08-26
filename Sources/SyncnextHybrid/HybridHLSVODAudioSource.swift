@@ -4,7 +4,7 @@ import Foundation
 struct HybridHLSPreparedAudioCursor {
     let reader: IOReader
     let formatHint: String
-    let selection: AetherRemoteHLSAudioSelection
+    let selection: HybridRemoteHLSAudioSelection
     let usesDedicatedAudioRendition: Bool
     let segmentCount: Int
     let timelineOffset: Double
@@ -26,7 +26,7 @@ enum HybridHLSVODAudioSource {
     private static let maximumConcurrentResourceRequests = 4
 
     static func prepare(
-        request: AetherRemoteHLSAudioRequest,
+        request: HybridRemoteHLSAudioRequest,
         range: Range<Double>,
         scope: HybridHLSAudioCursorScope = .prefix,
         session: URLSession = makeSession()
@@ -98,7 +98,6 @@ enum HybridHLSVODAudioSource {
             selectedSegments = window.segments
             timelineOffset = window.timelineOffset
         }
-        let reader = HybridHLSVODResourceReader()
         var resources: [HLSByteResource] = []
         var lastMap: HLSByteResource?
         for segment in selectedSegments {
@@ -108,42 +107,81 @@ enum HybridHLSVODAudioSource {
             }
             resources.append(segment.resource)
         }
-        let producer = Task.detached(priority: .utility) {
-            do {
-                var writtenBytes: Int64 = 0
-                for batchStart in stride(
-                    from: 0,
-                    to: resources.count,
-                    by: maximumConcurrentResourceRequests
-                ) {
-                    try Task.checkCancellation()
-                    let batchEnd = min(
-                        batchStart + maximumConcurrentResourceRequests,
-                        resources.count
-                    )
-                    let batch = Array(resources[batchStart..<batchEnd])
-                    let fetched = try await fetchBatch(
-                        batch,
-                        relativeTo: mediaURL,
-                        headers: request.httpHeaders,
-                        session: session
-                    )
-                    for bytes in fetched {
-                        writtenBytes += Int64(bytes.count)
-                        guard writtenBytes <= maximumAssembledBytes else {
-                            throw HybridAudioAnalysisError.demuxFailed(
-                                "bounded HLS VOD analysis input exceeded 2 GiB"
-                            )
-                        }
-                        try reader.append(bytes)
+        let reader: IOReader
+        if media.formatHint == "mov" {
+            // libavformat's fragmented-MP4 demuxer must seek across fragment
+            // boundaries. Assemble only the bounded selected window, then
+            // expose it through a seekable immutable reader.
+            var assembled = Data()
+            var writtenBytes: Int64 = 0
+            for batchStart in stride(
+                from: 0,
+                to: resources.count,
+                by: maximumConcurrentResourceRequests
+            ) {
+                try Task.checkCancellation()
+                let batchEnd = min(
+                    batchStart + maximumConcurrentResourceRequests,
+                    resources.count
+                )
+                let batch = Array(resources[batchStart..<batchEnd])
+                let fetched = try await fetchBatch(
+                    batch,
+                    relativeTo: mediaURL,
+                    headers: request.httpHeaders,
+                    session: session
+                )
+                for bytes in fetched {
+                    writtenBytes += Int64(bytes.count)
+                    guard writtenBytes <= maximumAssembledBytes else {
+                        throw HybridAudioAnalysisError.demuxFailed(
+                            "bounded HLS VOD analysis input exceeded 2 GiB"
+                        )
                     }
+                    assembled.append(bytes)
                 }
-                reader.finish()
-            } catch {
-                reader.fail()
             }
+            reader = HybridHLSVODDataReader(data: assembled)
+        } else {
+            let streamingReader = HybridHLSVODResourceReader()
+            let producer = Task.detached(priority: .utility) {
+                do {
+                    var writtenBytes: Int64 = 0
+                    for batchStart in stride(
+                        from: 0,
+                        to: resources.count,
+                        by: maximumConcurrentResourceRequests
+                    ) {
+                        try Task.checkCancellation()
+                        let batchEnd = min(
+                            batchStart + maximumConcurrentResourceRequests,
+                            resources.count
+                        )
+                        let batch = Array(resources[batchStart..<batchEnd])
+                        let fetched = try await fetchBatch(
+                            batch,
+                            relativeTo: mediaURL,
+                            headers: request.httpHeaders,
+                            session: session
+                        )
+                        for bytes in fetched {
+                            writtenBytes += Int64(bytes.count)
+                            guard writtenBytes <= maximumAssembledBytes else {
+                                throw HybridAudioAnalysisError.demuxFailed(
+                                    "bounded HLS VOD analysis input exceeded 2 GiB"
+                                )
+                            }
+                            try streamingReader.append(bytes)
+                        }
+                    }
+                    streamingReader.finish()
+                } catch {
+                    streamingReader.fail()
+                }
+            }
+            streamingReader.install(producer: producer)
+            reader = streamingReader
         }
-        reader.install(producer: producer)
 
         return HybridHLSPreparedAudioCursor(
             reader: reader,
@@ -511,7 +549,7 @@ struct HLSMasterDocument {
 
     func resolveAudioPlaylist(
         baseURL: URL,
-        selection: AetherRemoteHLSAudioSelection
+        selection: HybridRemoteHLSAudioSelection
     ) throws -> (
         url: URL,
         usesDedicatedAudioRendition: Bool
@@ -565,7 +603,7 @@ struct HLSMasterDocument {
 
     private func resolveRendition(
         _ group: [Rendition],
-        selection: AetherRemoteHLSAudioSelection
+        selection: HybridRemoteHLSAudioSelection
     ) throws -> Rendition {
         if let ordinal = selection.optionOrdinal {
             guard group.indices.contains(ordinal) else {
@@ -870,6 +908,66 @@ struct HLSByteRange: Equatable, Sendable {
             offsetWasExplicit: false
         )
     }
+}
+
+private final class HybridHLSVODDataReader: IOReader, @unchecked Sendable {
+    private let data: Data
+    private let lock = NSLock()
+    private var position = 0
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func read(
+        _ buffer: UnsafeMutablePointer<UInt8>?,
+        size: Int32
+    ) -> Int32 {
+        guard let buffer, size > 0 else {
+            return -1
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard position < data.count else {
+            return 0
+        }
+        let count = min(Int(size), data.count - position)
+        data.copyBytes(
+            to: UnsafeMutableBufferPointer(
+                start: buffer,
+                count: count
+            ),
+            from: position..<(position + count)
+        )
+        position += count
+        return Int32(count)
+    }
+
+    func seek(offset: Int64, whence: Int32) -> Int64 {
+        if whence == 65_536 {
+            return Int64(data.count)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        let target: Int
+        switch whence {
+        case SEEK_SET:
+            target = Int(offset)
+        case SEEK_CUR:
+            target = position + Int(offset)
+        case SEEK_END:
+            target = data.count + Int(offset)
+        default:
+            return -1
+        }
+        guard target >= 0 else {
+            return -1
+        }
+        position = min(target, data.count)
+        return Int64(position)
+    }
+
+    func close() {}
 }
 
 private final class HybridHLSVODResourceReader:

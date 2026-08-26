@@ -4,7 +4,7 @@ import Foundation
 import Libavcodec
 
 enum HybridIndependentFingerprintAudioSource: Sendable {
-    case remoteHLS(AetherRemoteHLSAudioRequest)
+    case remoteHLS(HybridRemoteHLSAudioRequest)
     case demuxer(
         url: URL,
         httpHeaders: [String: String],
@@ -131,6 +131,14 @@ enum HybridIndependentFingerprintAudio {
         }
         let timelineOrigin = demuxer.formatStartTimeSeconds
         let timelineOffset = preparedHLSCursor?.timelineOffset ?? 0
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_TIMELINE "
+                + "provider=\(source.provider.rawValue) "
+                + "formatStart=\(String(format: "%.6f", timelineOrigin)) "
+                + "timelineOffset=\(String(format: "%.6f", timelineOffset)) "
+                + "selectedTrack=\(selected.id) "
+                + "segments=\(preparedHLSCursor?.segmentCount ?? 0)"
+        )
         if range.lowerBound > 0,
            preparedHLSCursor == nil,
            !demuxer.seek(to: range.lowerBound + timelineOrigin) {
@@ -158,9 +166,19 @@ enum HybridIndependentFingerprintAudio {
         )
         var reachedRangeEnd = false
         var lastReportedFraction = -1.0
+        var didEmitFirstDecodedChunk = false
 
         func append(_ chunks: [HybridDecodedAudioChunk]) async throws {
             for chunk in chunks {
+                if !didEmitFirstDecodedChunk {
+                    didEmitFirstDecodedChunk = true
+                    HybridDiagnosticEmitter.emit(
+                        "SYNCNEXT_HYBRID_FINGERPRINT_FIRST_CHUNK "
+                            + "provider=\(source.provider.rawValue) "
+                            + "pts=\(String(format: "%.6f", chunk.ptsSeconds)) "
+                            + "frames=\(chunk.buffer.frameLength)"
+                    )
+                }
                 let result = clip(
                     chunk,
                     to: range,

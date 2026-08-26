@@ -661,6 +661,91 @@ final class SmokeViewModel: ObservableObject {
             )
         )
 
+        let fingerprintMetrics: [String: String]
+        if let fingerprint = configuration.fingerprint {
+            statusMessage = "Validating Hybrid fingerprint PCM"
+            fingerprintMetrics = try await requireFingerprintAudio(
+                playbackSession,
+                configuration: fingerprint,
+                emitter: emitter
+            )
+        } else {
+            fingerprintMetrics = [:]
+        }
+
+        if let preseekSeconds = configuration.preseekSeconds {
+            try SmokePolicy.validateDuration(
+                initial.duration,
+                seekSeconds: preseekSeconds
+            )
+            runState = .seeking
+            statusMessage =
+                "Pre-seeking to \(SmokeEventEmitter.number(preseekSeconds))s"
+            let usesAVKitNavigation = fixedRoute == .avKitProxy
+            if usesAVKitNavigation {
+                playbackSession.avPlayer.pause()
+            } else {
+                playbackSession.pause()
+            }
+            emitter.emit(
+                "preseek_requested",
+                metrics: emitter.metrics(
+                    for: playbackSession.snapshot,
+                    extra: [
+                        "target_seconds":
+                            SmokeEventEmitter.number(preseekSeconds),
+                        "seek_input": usesAVKitNavigation
+                            ? "avkit_user_navigation"
+                            : "hybrid_session",
+                    ]
+                )
+            )
+            if usesAVKitNavigation {
+                try await performAVKitProxyNavigation(
+                    playbackSession,
+                    target: preseekSeconds
+                )
+                playbackSession.setRate(configuration.playbackRate)
+            } else {
+                try await playbackSession.seek(to: preseekSeconds)
+            }
+            let preseekSnapshot = try await requireSeekLanding(
+                playbackSession,
+                expectedRoute: fixedRoute,
+                target: preseekSeconds,
+                emitter: emitter
+            )
+            try requireBinding(playbackSession)
+            try requireRoute(preseekSnapshot.route, expected: fixedRoute)
+            try SmokePolicy.validateSeekLanding(
+                target: preseekSeconds,
+                actual: preseekSnapshot.currentTime
+            )
+            if !usesAVKitNavigation {
+                playbackSession.play()
+            }
+            let preseekAdvance = try await requireProgress(
+                playbackSession,
+                expectedRoute: fixedRoute,
+                minimumAdvance:
+                    SmokePolicy.minimumPostSeekProgressSeconds,
+                stage: "preseek",
+                emitter: emitter
+            )
+            emitter.emit(
+                "preseek_progress_passed",
+                metrics: emitter.metrics(
+                    for: playbackSession.snapshot,
+                    extra: [
+                        "target_seconds":
+                            SmokeEventEmitter.number(preseekSeconds),
+                        "progress_seconds":
+                            SmokeEventEmitter.number(preseekAdvance),
+                    ]
+                )
+            )
+        }
+
         runState = .seeking
         statusMessage =
             "Seeking to \(SmokeEventEmitter.number(configuration.seekSeconds))s"
@@ -762,19 +847,178 @@ final class SmokeViewModel: ObservableObject {
         runState = .passed
         statusMessage =
             "Playback and seek smoke passed; playback remains active"
+        var passMetrics = [
+            "startup_progress_seconds":
+                SmokeEventEmitter.number(startupAdvance),
+            "post_seek_progress_seconds":
+                SmokeEventEmitter.number(postSeekAdvance),
+            "controller_binding": "matched",
+        ]
+        passMetrics.merge(
+            fingerprintMetrics,
+            uniquingKeysWith: { _, latest in latest }
+        )
         emitter.emit(
             "run_passed",
             metrics: emitter.metrics(
                 for: playbackSession.snapshot,
+                extra: passMetrics
+            )
+        )
+    }
+
+    private func requireFingerprintAudio(
+        _ playbackSession: HybridPlaybackSession,
+        configuration: SmokeFingerprintConfiguration,
+        emitter: SmokeEventEmitter
+    ) async throws -> [String: String] {
+        let range = configuration.sourceRange
+        let revision = playbackSession.snapshot.audioSelectionRevision
+        emitter.emit(
+            "fingerprint_requested",
+            metrics: emitter.metrics(
+                for: playbackSession.snapshot,
                 extra: [
-                    "startup_progress_seconds":
-                        SmokeEventEmitter.number(startupAdvance),
-                    "post_seek_progress_seconds":
-                        SmokeEventEmitter.number(postSeekAdvance),
-                    "controller_binding": "matched",
+                    "range_start_seconds":
+                        SmokeEventEmitter.number(range.lowerBound),
+                    "range_end_seconds":
+                        SmokeEventEmitter.number(range.upperBound),
+                    "expected_provider":
+                        configuration.expectedProvider.rawValue,
+                    "audio_selection_revision": String(revision),
                 ]
             )
         )
+
+        let request = HybridFingerprintAudioRequest(
+            audioSelectionRevision: revision,
+            sourceRange: range,
+            deadlineSeconds: 180
+        )
+        let batch = try await playbackSession.fingerprintAudio(
+            request: request,
+            onProgress: { progress in
+                emitter.emit(
+                    "fingerprint_progress",
+                    metrics: [
+                        "provider": progress.provider.rawValue,
+                        "phase": progress.phase.rawValue,
+                        "source_time_seconds":
+                            SmokeEventEmitter.number(progress.sourceTime),
+                        "fraction":
+                            SmokeEventEmitter.number(progress.fraction),
+                        "elapsed_seconds":
+                            SmokeEventEmitter.number(progress.elapsedSeconds),
+                    ]
+                )
+            }
+        )
+        try Task.checkCancellation()
+
+        guard batch.provider.rawValue
+                == configuration.expectedProvider.rawValue else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "provider \(batch.provider.rawValue), expected \(configuration.expectedProvider.rawValue)"
+            )
+        }
+        guard batch.sourceRange == range else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "returned range \(batch.sourceRange), expected \(range)"
+            )
+        }
+        guard !batch.buffers.isEmpty else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "returned no PCM buffers"
+            )
+        }
+
+        var totalFrames: AVAudioFramePosition = 0
+        var coveredThrough = range.lowerBound
+        var previousSourceTime: Double?
+        var discontinuityCount = 0
+        for (index, item) in batch.buffers.enumerated() {
+            let format = item.buffer.format
+            guard format.commonFormat == .pcmFormatFloat32,
+                  format.sampleRate == 48_000,
+                  format.channelCount == 1,
+                  !format.isInterleaved else {
+                throw SmokeFailure.fingerprintContractViolation(
+                    "buffer \(index) is not mono Float32 48 kHz non-interleaved PCM"
+                )
+            }
+            guard item.sourceTime.isFinite else {
+                throw SmokeFailure.fingerprintContractViolation(
+                    "buffer \(index) has non-finite source time"
+                )
+            }
+            if let previousSourceTime,
+               item.sourceTime + 0.001 < previousSourceTime {
+                throw SmokeFailure.fingerprintContractViolation(
+                    "buffer \(index) moved backward on the source timeline"
+                )
+            }
+            if item.discontinuity {
+                discontinuityCount += 1
+                if index > 0 {
+                    throw SmokeFailure.fingerprintContractViolation(
+                        "mid-range discontinuity at buffer \(index)"
+                    )
+                }
+            }
+            if item.sourceTime > coveredThrough + 0.05 {
+                throw SmokeFailure.fingerprintContractViolation(
+                    "PCM gap before buffer \(index)"
+                )
+            }
+            let frames = AVAudioFramePosition(item.buffer.frameLength)
+            totalFrames += frames
+            coveredThrough = max(
+                coveredThrough,
+                item.sourceTime + Double(frames) / format.sampleRate
+            )
+            previousSourceTime = item.sourceTime
+        }
+
+        guard totalFrames > 0 else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "returned zero PCM frames"
+            )
+        }
+        guard let firstSourceTime = batch.buffers.first?.sourceTime,
+              firstSourceTime <= range.lowerBound + 0.05 else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "PCM does not cover the requested range start"
+            )
+        }
+        guard coveredThrough >= range.upperBound - 0.25 else {
+            throw SmokeFailure.fingerprintContractViolation(
+                "PCM ends at \(coveredThrough), before requested end \(range.upperBound)"
+            )
+        }
+
+        let metrics = [
+            "fingerprint_provider": batch.provider.rawValue,
+            "fingerprint_buffer_count": String(batch.buffers.count),
+            "fingerprint_total_frames": String(totalFrames),
+            "fingerprint_first_source_time_seconds":
+                SmokeEventEmitter.number(firstSourceTime),
+            "fingerprint_covered_through_seconds":
+                SmokeEventEmitter.number(coveredThrough),
+            "fingerprint_discontinuity_count":
+                String(discontinuityCount),
+            "fingerprint_segment_count": String(batch.segmentCount),
+            "fingerprint_preparation_seconds":
+                SmokeEventEmitter.number(batch.preparationSeconds),
+            "fingerprint_cache_wait_seconds":
+                SmokeEventEmitter.number(batch.cacheWaitSeconds),
+            "fingerprint_decode_seconds":
+                SmokeEventEmitter.number(batch.decodeSeconds),
+        ]
+        emitter.emit(
+            "fingerprint_completed",
+            metrics: metrics
+        )
+        return metrics
     }
 
     private func aetherSnapshot(

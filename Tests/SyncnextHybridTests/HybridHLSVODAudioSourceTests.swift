@@ -114,12 +114,12 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
 
-        let request = AetherRemoteHLSAudioRequest(
+        let request = HybridRemoteHLSAudioRequest(
             url: try XCTUnwrap(
                 URL(string: "https://hybrid-fixture.invalid/master.m3u8")
             ),
             httpHeaders: ["X-Hybrid-Fixture": "allowed"],
-            selection: AetherRemoteHLSAudioSelection(
+            selection: HybridRemoteHLSAudioSelection(
                 displayName: "English",
                 language: "en",
                 optionOrdinal: 0
@@ -180,12 +180,12 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
 
-        let request = AetherRemoteHLSAudioRequest(
+        let request = HybridRemoteHLSAudioRequest(
             url: try XCTUnwrap(
                 URL(string: "https://hybrid-fixture.invalid/live.m3u8")
             ),
             httpHeaders: [:],
-            selection: AetherRemoteHLSAudioSelection(
+            selection: HybridRemoteHLSAudioSelection(
                 displayName: nil,
                 language: nil,
                 optionOrdinal: nil
@@ -212,12 +212,12 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
 
-        let request = AetherRemoteHLSAudioRequest(
+        let request = HybridRemoteHLSAudioRequest(
             url: try XCTUnwrap(
                 URL(string: "https://hybrid-fixture.invalid/master.m3u8")
             ),
             httpHeaders: ["X-Hybrid-Fixture": "allowed"],
-            selection: AetherRemoteHLSAudioSelection(
+            selection: HybridRemoteHLSAudioSelection(
                 displayName: "English",
                 language: "en",
                 optionOrdinal: 0

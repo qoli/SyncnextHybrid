@@ -150,13 +150,24 @@ Supported environment values:
 | `HYBRID_SMOKE_URL` | Required when any `HYBRID_SMOKE_*` automation value is present |
 | `HYBRID_SMOKE_HEADERS_JSON` | Optional JSON object whose values must all be strings |
 | `HYBRID_SMOKE_SEEK_SECONDS` | Optional; fixed contract default is `10` |
+| `HYBRID_SMOKE_PRESEEK_SECONDS` | Optional first seek target; when present, the configured final seek can prove a real backward seek |
 | `HYBRID_SMOKE_RATE` | Optional playback rate in `(0, 4]`; fixed contract default is `1` |
 | `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion; valid only in `hybridAVKit` mode |
+| `HYBRID_SMOKE_FINGERPRINT_START_SECONDS` | Optional fingerprint PCM range start; requires the end and expected provider values |
+| `HYBRID_SMOKE_FINGERPRINT_END_SECONDS` | Optional fingerprint PCM range end; the range must be no longer than 180 seconds |
+| `HYBRID_SMOKE_EXPECTED_FINGERPRINT_PROVIDER` | Required with a fingerprint range; exactly `segmentCache`, `independentRemoteHLS`, or `independentDemuxer` |
 
 Missing/unknown mode and `aetherEngine` combined with an expected Hybrid route
 are configuration failures. Set the expected route only when the Hybrid
 fixture and target-device contract are known. A mismatch is terminal; the app
 does not rerun on the observed route.
+
+When the three fingerprint values are supplied in `hybridAVKit` mode, the app
+requests PCM from the active `HybridPlaybackSession` during playback. It
+requires the expected provider, mono Float32 48 kHz non-interleaved buffers,
+continuous source time, requested-range coverage, and non-zero frames before
+continuing to seek. The terminal `run_passed` record includes the provider,
+frame and buffer counts, coverage, discontinuities, segment count, and timing.
 
 The console emits one-line, sorted JSON records prefixed with
 `HYBRID_SMOKE_EVENT`. Records include a SHA-256 source identity, mode, route,

@@ -496,7 +496,7 @@ public final class HybridPlaybackSession:
                         fingerprintRequest.audioSelectionRevision
                 )
                 let source = HybridIndependentFingerprintAudioSource.remoteHLS(
-                    AetherRemoteHLSAudioRequest(
+                    HybridRemoteHLSAudioRequest(
                         url: request.url,
                         httpHeaders: request.httpHeaders,
                         selection: selection
@@ -1194,7 +1194,7 @@ public final class HybridPlaybackSession:
 
     private func nativeHLSAudioSelection(
         expectedRevision: UInt64
-    ) async throws -> AetherRemoteHLSAudioSelection {
+    ) async throws -> HybridRemoteHLSAudioSelection {
         guard let item = engine.currentAVPlayer?.currentItem else {
             throw HybridFingerprintAudioError.sourceUnavailable
         }
@@ -1214,7 +1214,7 @@ public final class HybridPlaybackSession:
             throw HybridFingerprintAudioError.audioSelectionChanged
         }
         guard let group else {
-            return AetherRemoteHLSAudioSelection(
+            return HybridRemoteHLSAudioSelection(
                 displayName: nil,
                 language: nil,
                 optionOrdinal: nil
@@ -1226,7 +1226,7 @@ public final class HybridPlaybackSession:
         let ordinal = selected.flatMap { selected in
             group.options.firstIndex { $0 === selected }
         }
-        return AetherRemoteHLSAudioSelection(
+        return HybridRemoteHLSAudioSelection(
             displayName: selected?.displayName,
             language: selected?.extendedLanguageTag,
             optionOrdinal: ordinal
