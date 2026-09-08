@@ -740,29 +740,44 @@ public enum RepeatedSegmentFingerprint {
         }
         expandedEnd = min(similarities.count, lastSupportedEnd)
 
-        let frameThreshold = min(1, null.mean + 0.5 * (seedScore - null.mean))
-        let frameSupport = similarities.indices.map {
-            validity[$0] && similarities[$0] >= frameThreshold
+        let leadingFrameThreshold = min(
+            1,
+            null.mean + 0.5 * (seedScore - null.mean)
+        )
+        // Seed score decides whether a repeated segment exists. It must not
+        // also tighten endpoint refinement: otherwise a stronger interior
+        // match can trim the same supported tail more aggressively.
+        let trailingFrameThreshold = min(
+            1,
+            null.mean + 4 * null.standardDeviation
+        )
+        let leadingFrameSupport = similarities.indices.map {
+            validity[$0] && similarities[$0] >= leadingFrameThreshold
+        }
+        let trailingFrameSupport = similarities.indices.map {
+            validity[$0] && similarities[$0] >= trailingFrameThreshold
         }
         let refinementFrames = max(2, Int((0.3 / hop).rounded()))
-        var runStarts: [Int] = []
-        if frameSupport.count >= refinementFrames {
+        func runStarts(in frameSupport: [Bool]) -> [Int] {
+            guard frameSupport.count >= refinementFrames else { return [] }
+            var starts: [Int] = []
             var run = frameSupport.prefix(refinementFrames).filter { $0 }.count
-            if run == refinementFrames { runStarts.append(0) }
+            if run == refinementFrames { starts.append(0) }
             if frameSupport.count > refinementFrames {
                 for index in 1...(frameSupport.count - refinementFrames) {
                     if frameSupport[index - 1] { run -= 1 }
                     if frameSupport[index + refinementFrames - 1] { run += 1 }
-                    if run == refinementFrames { runStarts.append(index) }
+                    if run == refinementFrames { starts.append(index) }
                 }
             }
+            return starts
         }
-        if let leading = runStarts.first(where: {
+        if let leading = runStarts(in: leadingFrameSupport).first(where: {
             $0 >= expandedStart && $0 <= seedStart
         }) {
             expandedStart = leading
         }
-        if let trailing = runStarts.last(where: {
+        if let trailing = runStarts(in: trailingFrameSupport).last(where: {
             $0 + refinementFrames >= seedStart + seedWindowFrames
                 && $0 + refinementFrames <= expandedEnd
         }) {

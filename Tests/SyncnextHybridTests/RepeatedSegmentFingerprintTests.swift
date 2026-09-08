@@ -124,6 +124,65 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         XCTAssertEqual(match.rightRange.upperBound, 2_710, accuracy: 0.4)
     }
 
+    func testBoundaryRefinementDoesNotTightenForStrongerSeed() throws {
+        var generator = Generator(state: 0xB0A1DA7E)
+        let previousValues = (0..<1_000).map { _ in generator.next() }
+        let unrelatedValues = (0..<1_000).map { _ in generator.next() }
+        let seedMask = (UInt64(1) << 13) - 1
+        let tailMask = (UInt64(1) << 19) - 1
+
+        func currentValues(seedMask: UInt64) -> [UInt64] {
+            var values = unrelatedValues
+            for index in 0..<700 {
+                values[index] = previousValues[index] ^ seedMask
+            }
+            for index in 700..<760 {
+                values[index] = previousValues[index] ^ tailMask
+            }
+            return values
+        }
+
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "boundary-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let stronger = RepeatedSegmentFingerprintArtifact(
+            label: "boundary-stronger",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues(seedMask: 0),
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let weaker = RepeatedSegmentFingerprintArtifact(
+            label: "boundary-weaker",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues(seedMask: seedMask),
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+
+        let strongerMatch = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: stronger
+            )
+        )
+        let weakerMatch = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: weaker
+            )
+        )
+
+        XCTAssertGreaterThan(strongerMatch.score, weakerMatch.score)
+        XCTAssertEqual(
+            strongerMatch.rightRange.upperBound,
+            weakerMatch.rightRange.upperBound,
+            accuracy: 0.2
+        )
+        XCTAssertEqual(strongerMatch.rightRange.upperBound, 76, accuracy: 0.5)
+    }
+
     func testFingerprintIsStableUnderGainChange() throws {
         let count = 16_000 * 12
         let samples = (0..<count).map { index -> Float in
