@@ -3,6 +3,10 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class RepeatedSegmentFingerprintTests: XCTestCase {
+    private struct FingerprintEnvelope: Decodable {
+        let front: RepeatedSegmentFingerprintArtifact
+    }
+
     func testBoundedExtractionRequestPreservesBackRange() {
         let request = HybridIntroAudioExtractionRequest(
             url: URL(string: "https://example.com/episode.m3u8")!,
@@ -90,6 +94,81 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         XCTAssertEqual(match.rightRange.upperBound, 61, accuracy: 0.4)
         XCTAssertGreaterThan(match.score, 0.99)
         XCTAssertGreaterThan(match.score, match.nullThreshold)
+    }
+
+    func testPairwiseMatchRanksExpandedEvidenceOverHigherShortSeed() throws {
+        var generator = Generator(state: 0xE71D_3A91_4C62_B805)
+        var previousValues = (0..<1_800).map { _ in generator.next() }
+        var currentValues = (0..<1_800).map { _ in generator.next() }
+        let longMask = (UInt64(1) << 13) - 1
+        let shortMask = (UInt64(1) << 12) - 1
+
+        // The intended alignment covers 100 seconds at offset -0.1 seconds.
+        // A repeated subsection produces a slightly stronger 11.1-second seed
+        // at +86.8 seconds, matching the observed episode-20/21 failure shape.
+        for index in 0..<111 {
+            previousValues[869 + index] = previousValues[index]
+                ^ longMask
+                ^ shortMask
+        }
+        for index in 0..<1_000 {
+            currentValues[index] = previousValues[index + 1] ^ longMask
+        }
+
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "expanded-evidence-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "expanded-evidence-current",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let match = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: current
+            )
+        )
+
+        XCTAssertEqual(match.rightRange.lowerBound, 0, accuracy: 0.4)
+        XCTAssertEqual(match.rightRange.upperBound, 100, accuracy: 0.4)
+        XCTAssertEqual(match.leftRange.lowerBound, 0.1, accuracy: 0.4)
+        XCTAssertEqual(match.leftRange.upperBound, 100.1, accuracy: 0.4)
+    }
+
+    func testPulledEpisode20And21EnvelopesWhenProvided() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let previousPath = environment["FINGERPRINT_EP20_ENVELOPE"],
+              let currentPath = environment["FINGERPRINT_EP21_ENVELOPE"] else {
+            throw XCTSkip("Set the two FINGERPRINT_EP*_ENVELOPE paths")
+        }
+        let decoder = PropertyListDecoder()
+        let previous = try decoder.decode(
+            FingerprintEnvelope.self,
+            from: Data(contentsOf: URL(fileURLWithPath: previousPath))
+        ).front
+        let current = try decoder.decode(
+            FingerprintEnvelope.self,
+            from: Data(contentsOf: URL(fileURLWithPath: currentPath))
+        ).front
+
+        let match = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: current
+            )
+        )
+
+        XCTAssertEqual(match.score, 0.8078125, accuracy: 0.0000001)
+        XCTAssertEqual(match.leftRange.lowerBound, 0.3, accuracy: 0.1)
+        XCTAssertEqual(match.leftRange.upperBound, 98.8, accuracy: 0.1)
+        XCTAssertEqual(match.rightRange.lowerBound, 0.2, accuracy: 0.1)
+        XCTAssertEqual(match.rightRange.upperBound, 98.7, accuracy: 0.1)
     }
 
     func testBackRegionRetainsAbsoluteSourceTime() throws {

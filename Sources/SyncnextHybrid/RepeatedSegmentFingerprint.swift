@@ -455,10 +455,15 @@ public enum RepeatedSegmentFingerprint {
             windowFrames: windowFrames,
             estimatedTestCount: estimatedTestCount
         )
-        var bestSeed: SeedCandidate?
+        // A seed only admits a possible repeated interval. Every qualifying
+        // seed cluster is expanded independently, and complete intervals are
+        // ranked by aggregate evidence. Ranking the raw seed score would let
+        // a slightly stronger short subsection hide a much longer match.
+        var bestCandidate: Candidate?
         let minimumOffset = -(previous.fingerprints.count - windowFrames)
         let maximumOffset = current.fingerprints.count - windowFrames
         let minimumValid = Int(ceil(Double(windowFrames) * 0.8))
+        let maximumSeedGapFrames = max(0, Int((3 / hop).rounded()))
         let maximumLength = min(
             previous.fingerprints.count,
             current.fingerprints.count
@@ -496,6 +501,9 @@ public enum RepeatedSegmentFingerprint {
                 prefixCounts[index + 1] = prefixCounts[index] + (valid ? 1 : 0)
             }
             let resultCount = length - windowFrames + 1
+            var seedClusters: [SeedCandidate] = []
+            var clusterBest: SeedCandidate?
+            var lastQualifyingStart: Int?
             for local in 0..<resultCount {
                 let validCount = prefixCounts[local + windowFrames]
                     - prefixCounts[local]
@@ -503,47 +511,69 @@ public enum RepeatedSegmentFingerprint {
                 let score = (
                     prefixSums[local + windowFrames] - prefixSums[local]
                 ) / Double(validCount)
-                guard score >= null.threshold,
-                      bestSeed == nil || score > bestSeed!.score else { continue }
-                bestSeed = SeedCandidate(
+                guard score >= null.threshold else { continue }
+                if let lastQualifyingStart,
+                   local - lastQualifyingStart > maximumSeedGapFrames,
+                   let completedCluster = clusterBest {
+                    seedClusters.append(completedCluster)
+                    clusterBest = nil
+                }
+                let seed = SeedCandidate(
                     score: score,
-                    leftStart: leftStart,
-                    rightStart: rightStart,
-                    length: length,
                     localStart: local,
                     validCount: validCount
                 )
+                if let currentBest = clusterBest {
+                    if score > currentBest.score {
+                        clusterBest = seed
+                    }
+                } else {
+                    clusterBest = seed
+                }
+                lastQualifyingStart = local
+            }
+            if let clusterBest {
+                seedClusters.append(clusterBest)
+            }
+
+            for seed in seedClusters {
+                let expansion = expand(
+                    similarities: Array(similarities.prefix(length)),
+                    validity: Array(validity.prefix(length)),
+                    seedStart: seed.localStart,
+                    seedWindowFrames: windowFrames,
+                    seedScore: seed.score,
+                    hop: hop,
+                    null: null
+                )
+                let frameCount = expansion.end - expansion.start
+                guard frameCount >= windowFrames else { continue }
+                let validCount = prefixCounts[expansion.end]
+                    - prefixCounts[expansion.start]
+                guard validCount >= minimumValid else { continue }
+                let similaritySum = prefixSums[expansion.end]
+                    - prefixSums[expansion.start]
+                let meanSimilarity = similaritySum / Double(validCount)
+                // The null baseline is common to all candidates in this pair.
+                // Scaling the excess mean by sqrt(valid frames) balances
+                // similarity quality with temporally consistent support.
+                let aggregateEvidence = (meanSimilarity - null.mean)
+                    * sqrt(Double(validCount))
+                let candidate = Candidate(
+                    score: seed.score,
+                    meanSimilarity: meanSimilarity,
+                    aggregateEvidence: aggregateEvidence,
+                    leftStart: leftStart + expansion.start,
+                    rightStart: rightStart + expansion.start,
+                    frameCount: frameCount,
+                    validFraction: Double(seed.validCount) / Double(windowFrames)
+                )
+                if isBetter(candidate, than: bestCandidate) {
+                    bestCandidate = candidate
+                }
             }
         }
-        guard let bestSeed else { return nil }
-        for index in 0..<bestSeed.length {
-            let valid = previous.validity[bestSeed.leftStart + index]
-                && current.validity[bestSeed.rightStart + index]
-            validity[index] = valid
-            similarities[index] = valid
-                ? 1 - Double(
-                    (previous.fingerprints[bestSeed.leftStart + index]
-                        ^ current.fingerprints[bestSeed.rightStart + index])
-                        .nonzeroBitCount
-                ) / 64
-                : 0
-        }
-        let expansion = expand(
-            similarities: Array(similarities.prefix(bestSeed.length)),
-            validity: Array(validity.prefix(bestSeed.length)),
-            seedStart: bestSeed.localStart,
-            seedWindowFrames: windowFrames,
-            seedScore: bestSeed.score,
-            hop: hop,
-            null: null
-        )
-        let best = Candidate(
-            score: bestSeed.score,
-            leftStart: bestSeed.leftStart + expansion.start,
-            rightStart: bestSeed.rightStart + expansion.start,
-            frameCount: expansion.end - expansion.start,
-            validFraction: Double(bestSeed.validCount) / Double(windowFrames)
-        )
+        guard let best = bestCandidate else { return nil }
         return RepeatedSegmentMatch(
             score: best.score,
             nullThreshold: null.threshold,
@@ -566,19 +596,41 @@ public enum RepeatedSegmentFingerprint {
 
     private struct SeedCandidate {
         let score: Double
-        let leftStart: Int
-        let rightStart: Int
-        let length: Int
         let localStart: Int
         let validCount: Int
     }
 
     private struct Candidate {
         let score: Double
+        let meanSimilarity: Double
+        let aggregateEvidence: Double
         let leftStart: Int
         let rightStart: Int
         let frameCount: Int
         let validFraction: Double
+    }
+
+    private static func isBetter(
+        _ candidate: Candidate,
+        than current: Candidate?
+    ) -> Bool {
+        guard let current else { return true }
+        if candidate.aggregateEvidence != current.aggregateEvidence {
+            return candidate.aggregateEvidence > current.aggregateEvidence
+        }
+        if candidate.frameCount != current.frameCount {
+            return candidate.frameCount > current.frameCount
+        }
+        if candidate.meanSimilarity != current.meanSimilarity {
+            return candidate.meanSimilarity > current.meanSimilarity
+        }
+        if candidate.score != current.score {
+            return candidate.score > current.score
+        }
+        if candidate.rightStart != current.rightStart {
+            return candidate.rightStart < current.rightStart
+        }
+        return candidate.leftStart < current.leftStart
     }
 
     private struct NullDistribution {
@@ -745,7 +797,7 @@ public enum RepeatedSegmentFingerprint {
             null.mean + 0.5 * (seedScore - null.mean)
         )
         // Seed score decides whether a repeated segment exists. It must not
-        // also tighten endpoint refinement: otherwise a stronger interior
+        // also tighten trailing refinement: otherwise a stronger interior
         // match can trim the same supported tail more aggressively.
         let trailingFrameThreshold = min(
             1,
