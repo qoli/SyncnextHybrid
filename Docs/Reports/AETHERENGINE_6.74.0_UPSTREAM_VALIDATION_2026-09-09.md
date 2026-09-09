@@ -3,8 +3,10 @@
 Date: 2026-09-09
 
 Status: owner approved promotion with a documented waiver for the known
-direct-Aether seek issue. The strict machine verdict remains `unsafe` because
-the evidence schema intentionally has no waiver state.
+direct-Aether seek issue. The subsequently discovered 0004 end-to-end range
+failure was repaired by an approved minimal Patch rebuild and passed focused
+study-TV acceptance. The strict machine verdict remains `unsafe` because the
+evidence schema intentionally has no waiver state.
 
 ## Candidate identity
 
@@ -113,7 +115,7 @@ clean simulations, and two destructive replays were identical.
 | --- | --- | --- |
 | `0001-local-ffmpegbuild` | PASS | The package graph resolves exactly one sibling FFmpegBuild 3.0.0 checkout, uses the renamed `AetherLibav*` products, and contains no remote duplicate. Hybrid tests and macOS/tvOS builds pass. |
 | `0002-independent-audio-source` | PASS | Independent demux decode/resample and dedicated finite-HLS audio cursor tests pass in both replays. Invalid/deadline/range behavior remains explicit rather than falling back. |
-| `0004-cache-backed-fingerprint-audio` | PASS at contract level | Hybrid cache-backed PCM/fingerprint tests pass. Patched AetherEngine `SegmentCacheTests` additionally pass 19/19, including the invariants that analysis demand does not move or replace the playback consumer target. |
+| `0004-cache-backed-fingerprint-audio` | PASS, including end-to-end | Hybrid cache-backed PCM/fingerprint tests pass. Patched AetherEngine `SegmentCacheTests` pass 20/20, including the new bounded-lookahead invariant. Two clean full Patch replays each pass 71 tests and the tvOS build. The rebuilt 0004 then passes the study-TV segment-cache smoke. |
 
 The former `0003-hevc-mpegts-hls-vod-remux-workaround` is not an active
 downstream patch. It was removed at AetherEngine 6.4.2 after upstream absorbed
@@ -122,13 +124,31 @@ the 6.74.0 `Issue268HLSVODIngestTests` pass 15/15 and Hybrid admission tests
 still select the Aether remux path for positively identified finite HEVC
 MPEG-TS VOD.
 
-Two end-to-end bounds remain explicit: this promotion run did not repeat the
-private HEVC-in-MPEG-TS physical-device source used for the original 0003
-removal, and the fixture-gated real golden fingerprint pair was unavailable.
-Those are not regressions observed on 6.74.0; they are unrerun end-to-end
-surfaces. The tested Patch contracts, fail-closed behavior, builds, native and
-proxy physical playback, seeks, and EOS provide the evidence for accepting the
-upgrade without claiming those two surfaces were freshly requalified.
+Post-promotion revalidation initially found a 0004 compatibility failure on the
+HEVC-in-MPEG-TS physical-device fixture. Three clean launches selected
+`provider=segmentCache`; a request for source range `20.000...32.000` selected
+nominal cache segments `4...7` and decoded 128 PCM buffers covering only
+`15.507...31.507`. The reader correctly emitted `incompleteRange` rather than
+returning partial PCM. This bounded the broken seam to the last-segment
+selection contract under the 6.74.0 presentation-axis shift.
+
+The owner approved a minimal Patch rebuild. The repaired reader preserves the
+nominal last index, permits at most one bounded lookahead segment, extends only
+the analysis producer demand, and stops as soon as decoded PCM covers the
+requested upper bound (within the existing 50 ms tolerance). It does not move
+the playback consumer target, change provider selection, or add fallback.
+
+The regenerated Patch was replayed twice from the clean pinned upstream commit;
+both runs produced the same patched-source digest. On the authorized study-room
+Apple TV, the same `20.000...32.000` request completed from `segmentCache` with
+5 decoded segments, 97 buffers, coverage through `32.019`, and zero
+discontinuities. The proxy route then completed the `150` to `60` second seek
+with `0.006` seconds landing error and emitted `run_passed`.
+
+One acceptance bound remains explicit: the fixture-gated real golden
+fingerprint pair was unavailable. The exercised physical-device path proves
+range-complete segment-cache PCM delivery, but does not claim a golden
+fingerprint-value comparison that was not run.
 
 ## Formal verdict
 
@@ -145,6 +165,18 @@ Supplementary Patch evidence:
 
 - `aetherengine-segment-cache-tests.log` (`19/19` passed)
 - `aetherengine-issue268-hls-vod-tests.log` (`15/15` passed)
+- `0004-revalidation-console.log` (original uninstrumented FAIL)
+- `0004-revalidation-attempt2-console.log` (second uninstrumented FAIL)
+- `0004-revalidation-attempt3-console.log` (bounded coverage FAIL)
+- `0004-rebuild-patch-verification.json` (read-only Patch verification)
+- `0004-rebuild-apply-run1.log` and `0004-rebuild-apply-run2.log`
+  (clean replays: 71 tests and tvOS build PASS)
+- `0004-rebuild-run1-diff.sha256` and
+  `0004-rebuild-run2-diff.sha256` (identical patched-source digest)
+- `0004-rebuild-aether-segment-cache-tests.log` (`20/20` passed)
+- `0004-rebuild-device-console.log` and `0004-rebuild-device-result.json`
+  (range-complete fingerprint and terminal `run_passed`)
+- `0004-rebuild-main-apply.log` (integrated main checkout replay PASS)
 
 ## Device cleanup
 
@@ -154,7 +186,13 @@ on the authorized study-room Apple TV. The television was then sent the
 repository-owned `OFF` command. The unsafe 6.74.0 candidate is therefore no
 longer the installed SyncNext build.
 
+The later rebuilt-0004 acceptance installed only HybridSmokePlayer on the same
+authorized device. After its terminal `run_passed`, that smoke app was
+uninstalled, the local fixture server was stopped, and the study-room Apple TV
+was sent `OFF` again.
+
 Cleanup evidence:
 
 - `syncnext-baseline-openlist-prepare.log`
 - `syncnext-baseline-6.46-restore-build-rerun.log`
+- `0004-rebuild-device-uninstall.json`

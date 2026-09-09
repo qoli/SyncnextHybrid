@@ -1,9 +1,9 @@
 diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 new file mode 100644
-index 00000000..50e3100d
+index 00000000..d7f307a0
 --- /dev/null
 +++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,285 @@
 +import Foundation
 +import AVFAudio
 +
@@ -72,10 +72,14 @@ index 00000000..50e3100d
 +                playlistRange.upperBound - 0.000_001
 +            )
 +        )
++        let maximumLastIndex = lastIndex == Int.max
++            ? lastIndex
++            : lastIndex + 1
 +        let reader = CachedFingerprintAudioReader(
 +            cache: cache,
 +            firstIndex: firstIndex,
-+            lastIndex: lastIndex,
++            nominalLastIndex: lastIndex,
++            maximumLastIndex: maximumLastIndex,
 +            sourceRange: sourceRange,
 +            displayShiftSeconds: displayShift,
 +            timeoutSeconds: timeoutSeconds
@@ -85,7 +89,8 @@ index 00000000..50e3100d
 +            "[FingerprintAudio] phase=started range="
 +                + "\(String(format: "%.3f", sourceRange.lowerBound))..."
 +                + "\(String(format: "%.3f", sourceRange.upperBound)) "
-+                + "segments=\(firstIndex)...\(lastIndex)",
++                + "segments=\(firstIndex)...\(lastIndex) "
++                + "lookaheadThrough=\(maximumLastIndex)",
 +            category: .engine
 +        )
 +        let worker = Task.detached(priority: .utility) {
@@ -125,7 +130,8 @@ index 00000000..50e3100d
 +private final class CachedFingerprintAudioReader: @unchecked Sendable {
 +    private let cache: SegmentCache
 +    private let firstIndex: Int
-+    private let lastIndex: Int
++    private let nominalLastIndex: Int
++    private let maximumLastIndex: Int
 +    private let sourceRange: Range<Double>
 +    private let displayShiftSeconds: Double
 +    private let timeoutSeconds: Double
@@ -134,14 +140,16 @@ index 00000000..50e3100d
 +    init(
 +        cache: SegmentCache,
 +        firstIndex: Int,
-+        lastIndex: Int,
++        nominalLastIndex: Int,
++        maximumLastIndex: Int,
 +        sourceRange: Range<Double>,
 +        displayShiftSeconds: Double,
 +        timeoutSeconds: Double
 +    ) {
 +        self.cache = cache
 +        self.firstIndex = firstIndex
-+        self.lastIndex = lastIndex
++        self.nominalLastIndex = nominalLastIndex
++        self.maximumLastIndex = maximumLastIndex
 +        self.sourceRange = sourceRange
 +        self.displayShiftSeconds = displayShiftSeconds
 +        self.timeoutSeconds = timeoutSeconds
@@ -149,7 +157,7 @@ index 00000000..50e3100d
 +
 +    func read() throws -> AetherFingerprintAudioBatch {
 +        let deadline = Date().addingTimeInterval(timeoutSeconds)
-+        let demand = cache.beginAnalysisDemand(through: lastIndex)
++        let demand = cache.beginAnalysisDemand(through: maximumLastIndex)
 +        defer { cache.endAnalysisDemand(demand) }
 +
 +        let collector = FingerprintAudioCollector()
@@ -159,8 +167,9 @@ index 00000000..50e3100d
 +        var pendingDiscontinuity = true
 +        var cacheWaitSeconds = 0.0
 +        var decodeSeconds = 0.0
++        var lastDecodedIndex = firstIndex - 1
 +
-+        for index in firstIndex...lastIndex {
++        for index in firstIndex...maximumLastIndex {
 +            try Task.checkCancellation()
 +            let waitStartedAt = ProcessInfo.processInfo.systemUptime
 +            guard let segment = try waitForSegment(index, deadline: deadline) else {
@@ -190,6 +199,11 @@ index 00000000..50e3100d
 +                )
 +                pendingDiscontinuity = false
 +            }
++            lastDecodedIndex = index
++            if index >= nominalLastIndex,
++               coversRequestedEnd(collector.snapshot()) {
++                break
++            }
 +        }
 +
 +        let relevant = collector.snapshot().filter { buffer in
@@ -203,7 +217,7 @@ index 00000000..50e3100d
 +        return AetherFingerprintAudioBatch(
 +            buffers: relevant,
 +            sourceRange: sourceRange,
-+            segmentCount: lastIndex - firstIndex + 1,
++            segmentCount: lastDecodedIndex - firstIndex + 1,
 +            cacheWaitSeconds: cacheWaitSeconds,
 +            decodeSeconds: decodeSeconds
 +        )
@@ -227,6 +241,14 @@ index 00000000..50e3100d
 +
 +    private func remaining(until deadline: Date) -> Double {
 +        max(0.001, deadline.timeIntervalSinceNow)
++    }
++
++    private func coversRequestedEnd(_ buffers: [AudioTapBuffer]) -> Bool {
++        guard let last = buffers.last else { return false }
++        let end = last.sourceTime
++            + Double(last.buffer.frameLength)
++                / last.buffer.format.sampleRate
++        return end >= sourceRange.upperBound - 0.05
 +    }
 +
 +    private func validateCoverage(_ buffers: [AudioTapBuffer]) throws {
@@ -339,10 +361,10 @@ index 95c202d1..ad1b8825 100644
  
      /// Evict segments strictly below cutoff, which the live caller bounds at the consumer's own fetch
 diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngineTests/SegmentCacheTests.swift
-index e30386e4..e12cda2d 100644
+index e30386e4..173fafd8 100644
 --- a/Tests/AetherEngineTests/SegmentCacheTests.swift
 +++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
-@@ -172,6 +172,58 @@ struct SegmentCacheTests {
+@@ -172,6 +172,75 @@ struct SegmentCacheTests {
          #expect(c.peek(index: 0) == nil)
      }
  
@@ -396,6 +418,23 @@ index e30386e4..e12cda2d 100644
 +        c.endAnalysisDemand(demand)
 +        #expect(c.targetIndex == 60)
 +        #expect(!c.awaitFetchHighWater(reaching: 61, timeout: 0.001))
++    }
++
++    @Test("bounded fingerprint lookahead extends production without moving the consumer target")
++    func fingerprintLookaheadPreservesConsumerTarget() {
++        let c = SegmentCache(forwardWindow: 2, backwardWindow: 20)
++        defer { c.close() }
++        c.declareTarget(0)
++
++        let nominalLastIndex = 7
++        let demand = c.beginAnalysisDemand(through: nominalLastIndex + 1)
++
++        #expect(c.targetIndex == 0)
++        #expect(c.awaitFetchHighWater(reaching: 6, timeout: 0.001))
++        #expect(!c.awaitFetchHighWater(reaching: 7, timeout: 0.001))
++
++        c.endAnalysisDemand(demand)
++        #expect(!c.awaitFetchHighWater(reaching: 1, timeout: 0.001))
 +    }
 +
      @Test("contiguousForwardFrontier stops at the first gap ahead of target")
