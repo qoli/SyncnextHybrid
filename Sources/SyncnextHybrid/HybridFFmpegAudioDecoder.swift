@@ -1,8 +1,8 @@
 import AVFAudio
-import Libavcodec
-import Libavformat
-import Libavutil
-import Libswresample
+import AetherLibavcodec
+import AetherLibavformat
+import AetherLibavutil
+import AetherLibswresample
 
 struct HybridAudioContinuityTracker {
     private static let initialOriginTolerance: Int64 = 1

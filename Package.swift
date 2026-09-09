@@ -23,10 +23,10 @@ let package = Package(
             name: "SyncnextHybrid",
             dependencies: [
                 .product(name: "AetherEngine", package: "AetherEngine"),
-                .product(name: "Libavcodec", package: "FFmpegBuild"),
-                .product(name: "Libavformat", package: "FFmpegBuild"),
-                .product(name: "Libavutil", package: "FFmpegBuild"),
-                .product(name: "Libswresample", package: "FFmpegBuild"),
+                .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
+                .product(name: "AetherLibavformat", package: "FFmpegBuild"),
+                .product(name: "AetherLibavutil", package: "FFmpegBuild"),
+                .product(name: "AetherLibswresample", package: "FFmpegBuild"),
             ],
             exclude: [
                 "Resources/black-proxy.mp4",
@@ -40,7 +40,7 @@ let package = Package(
             dependencies: [
                 "SyncnextHybrid",
                 .product(name: "AetherEngine", package: "AetherEngine"),
-                .product(name: "Libavcodec", package: "FFmpegBuild"),
+                .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
             ],
             resources: [
                 .copy("Fixtures"),

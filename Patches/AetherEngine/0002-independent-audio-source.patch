@@ -1,23 +1,23 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 7dfcc8b..f378729 100644
+index d645a114..b479fb3b 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -224,6 +224,8 @@ public final class Demuxer: @unchecked Sendable {
+@@ -227,7 +227,9 @@ public final class Demuxer: @unchecked Sendable {
+     var avioBytesFetched: Int64 { avioProvider?.cumulativeBytesFetched ?? 0 }
+ 
      // Forward-only custom sources report false.
 -    var isSourceSeekable: Bool { avioProvider?.isSeekable ?? true }
 +    public var isSourceSeekable: Bool { avioProvider?.isSeekable ?? true }
- 
-+    public init() {}
 +
-     /// Timestamp of last unplanned reconnect (drop/stall, not a seek).
-     /// Live producer correlates with backward source-PTS reset to detect
-     /// Jellyfin transcode respawn. See `AVIOReader.lastUnplannedReconnectAt`.
-@@ -386,6 +388,12 @@ public final class Demuxer: @unchecked Sendable {
++    public init() {}
+ 
+     /// True when libavformat opened the source itself, which it does only for a local path
+     /// (`openLocal`). Every network, disc and custom source is read through an `AVIOProvider`.
+@@ -397,6 +399,11 @@ public final class Demuxer: @unchecked Sendable {
          }
      }
  
-+    /// Open a fresh seekable-VOD cursor without exposing AetherEngine's
-+    /// playback-oriented demux tuning to middleware clients.
++    /// Open a fresh seekable-VOD cursor without exposing playback tuning.
 +    public func openIndependent(url: URL, extraHeaders: [String: String] = [:]) throws {
 +        try open(url: url, extraHeaders: extraHeaders, profile: .playback, isLive: false)
 +    }
@@ -25,11 +25,11 @@ index 7dfcc8b..f378729 100644
      // MARK: - Open Strategies
  
      private func openLocal(url: URL) throws {
-@@ -432,6 +440,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -443,6 +450,11 @@ public final class Demuxer: @unchecked Sendable {
          try openWithProvider(bridge, inputFormat: inputFormat, isLive: isLive)
      }
  
-+    /// Open a fresh cursor over a caller-owned independent IOReader.
++    /// Open a fresh cursor over a caller-owned independent reader.
 +    public func openIndependent(reader: IOReader, formatHint: String? = nil) throws {
 +        try open(reader: reader, formatHint: formatHint, profile: .playback, isLive: false)
 +    }
@@ -37,23 +37,21 @@ index 7dfcc8b..f378729 100644
      /// A remote disc image (ISO 9660 / UDF / BDMV) by URL extension. Gates the HTTP disc-adapter
      /// path so a normal media URL keeps the optimized streaming AVIOReader open with no probe cost.
      static func isDiscImageURL(_ url: URL) -> Bool {
-@@ -657,6 +670,15 @@ public final class Demuxer: @unchecked Sendable {
+@@ -820,6 +832,13 @@ public final class Demuxer: @unchecked Sendable {
          return ctx.pointee.start_time
      }
  
 +    /// Zero-based source-timeline origin for independent readers.
 +    public var formatStartTimeSeconds: Double {
 +        let value = formatStartTime
-+        guard value != Int64.min else {
-+            return 0
-+        }
++        guard value != Int64.min else { return 0 }
 +        return Double(value) / Double(AV_TIME_BASE)
 +    }
 +
      /// Index of the best video stream, or -1.
      /// Clamped: av_find_best_stream returns AVERROR_STREAM_NOT_FOUND (-1381258232)
      /// on failure, not -1; normalize to -1 to avoid garbage in logs.
-@@ -697,7 +719,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -860,7 +879,7 @@ public final class Demuxer: @unchecked Sendable {
          return -1
      }
  
@@ -62,7 +60,7 @@ index 7dfcc8b..f378729 100644
          guard let ctx = formatContext else { return [] }
          var tracks: [TrackInfo] = []
          for i in 0..<Int(ctx.pointee.nb_streams) {
-@@ -1020,7 +1042,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1183,7 +1202,7 @@ public final class Demuxer: @unchecked Sendable {
          return 0
      }
  
@@ -71,7 +69,7 @@ index 7dfcc8b..f378729 100644
          guard let ctx = formatContext, index >= 0, index < ctx.pointee.nb_streams else {
              return nil
          }
-@@ -1034,7 +1056,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1197,7 +1216,7 @@ public final class Demuxer: @unchecked Sendable {
      /// `pacing`, when >= 0 and not already in `keep`, is delivered at `AVDISCARD_NONKEY` instead of
      /// being dropped: keyframes only, enough to give a side reader a read-position control point
      /// between sparse target packets (#230). -1 keeps the original all-or-nothing behavior.
@@ -80,16 +78,16 @@ index 7dfcc8b..f378729 100644
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return }
-@@ -1086,7 +1108,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1249,7 +1268,7 @@ public final class Demuxer: @unchecked Sendable {
          return result
      }
  
--    func readPacket() throws -> UnsafeMutablePointer<AVPacket>? {
-+    public func readPacket() throws -> UnsafeMutablePointer<AVPacket>? {
+-    func readPacket(isCurrent: @Sendable () -> Bool = { true }) throws -> UnsafeMutablePointer<AVPacket>? {
++    public func readPacket(isCurrent: @Sendable () -> Bool = { true }) throws -> UnsafeMutablePointer<AVPacket>? {
          accessLock.lock()
          defer { accessLock.unlock() }
          while true {
-@@ -1254,7 +1276,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1434,7 +1453,7 @@ public final class Demuxer: @unchecked Sendable {
      /// from regardless, so the result is discardable; a caller that would otherwise read the wrong
      /// region on a forward-only source (AE#366's prime hunt) has to be able to ask.
      @discardableResult
@@ -98,7 +96,7 @@ index 7dfcc8b..f378729 100644
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return false }
-@@ -1705,7 +1727,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1885,7 +1904,7 @@ public final class Demuxer: @unchecked Sendable {
          avioProvider?.markClosed()
      }
  

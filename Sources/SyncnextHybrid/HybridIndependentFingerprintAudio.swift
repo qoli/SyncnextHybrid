@@ -1,7 +1,7 @@
 import AetherEngine
 import AVFAudio
 import Foundation
-import Libavcodec
+import AetherLibavcodec
 
 enum HybridIndependentFingerprintAudioSource: Sendable {
     case remoteHLS(HybridRemoteHLSAudioRequest)

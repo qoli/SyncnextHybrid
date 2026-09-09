@@ -1,6 +1,6 @@
 import AetherEngine
 import AVFAudio
-import Libavcodec
+import AetherLibavcodec
 import XCTest
 @testable import SyncnextHybrid
 

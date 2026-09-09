@@ -1,6 +1,6 @@
 diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 new file mode 100644
-index 0000000..57c436b
+index 00000000..50e3100d
 --- /dev/null
 +++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 @@ -0,0 +1,263 @@
@@ -268,22 +268,21 @@ index 0000000..57c436b
 +    }
 +}
 diff --git a/Sources/AetherEngine/Video/SegmentCache.swift b/Sources/AetherEngine/Video/SegmentCache.swift
-index 7cd0b99..e64565f 100644
+index 95c202d1..ad1b8825 100644
 --- a/Sources/AetherEngine/Video/SegmentCache.swift
 +++ b/Sources/AetherEngine/Video/SegmentCache.swift
-@@ -38,6 +38,11 @@ final class SegmentCache: @unchecked Sendable {
+@@ -59,6 +59,10 @@ final class SegmentCache: @unchecked Sendable {
      /// Declared by provider at top of each mediaSegment(at:); non-monotonic (backward scrub is valid).
      private var currentTargetIndex: Int = -1
  
 +    /// One-shot host analysis requests that may extend producer race-ahead
-+    /// without changing AVPlayer's fetch target or the session's normal
-+    /// forward-buffer policy. Values are inclusive segment indices.
++    /// without changing AVPlayer's fetch target or normal forward-buffer policy.
 +    private var analysisDemands: [UUID: Int] = [:]
 +
      /// Lowest index of the consumer's current uninterrupted fetch sequence, and the highest index it has
      /// reached in it. A seek flushes the consumer's buffer, so only within one sequence does everything
      /// between the playhead and the target sit in that buffer, which is what
-@@ -210,6 +215,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -373,6 +377,7 @@ final class SegmentCache: @unchecked Sendable {
          initVersions.removeAll(keepingCapacity: false)
          _totalBytes = 0
          _highestStoredIndex = -1
@@ -291,8 +290,8 @@ index 7cd0b99..e64565f 100644
          condition.broadcast()
          condition.unlock()
  
-@@ -231,6 +237,24 @@ final class SegmentCache: @unchecked Sendable {
-         for url in doomed { try? FileManager.default.removeItem(at: url) }
+@@ -399,6 +404,24 @@ final class SegmentCache: @unchecked Sendable {
+         if !doomed.isEmpty { onResidentSetChanged?() }
      }
  
 +    /// Extend production through `index` for one bounded cache-backed analysis.
@@ -316,7 +315,7 @@ index 7cd0b99..e64565f 100644
      /// Must be called with condition held.
      ///
      /// A fetch that leaves a gap above the front, or that drops further back than a handover refetch
-@@ -298,11 +322,21 @@ final class SegmentCache: @unchecked Sendable {
+@@ -505,11 +528,20 @@ final class SegmentCache: @unchecked Sendable {
      func awaitFetchHighWater(reaching target: Int, timeout: TimeInterval = 1.0) -> Bool {
          condition.lock()
          defer { condition.unlock() }
@@ -329,9 +328,8 @@ index 7cd0b99..e64565f 100644
 +        return productionTargetLocked >= target
 +    }
 +
-+    /// Consumer-target equivalent used only by producer backpressure. A
-+    /// demand through segment N must let a producer with forward window W
-+    /// advance until N, hence N - W on the existing target axis.
++    /// Consumer-target equivalent used only by producer backpressure. A demand
++    /// through N lets a producer with forward window W advance until N.
 +    private var productionTargetLocked: Int {
 +        let analysisTarget = analysisDemands.values.max().map {
 +            $0 - forwardWindow
@@ -339,12 +337,12 @@ index 7cd0b99..e64565f 100644
 +        return max(currentTargetIndex, analysisTarget)
      }
  
-     /// Evict segments strictly below cutoff (= live firstVisible). Bounded by firstVisible <= currentTargetIndex
+     /// Evict segments strictly below cutoff, which the live caller bounds at the consumer's own fetch
 diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngineTests/SegmentCacheTests.swift
-index 6b133da..24f8ba7 100644
+index e30386e4..e12cda2d 100644
 --- a/Tests/AetherEngineTests/SegmentCacheTests.swift
 +++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
-@@ -129,6 +129,58 @@ struct SegmentCacheTests {
+@@ -172,6 +172,58 @@ struct SegmentCacheTests {
          #expect(c.peek(index: 0) == nil)
      }
  

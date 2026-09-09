@@ -1,8 +1,8 @@
 import AetherEngine
 import Foundation
-import Libavcodec
-import Libavformat
-import Libavutil
+import AetherLibavcodec
+import AetherLibavformat
+import AetherLibavutil
 
 public enum HybridIntroAudioExtractionError:
     Error,

@@ -1,5 +1,5 @@
 import AetherEngine
-import Libavcodec
+import AetherLibavcodec
 import Foundation
 import XCTest
 @testable import SyncnextHybrid
