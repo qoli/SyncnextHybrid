@@ -536,7 +536,7 @@ public final class HybridPlaybackSession:
                 throw HybridFingerprintAudioError.sourceUnavailable
             case .audioTrackUnavailable:
                 throw HybridFingerprintAudioError.audioTrackUnavailable
-            case .segmentUnavailable, .segmentDecodeFailed:
+            case .segmentUnavailable, .segmentTimelineUnavailable, .segmentDecodeFailed:
                 throw HybridFingerprintAudioError.sourceUnavailable
             case .discontinuousRange:
                 throw HybridFingerprintAudioError.discontinuousRange

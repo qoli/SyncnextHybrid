@@ -3,10 +3,12 @@
 Date: 2026-09-09
 
 Status: owner approved promotion with a documented waiver for the known
-direct-Aether seek issue. The subsequently discovered 0004 end-to-end range
-failure was repaired by an approved minimal Patch rebuild and passed focused
-study-TV acceptance. The strict machine verdict remains `unsafe` because the
-evidence schema intentionally has no waiver state.
+direct-Aether seek issue. Two subsequently discovered 0004 timeline/range
+failures were repaired under explicit owner approval. The final Patch passes
+focused tests, reproducible clean replays, the non-zero-range study-TV smoke,
+and the real EP03 -> EP04 golden flow. The strict machine verdict remains
+`unsafe` solely because the evidence schema intentionally has no waiver state
+for the known direct-Aether issue.
 
 ## Candidate identity
 
@@ -115,7 +117,7 @@ clean simulations, and two destructive replays were identical.
 | --- | --- | --- |
 | `0001-local-ffmpegbuild` | PASS | The package graph resolves exactly one sibling FFmpegBuild 3.0.0 checkout, uses the renamed `AetherLibav*` products, and contains no remote duplicate. Hybrid tests and macOS/tvOS builds pass. |
 | `0002-independent-audio-source` | PASS | Independent demux decode/resample and dedicated finite-HLS audio cursor tests pass in both replays. Invalid/deadline/range behavior remains explicit rather than falling back. |
-| `0004-cache-backed-fingerprint-audio` | PASS, including end-to-end | Hybrid cache-backed PCM/fingerprint tests pass. Patched AetherEngine `SegmentCacheTests` pass 20/20, including the new bounded-lookahead invariant. Two clean full Patch replays each pass 71 tests and the tvOS build. The rebuilt 0004 then passes the study-TV segment-cache smoke. |
+| `0004-cache-backed-fingerprint-audio` | PASS, including real golden | Hybrid cache-backed PCM/fingerprint tests pass. Patched AetherEngine `SegmentCacheTests` pass 24/24, covering bounded lookahead and per-segment audio timeline metadata lifecycle. Two clean full Patch replays and the final main-checkout replay each pass 71 tests and the tvOS build. The final 0004 passes both the study-TV non-zero-range segment-cache smoke and the real EP03 -> EP04 golden flow. |
 
 The former `0003-hevc-mpegts-hls-vod-remux-workaround` is not an active
 downstream patch. It was removed at AetherEngine 6.4.2 after upstream absorbed
@@ -145,10 +147,52 @@ Apple TV, the same `20.000...32.000` request completed from `segmentCache` with
 discontinuities. The proxy route then completed the `150` to `60` second seek
 with `0.006` seconds landing error and emitted `run_passed`.
 
-One acceptance bound remains explicit: the fixture-gated real golden
-fingerprint pair was unavailable. The exercised physical-device path proves
-range-complete segment-cache PCM delivery, but does not claim a golden
-fingerprint-value comparison that was not run.
+The later real golden run used 埋堆堆 `陀槍師姐`, EP03 -> EP04, on the same
+authorized study-room Apple TV. The saved manual positions were `16.650875`
+and `16.568689` seconds, a difference of about `82` ms, so the pair is a valid
+cross-episode comparison. Runtime association selected EP04 ordinal 3, loaded
+the EP03 fingerprint cache as `ready`, selected `provider=segmentCache`, and
+requested the current `0.000...120.000` second front range. Preparation then
+terminated with `artifactPreparationFailed`, `discontinuousRange`, and
+`fallback=none`; no fingerprint match was produced.
+
+The source media playlist has no `EXT-X-DISCONTINUITY`. Inspection of the
+active loopback fragments instead places the first audio decode timestamp at
+`3528 / 48000 = 0.0735` seconds. `CachedFingerprintAudioReader` initializes
+coverage at the requested lower bound and permits only `0.05` seconds of
+leading gap, so the absolute-zero request is rejected by `validateCoverage`.
+This does not contradict the earlier `20.000...32.000` smoke: that request
+began inside already-decoded audio and completed through its upper bound. The
+failure identified a second incomplete 0004 responsibility: decoded fragment
+audio was being mapped with the playlist display shift even though the muxer's
+audio PTS rebase can differ from that presentation-axis shift.
+
+The owner approved correcting that timeline contract. `HLSSegmentProducer`
+now records each adopted fragment's actual audio mux-to-source shift alongside
+the exact cached bytes. Replacement, disappearance, eviction, pruning, and
+close remove or replace the metadata atomically with those bytes. The reader
+still uses playlist display shift only to choose segment indices; each decoded
+timestamp is mapped as `decodedPTS + audioSourceShift - sourcePresentationOrigin`.
+Missing metadata fails explicitly as `segmentTimelineUnavailable`; there is no
+fallback or guessed offset.
+
+The final Patch adds focused coverage for the mapping, same-index epoch
+replacement, absent metadata, and eviction. AetherEngine `SegmentCacheTests`
+pass 24/24. Two clean isolated Patch replays and one final main-checkout replay
+produce the same patched AetherEngine diff digest
+`be7126d065e28a0c5c542cb4f32e0365fc2b5027fe79af301830a925d2f04816`;
+each replay passes all 71 Hybrid tests (2 fixture-gated skips) and the generic
+tvOS build.
+
+On the study-room Apple TV, the corrected non-zero-range smoke remained green:
+`20.000...32.000` returned 97 buffers / 582144 frames from five cache segments,
+covering `19.936...32.064` with zero discontinuities, followed by a successful
+`150` -> `60` seek and `run_passed`. The real `陀槍師姐` EP03 -> EP04 golden
+flow then completed both matches with `provider=segmentCache` and
+`fallback=none`: front score `0.770676` versus null threshold `0.541637`
+(`1.000...77.300`), and back score `0.713699` versus `0.542694`
+(`2500.940...2577.640`). Its terminal event was `phase=completed`, episode 4,
+previous episode 3, with two matches.
 
 ## Formal verdict
 
@@ -177,6 +221,12 @@ Supplementary Patch evidence:
 - `0004-rebuild-device-console.log` and `0004-rebuild-device-result.json`
   (range-complete fingerprint and terminal `run_passed`)
 - `0004-rebuild-main-apply.log` (integrated main checkout replay PASS)
+- `0004-golden-ep03-ep04/device-console.log` (real golden FAIL)
+- `0004-golden-ep03-ep04/result.json` (sanitized golden verdict and diagnosis)
+- `0004-axis-fix/main-segment-cache-tests.log` (`24/24` passed)
+- `0004-axis-fix/main-apply.log` (final integrated replay: 71 tests and tvOS build PASS)
+- `0004-axis-fix/smoke-console-rerun.log` (corrected non-zero-range `run_passed`)
+- `0004-axis-fix/golden/device-console.log` (real golden completed with two matches)
 
 ## Device cleanup
 
@@ -191,8 +241,25 @@ authorized device. After its terminal `run_passed`, that smoke app was
 uninstalled, the local fixture server was stopped, and the study-room Apple TV
 was sent `OFF` again.
 
+The real golden run temporarily installed the rebuilt-0004 SyncNext candidate.
+EP04 playback was returned to `16.568` seconds after evidence collection (about
+`0.689` ms from its pre-run saved position), the previously built 6.46.0
+baseline App was reinstalled without removing the data container, temporary
+device-data copies were deleted, and the study-room Apple TV was sent `OFF`.
+
+The corrected-axis acceptance again used only the study-room Apple TV. After
+the terminal golden result, EP04 was returned to `16.568` seconds, the exact
+candidate process was terminated, the existing 6.46.0 baseline App was
+reinstalled without deleting the data container, and installed-app readback
+confirmed Syncnext `1.180` build `529`. The fixture server was stopped and the
+television reported power state `Off`.
+
 Cleanup evidence:
 
 - `syncnext-baseline-openlist-prepare.log`
 - `syncnext-baseline-6.46-restore-build-rerun.log`
 - `0004-rebuild-device-uninstall.json`
+- `0004-golden-ep03-ep04/baseline-restore-install.json`
+- `0004-golden-ep03-ep04/baseline-restore-app-info.json`
+- `0004-axis-fix/baseline-restore-install.json`
+- `0004-axis-fix/baseline-restore-app-info.json`
