@@ -438,7 +438,7 @@ public enum RepeatedSegmentFingerprint {
             throw RepeatedSegmentFingerprintError.incompatibleArtifacts
         }
         let hop = current.configuration.hopSeconds
-        let windowFrames = max(2, Int((minimumDurationSeconds / hop).rounded()))
+        let windowFrames = max(2, Int(ceil(minimumDurationSeconds / hop)))
         guard previous.fingerprints.count >= windowFrames,
               current.fingerprints.count >= windowFrames else {
             return nil
@@ -537,7 +537,10 @@ public enum RepeatedSegmentFingerprint {
             }
 
             for seed in seedClusters {
-                let expansion = expand(
+                // The seed is statistical admission evidence, not an output
+                // range. Refine both boundaries from actual frame support,
+                // then enforce the minimum duration without padding.
+                guard let supportedRange = refineSupportedRange(
                     similarities: Array(similarities.prefix(length)),
                     validity: Array(validity.prefix(length)),
                     seedStart: seed.localStart,
@@ -545,14 +548,14 @@ public enum RepeatedSegmentFingerprint {
                     seedScore: seed.score,
                     hop: hop,
                     null: null
-                )
-                let frameCount = expansion.end - expansion.start
+                ) else { continue }
+                let frameCount = supportedRange.count
                 guard frameCount >= windowFrames else { continue }
-                let validCount = prefixCounts[expansion.end]
-                    - prefixCounts[expansion.start]
+                let validCount = prefixCounts[supportedRange.upperBound]
+                    - prefixCounts[supportedRange.lowerBound]
                 guard validCount >= minimumValid else { continue }
-                let similaritySum = prefixSums[expansion.end]
-                    - prefixSums[expansion.start]
+                let similaritySum = prefixSums[supportedRange.upperBound]
+                    - prefixSums[supportedRange.lowerBound]
                 let meanSimilarity = similaritySum / Double(validCount)
                 // The null baseline is common to all candidates in this pair.
                 // Scaling the excess mean by sqrt(valid frames) balances
@@ -563,8 +566,8 @@ public enum RepeatedSegmentFingerprint {
                     score: seed.score,
                     meanSimilarity: meanSimilarity,
                     aggregateEvidence: aggregateEvidence,
-                    leftStart: leftStart + expansion.start,
-                    rightStart: rightStart + expansion.start,
+                    leftStart: leftStart + supportedRange.lowerBound,
+                    rightStart: rightStart + supportedRange.lowerBound,
                     frameCount: frameCount,
                     validFraction: Double(seed.validCount) / Double(windowFrames)
                 )
@@ -732,7 +735,7 @@ public enum RepeatedSegmentFingerprint {
         )
     }
 
-    private static func expand(
+    private static func refineSupportedRange(
         similarities: [Double],
         validity: [Bool],
         seedStart: Int,
@@ -740,7 +743,7 @@ public enum RepeatedSegmentFingerprint {
         seedScore: Double,
         hop: Double,
         null: NullDistribution
-    ) -> (start: Int, end: Int) {
+    ) -> Range<Int>? {
         let extensionFrames = max(2, Int((1 / hop).rounded()))
         let maximumGapFrames = max(0, Int((3 / hop).rounded()))
         let rolling = rollingWeightedMean(
@@ -757,40 +760,41 @@ public enum RepeatedSegmentFingerprint {
                 && rolling.means[$0] >= supportThreshold
         }
 
-        var expandedStart = seedStart
+        let seedSupportEnd = min(
+            support.count,
+            seedStart + seedWindowFrames
+        )
+        guard seedStart < seedSupportEnd,
+              let anchor = (seedStart..<seedSupportEnd)
+                .filter({ support[$0] })
+                .max(by: { rolling.means[$0] < rolling.means[$1] }) else {
+            return nil
+        }
+
+        var expandedStart = anchor
         var unsupported = 0
-        if !support.isEmpty {
-            for index in stride(
-                from: min(seedStart, support.count - 1),
-                through: 0,
-                by: -1
-            ) {
-                if support[index] {
-                    expandedStart = index
-                    unsupported = 0
-                } else {
-                    unsupported += 1
-                    if unsupported > maximumGapFrames { break }
-                }
+        for index in stride(from: anchor, through: 0, by: -1) {
+            if support[index] {
+                expandedStart = index
+                unsupported = 0
+            } else {
+                unsupported += 1
+                if unsupported > maximumGapFrames { break }
             }
         }
 
-        var expandedEnd = seedStart + seedWindowFrames
-        var lastSupportedEnd = expandedEnd
+        var lastSupportedEnd = anchor + extensionFrames
         unsupported = 0
-        let rightStart = max(0, seedStart + seedWindowFrames - extensionFrames)
-        if rightStart < support.count {
-            for index in rightStart..<support.count {
-                if support[index] {
-                    lastSupportedEnd = max(lastSupportedEnd, index + extensionFrames)
-                    unsupported = 0
-                } else {
-                    unsupported += 1
-                    if unsupported > maximumGapFrames { break }
-                }
+        for index in anchor..<support.count {
+            if support[index] {
+                lastSupportedEnd = index + extensionFrames
+                unsupported = 0
+            } else {
+                unsupported += 1
+                if unsupported > maximumGapFrames { break }
             }
         }
-        expandedEnd = min(similarities.count, lastSupportedEnd)
+        let expandedEnd = min(similarities.count, lastSupportedEnd)
 
         let leadingFrameThreshold = min(
             1,
@@ -824,18 +828,19 @@ public enum RepeatedSegmentFingerprint {
             }
             return starts
         }
-        if let leading = runStarts(in: leadingFrameSupport).first(where: {
-            $0 >= expandedStart && $0 <= seedStart
-        }) {
-            expandedStart = leading
+        guard let refinedStart = runStarts(in: leadingFrameSupport).first(where: {
+            $0 >= expandedStart && $0 + refinementFrames <= expandedEnd
+        }) else {
+            return nil
         }
-        if let trailing = runStarts(in: trailingFrameSupport).last(where: {
-            $0 + refinementFrames >= seedStart + seedWindowFrames
-                && $0 + refinementFrames <= expandedEnd
-        }) {
-            expandedEnd = trailing + refinementFrames
+        guard let trailing = runStarts(in: trailingFrameSupport).last(where: {
+            $0 >= refinedStart && $0 + refinementFrames <= expandedEnd
+        }) else {
+            return nil
         }
-        return (expandedStart, expandedEnd)
+        let refinedEnd = trailing + refinementFrames
+        guard refinedStart < refinedEnd else { return nil }
+        return refinedStart..<refinedEnd
     }
 
     private static func stableSeed(_ value: String) -> UInt64 {

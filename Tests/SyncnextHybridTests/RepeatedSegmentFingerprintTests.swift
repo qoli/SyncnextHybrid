@@ -262,6 +262,191 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         XCTAssertEqual(strongerMatch.rightRange.upperBound, 76, accuracy: 0.5)
     }
 
+    func testPairwiseMatchRejectsShortSupportInsteadOfPaddingSeed() throws {
+        var previousGenerator = Generator(state: 0x147A_2E91_6F35_BC08)
+        var currentGenerator = Generator(state: 0x8D40_C3B7_51EA_269F)
+        let previousValues = (0..<400).map { _ in previousGenerator.next() }
+        var currentValues = (0..<400).map { _ in currentGenerator.next() }
+
+        // Seven seconds of genuine support can make the surrounding ten-second
+        // evidence window pass, but it must not be padded into a valid range.
+        currentValues.replaceSubrange(
+            250..<320,
+            with: previousValues[250..<320]
+        )
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "short-support-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "short-support-current",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let match = try RepeatedSegmentFingerprint.findBestPairwiseMatch(
+            previous: previous,
+            current: current,
+            minimumDurationSeconds: 10
+        )
+
+        XCTAssertNil(match)
+    }
+
+    func testPairwiseMatchDoesNotJoinSeparatedShortSupportIslands() throws {
+        var previousGenerator = Generator(state: 0x709A_E42C_158D_B63F)
+        var currentGenerator = Generator(state: 0xC531_8F7B_2DA0_964E)
+        let previousValues = (0..<400).map { _ in previousGenerator.next() }
+        var currentValues = (0..<400).map { _ in currentGenerator.next() }
+
+        // Two short repeated islands separated by five unsupported seconds
+        // can admit a ten-second evidence window, but are not one range.
+        currentValues.replaceSubrange(
+            100..<130,
+            with: previousValues[100..<130]
+        )
+        currentValues.replaceSubrange(
+            180..<210,
+            with: previousValues[180..<210]
+        )
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "split-support-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "split-support-current",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let match = try RepeatedSegmentFingerprint.findBestPairwiseMatch(
+            previous: previous,
+            current: current,
+            minimumDurationSeconds: 10
+        )
+
+        XCTAssertNil(match)
+    }
+
+    func testPairwiseMatchReturnsRefinedSupportLongerThanMinimum() throws {
+        var previousGenerator = Generator(state: 0x962F_A051_4BCD_738E)
+        var currentGenerator = Generator(state: 0x31C8_7E4A_D205_B69F)
+        let previousValues = (0..<400).map { _ in previousGenerator.next() }
+        var currentValues = (0..<400).map { _ in currentGenerator.next() }
+
+        currentValues.replaceSubrange(
+            200..<320,
+            with: previousValues[200..<320]
+        )
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "accepted-support-previous",
+            sourceStartSeconds: 1_000,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "accepted-support-current",
+            sourceStartSeconds: 2_000,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let match = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: current,
+                minimumDurationSeconds: 10
+            )
+        )
+
+        XCTAssertEqual(match.leftRange.lowerBound, 1_020, accuracy: 0.4)
+        XCTAssertEqual(match.leftRange.upperBound, 1_032, accuracy: 0.4)
+        XCTAssertEqual(match.rightRange.lowerBound, 2_020, accuracy: 0.4)
+        XCTAssertEqual(match.rightRange.upperBound, 2_032, accuracy: 0.4)
+    }
+
+    func testPairwiseMatchAcceptsSupportExactlyAtMinimumDuration() throws {
+        var previousGenerator = Generator(state: 0xA579_10CE_4D82_B63F)
+        var currentGenerator = Generator(state: 0x24EB_C891_7F36_05AD)
+        let previousValues = (0..<300).map { _ in previousGenerator.next() }
+        var currentValues = (0..<300).map { _ in currentGenerator.next() }
+        currentValues.replaceSubrange(
+            95..<100,
+            with: previousValues[95..<100].map { ~$0 }
+        )
+        currentValues.replaceSubrange(
+            100..<200,
+            with: previousValues[100..<200]
+        )
+        currentValues.replaceSubrange(
+            200..<205,
+            with: previousValues[200..<205].map { ~$0 }
+        )
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "exact-minimum-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "exact-minimum-current",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let match = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: current,
+                minimumDurationSeconds: 10
+            )
+        )
+
+        XCTAssertEqual(match.rightRange.lowerBound, 10, accuracy: 0.2)
+        XCTAssertEqual(match.rightRange.upperBound, 20, accuracy: 0.2)
+    }
+
+    func testPairwiseMatchDoesNotRoundMinimumDurationBelowRequestedValue() throws {
+        var previousGenerator = Generator(state: 0x6B38_1AF0_CE25_974D)
+        var currentGenerator = Generator(state: 0xD04E_792B_63A1_58CF)
+        let previousValues = (0..<300).map { _ in previousGenerator.next() }
+        var currentValues = (0..<300).map { _ in currentGenerator.next() }
+        currentValues.replaceSubrange(
+            100..<200,
+            with: previousValues[100..<200]
+        )
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "rounded-minimum-previous",
+            sourceStartSeconds: 0,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "rounded-minimum-current",
+            sourceStartSeconds: 0,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+
+        let minimumDuration = 10.04
+        let match = try XCTUnwrap(
+            RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous,
+                current: current,
+                minimumDurationSeconds: minimumDuration
+            )
+        )
+
+        XCTAssertGreaterThanOrEqual(match.seedDuration, minimumDuration)
+    }
+
     func testFingerprintIsStableUnderGainChange() throws {
         let count = 16_000 * 12
         let samples = (0..<count).map { index -> Float in
