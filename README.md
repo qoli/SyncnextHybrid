@@ -48,6 +48,16 @@ the controlled renderer and media-material provider. AVKit user navigation
 uses an explicit fast path to notify Aether immediately while preserving the
 same Server generation and acknowledgement gate.
 
+The mounted playback presentation reports `.enteredBackground` and
+`.becameActive` through `HybridPlaybackSession.handleLifecycle(_:)`. Hybrid
+captures the authoritative transport intent before Aether performs its tvOS
+background teardown, then calls `reloadAtCurrentPosition()` exactly once for
+that background epoch, restores the existing native or Proxy route, and
+reapplies playing or paused intent. Duplicate active notifications are no-ops;
+stopped sessions reject recovery; rebuild failures publish a typed terminal
+snapshot. The App must not replace this contract with source re-resolution, a
+new session, or a hidden retry.
+
 See
 [`Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md`](Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md)
 for the authority boundaries, seek event ordering, thumbnail suppression,

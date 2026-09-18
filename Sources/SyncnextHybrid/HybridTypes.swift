@@ -102,6 +102,14 @@ public enum HybridPlaybackRoute: Sendable, Equatable {
     case avKitProxy
 }
 
+/// App lifecycle edges that affect an already-mounted playback session.
+/// The caller reports UIKit lifecycle only; the Hybrid session owns the
+/// recovery policy and AetherEngine rebuild.
+public enum HybridPlaybackLifecycleEvent: Sendable, Equatable {
+    case enteredBackground
+    case becameActive
+}
+
 public enum HybridPlaybackPhase: Sendable, Equatable {
     case idle
     case loading
@@ -186,6 +194,7 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
     case proxyServerUnavailable(String)
     case proxyDurationUnavailable
     case avKitOverlayUnavailable
+    case foregroundRecoveryFailed(String)
     case sessionStopped
 
     public var errorDescription: String? {
@@ -208,9 +217,72 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
             "The AVKit proxy route requires a confirmed finite VOD duration"
         case .avKitOverlayUnavailable:
             "AVPlayerViewController did not provide a content overlay view"
+        case .foregroundRecoveryFailed(let message):
+            "Playback could not recover after returning to the foreground: \(message)"
         case .sessionStopped:
             "The playback session has stopped"
         }
+    }
+}
+
+struct HybridForegroundRecoveryCoordinator {
+    struct Recovery: Sendable, Equatable {
+        let epoch: UInt64
+        let resumeRate: Float?
+    }
+
+    enum Phase: Sendable, Equatable {
+        case foreground
+        case backgrounded(Recovery)
+        case recovering(Recovery)
+        case failed(Recovery)
+        case stopped
+    }
+
+    private(set) var phase: Phase = .foreground
+    private var nextEpoch: UInt64 = 0
+
+    mutating func enterBackground(resumeRate: Float?) -> Recovery? {
+        guard phase != .stopped else {
+            return nil
+        }
+        nextEpoch &+= 1
+        let recovery = Recovery(
+            epoch: nextEpoch,
+            resumeRate: resumeRate
+        )
+        phase = .backgrounded(recovery)
+        return recovery
+    }
+
+    mutating func beginForegroundRecovery() -> Recovery? {
+        guard case .backgrounded(let recovery) = phase else {
+            return nil
+        }
+        phase = .recovering(recovery)
+        return recovery
+    }
+
+    mutating func complete(epoch: UInt64) -> Bool {
+        guard case .recovering(let recovery) = phase,
+              recovery.epoch == epoch else {
+            return false
+        }
+        phase = .foreground
+        return true
+    }
+
+    mutating func fail(epoch: UInt64) -> Bool {
+        guard case .recovering(let recovery) = phase,
+              recovery.epoch == epoch else {
+            return false
+        }
+        phase = .failed(recovery)
+        return true
+    }
+
+    mutating func stop() {
+        phase = .stopped
     }
 }
 

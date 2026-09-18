@@ -85,6 +85,9 @@ public final class HybridPlaybackSession:
     private var requestedRate: Float = 1
     private var lastLoggedHLSMaterial: HybridHLSProxyMaterial?
     private var stopped = false
+    private var foregroundRecovery =
+        HybridForegroundRecoveryCoordinator()
+    private var foregroundRecoveryTask: Task<Void, Never>?
     private var audioSelectionRevision: UInt64 = 0
     private var lastNativePlayerIdentity: ObjectIdentifier?
 
@@ -429,6 +432,59 @@ public final class HybridPlaybackSession:
         publishSnapshot()
     }
 
+    /// Accepts mounted-player lifecycle edges. The presentation layer only
+    /// reports UIKit state; this session owns recovery, route rebinding, and
+    /// transport restoration.
+    public func handleLifecycle(
+        _ event: HybridPlaybackLifecycleEvent
+    ) {
+        guard !stopped else {
+            lifecycleDiagnostics(
+                "event-ignored",
+                "reason=session-stopped",
+                "eventName=\(event)"
+            )
+            return
+        }
+        switch event {
+        case .enteredBackground:
+            foregroundRecoveryTask?.cancel()
+            foregroundRecoveryTask = nil
+            let resumeRate = foregroundResumeRate()
+            guard let recovery = foregroundRecovery.enterBackground(
+                resumeRate: resumeRate
+            ) else {
+                return
+            }
+            lifecycleDiagnostics(
+                "background-entered",
+                "epoch=\(recovery.epoch)",
+                "route=\(snapshot.route)",
+                "resumeRate=\(lifecycleRateField(resumeRate))",
+                "enginePhase=\(engine.playbackPhase)"
+            )
+        case .becameActive:
+            guard let recovery =
+                    foregroundRecovery.beginForegroundRecovery() else {
+                lifecycleDiagnostics(
+                    "active-ignored",
+                    "reason=no-backgrounded-session",
+                    "phase=\(foregroundRecovery.phase)"
+                )
+                return
+            }
+            lifecycleDiagnostics(
+                "recovery-began",
+                "epoch=\(recovery.epoch)",
+                "route=\(snapshot.route)",
+                "resumeRate=\(lifecycleRateField(recovery.resumeRate))"
+            )
+            foregroundRecoveryTask = Task { @MainActor [weak self] in
+                await self?.recoverAfterForegroundTransition(recovery)
+            }
+        }
+    }
+
     public func selectAudioTrack(id: Int) {
         guard !stopped,
               engine.audioTracks.contains(where: { $0.id == id }) else {
@@ -577,6 +633,9 @@ public final class HybridPlaybackSession:
             return
         }
         stopped = true
+        foregroundRecovery.stop()
+        foregroundRecoveryTask?.cancel()
+        foregroundRecoveryTask = nil
         proxyNavigationTasks.values.forEach { $0.cancel() }
         proxyNavigationTasks.removeAll()
         detach()
@@ -587,6 +646,7 @@ public final class HybridPlaybackSession:
     }
 
     deinit {
+        foregroundRecoveryTask?.cancel()
         proxyNavigationTasks.values.forEach { $0.cancel() }
         eventContinuation.finish()
         proxyRateObservation?.invalidate()
@@ -1153,6 +1213,153 @@ public final class HybridPlaybackSession:
                 + "event=\(event) "
                 + fields.joined(separator: " ")
         )
+    }
+
+    private func foregroundResumeRate() -> Float? {
+        switch snapshot.route {
+        case .avKitProxy:
+            let rate = proxyTimeline.state.rate
+            return rate > 0 ? rate : nil
+        case .nativeAVPlayer:
+            switch engine.playbackPhase {
+            case .loading, .playing, .seeking, .rebuffering, .stalled:
+                return max(requestedRate, 1)
+            case .idle, .paused, .ended, .error:
+                return nil
+            }
+        }
+    }
+
+    private func recoverAfterForegroundTransition(
+        _ recovery: HybridForegroundRecoveryCoordinator.Recovery
+    ) async {
+        do {
+            try await engine.reloadAtCurrentPosition()
+            try Task.checkCancellation()
+            guard !stopped else {
+                throw HybridPlaybackError.sessionStopped
+            }
+            if snapshot.route == .nativeAVPlayer,
+               engine.currentAVPlayer == nil {
+                throw HybridPlaybackError.foregroundRecoveryFailed(
+                    "AetherEngine did not publish a native AVPlayer"
+                )
+            }
+            applyAetherPlayer(engine.currentAVPlayer)
+            applyAetherMaterial()
+            restoreTransport(after: recovery)
+            publishSnapshot()
+            guard foregroundRecovery.complete(epoch: recovery.epoch) else {
+                lifecycleDiagnostics(
+                    "recovery-superseded",
+                    "epoch=\(recovery.epoch)"
+                )
+                return
+            }
+            lifecycleDiagnostics(
+                "recovery-completed",
+                "epoch=\(recovery.epoch)",
+                "route=\(snapshot.route)",
+                "restoredRate=\(lifecycleRateField(recovery.resumeRate))",
+                "enginePhase=\(engine.playbackPhase)"
+            )
+        } catch is CancellationError {
+            lifecycleDiagnostics(
+                "recovery-cancelled",
+                "epoch=\(recovery.epoch)"
+            )
+        } catch {
+            guard foregroundRecovery.fail(epoch: recovery.epoch) else {
+                lifecycleDiagnostics(
+                    "recovery-failure-superseded",
+                    "epoch=\(recovery.epoch)",
+                    "errorType=\(String(describing: type(of: error)))"
+                )
+                return
+            }
+            let failure: HybridPlaybackError
+            if let hybridError = error as? HybridPlaybackError {
+                failure = hybridError
+            } else {
+                failure = .foregroundRecoveryFailed(
+                    String(describing: error)
+                )
+            }
+            publishForegroundRecoveryFailure(failure)
+            let nsError = error as NSError
+            lifecycleDiagnostics(
+                "recovery-failed",
+                "epoch=\(recovery.epoch)",
+                "errorType=\(String(describing: type(of: error)))",
+                "domain=\(nsError.domain)",
+                "code=\(nsError.code)"
+            )
+        }
+        if case .recovering = foregroundRecovery.phase {
+            return
+        }
+        foregroundRecoveryTask = nil
+    }
+
+    private func restoreTransport(
+        after recovery: HybridForegroundRecoveryCoordinator.Recovery
+    ) {
+        let rate = recovery.resumeRate ?? 0
+        if let resumeRate = recovery.resumeRate {
+            requestedRate = resumeRate
+        }
+        switch snapshot.route {
+        case .nativeAVPlayer:
+            if rate == 0 {
+                engine.pause()
+            } else {
+                engine.play()
+                engine.setRate(rate)
+            }
+        case .avKitProxy:
+            commandProxyRate(
+                rate,
+                reason: "foreground-recovery"
+            )
+        }
+    }
+
+    private func publishForegroundRecoveryFailure(
+        _ error: HybridPlaybackError
+    ) {
+        let failed = HybridPlaybackSnapshot(
+            phase: .failed(error.localizedDescription),
+            route: snapshot.route,
+            currentTime: snapshot.currentTime,
+            duration: snapshot.duration,
+            rate: 0,
+            audioSelectionRevision: snapshot.audioSelectionRevision,
+            selectedAudioTrackID: snapshot.selectedAudioTrackID,
+            selectedSubtitleTrackID: snapshot.selectedSubtitleTrackID,
+            audioTracks: snapshot.audioTracks,
+            subtitleTracks: snapshot.subtitleTracks
+        )
+        snapshot = failed
+        eventContinuation.yield(.snapshot(failed))
+    }
+
+    private func lifecycleDiagnostics(
+        _ event: String,
+        _ fields: String...
+    ) {
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_LIFECYCLE "
+                + "session=\(diagnosticsID) "
+                + "event=\(event) "
+                + fields.joined(separator: " ")
+        )
+    }
+
+    private func lifecycleRateField(_ rate: Float?) -> String {
+        guard let rate else {
+            return "paused"
+        }
+        return String(rate)
     }
 
     private func refreshMenusAndSnapshot() {
