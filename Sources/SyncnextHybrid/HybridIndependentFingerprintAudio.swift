@@ -426,8 +426,6 @@ enum HybridIndependentFingerprintAudio {
         case .selectedAudioTrackUnavailable,
              .sourceTrackChanged:
             .audioTrackUnavailable
-        case .audioSelectionChanged:
-            .audioSelectionChanged
         case .cancelled:
             .sessionChanged
         default:

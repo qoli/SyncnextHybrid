@@ -873,7 +873,6 @@ final class SmokeViewModel: ObservableObject {
         emitter: SmokeEventEmitter
     ) async throws -> [String: String] {
         let range = configuration.sourceRange
-        let revision = playbackSession.snapshot.audioSelectionRevision
         emitter.emit(
             "fingerprint_requested",
             metrics: emitter.metrics(
@@ -885,13 +884,11 @@ final class SmokeViewModel: ObservableObject {
                         SmokeEventEmitter.number(range.upperBound),
                     "expected_provider":
                         configuration.expectedProvider.rawValue,
-                    "audio_selection_revision": String(revision),
                 ]
             )
         )
 
         let request = HybridFingerprintAudioRequest(
-            audioSelectionRevision: revision,
             sourceRange: range,
             deadlineSeconds: 180
         )

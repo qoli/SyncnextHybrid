@@ -4,16 +4,13 @@ import Foundation
 public struct HybridFingerprintAudioRequest: Sendable, Equatable {
     public static let defaultDeadlineSeconds = 240.0
 
-    public let audioSelectionRevision: UInt64
     public let sourceRange: Range<Double>
     public let deadlineSeconds: Double
 
     public init(
-        audioSelectionRevision: UInt64,
         sourceRange: Range<Double>,
         deadlineSeconds: Double = Self.defaultDeadlineSeconds
     ) {
-        self.audioSelectionRevision = audioSelectionRevision
         self.sourceRange = sourceRange
         self.deadlineSeconds = deadlineSeconds
     }
@@ -64,7 +61,6 @@ public enum HybridFingerprintAudioError: Error, Sendable, Equatable {
     case deadlineExceeded
     case liveOrDVRUnsupported
     case audioTrackUnavailable
-    case audioSelectionChanged
     case sourceUnavailable
     case discontinuousRange
     case incompleteRange

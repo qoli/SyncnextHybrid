@@ -72,8 +72,6 @@ public final class HybridPlaybackSession:
     private var previousCustomMenuItems: [UIMenuElement] = []
     private var observations = Set<AnyCancellable>()
     private var proxyRateObservation: NSKeyValueObservation?
-    nonisolated(unsafe) private var nativeMediaSelectionObserver:
-        NSObjectProtocol?
     private var proxyNavigationTasks:
         [UInt64: Task<Void, Never>] = [:]
     private var completedProxyClientSeekGenerations: Set<UInt64> = []
@@ -496,7 +494,8 @@ public final class HybridPlaybackSession:
     /// One-shot PCM for fingerprint v2. Provider resolution is explicit:
     /// loopback VOD reuses Aether's SegmentCache, while native HLS and normal
     /// seekable sources use an independent bounded cursor bound to the same
-    /// audible-selection revision.
+    /// audio selection captured for that request. Playback audio changes do not
+    /// invalidate an in-flight fingerprint batch.
     public func fingerprintAudio(
         request fingerprintRequest: HybridFingerprintAudioRequest,
         onProgress: HybridFingerprintAudioProgressHandler? = nil
@@ -504,10 +503,7 @@ public final class HybridPlaybackSession:
         guard !stopped else {
             throw HybridFingerprintAudioError.sessionStopped
         }
-        guard fingerprintRequest.audioSelectionRevision
-                == audioSelectionRevision else {
-            throw HybridFingerprintAudioError.audioSelectionChanged
-        }
+
         guard fingerprintRequest.deadlineSeconds.isFinite,
               fingerprintRequest.deadlineSeconds > 0 else {
             throw HybridFingerprintAudioError.invalidDeadline
@@ -519,7 +515,6 @@ public final class HybridPlaybackSession:
             "SYNCNEXT_HYBRID_FINGERPRINT_PROVIDER "
                 + "session=\(diagnosticsID) "
                 + "provider=\(provider.rawValue) "
-                + "revision=\(fingerprintRequest.audioSelectionRevision) "
                 + "range=\(String(format: "%.3f", fingerprintRequest.sourceRange.lowerBound))..."
                 + "\(String(format: "%.3f", fingerprintRequest.sourceRange.upperBound))"
         )
@@ -547,10 +542,7 @@ public final class HybridPlaybackSession:
                     decodeSeconds: cached.decodeSeconds
                 )
             case .independentRemoteHLS:
-                let selection = try await nativeHLSAudioSelection(
-                    expectedRevision:
-                        fingerprintRequest.audioSelectionRevision
-                )
+                let selection = try await nativeHLSAudioSelection()
                 let source = HybridIndependentFingerprintAudioSource.remoteHLS(
                     HybridRemoteHLSAudioRequest(
                         url: request.url,
@@ -605,10 +597,7 @@ public final class HybridPlaybackSession:
         guard !stopped else {
             throw HybridFingerprintAudioError.sessionStopped
         }
-        guard fingerprintRequest.audioSelectionRevision
-                == audioSelectionRevision else {
-            throw HybridFingerprintAudioError.audioSelectionChanged
-        }
+
         return batch
     }
 
@@ -650,11 +639,6 @@ public final class HybridPlaybackSession:
         proxyNavigationTasks.values.forEach { $0.cancel() }
         eventContinuation.finish()
         proxyRateObservation?.invalidate()
-        if let nativeMediaSelectionObserver {
-            NotificationCenter.default.removeObserver(
-                nativeMediaSelectionObserver
-            )
-        }
     }
 
     private func installObservers() {
@@ -806,9 +790,6 @@ public final class HybridPlaybackSession:
         // into an Aether seek. Proxy initialization and programmatic seeks
         // emit that notification too. AVKit's navigation delegate above is
         // the user-intent boundary.
-        installNativeMediaSelectionObserver(
-            for: engine.currentAVPlayer?.currentItem
-        )
     }
 
     private func applyAetherPlayer(_ player: AVPlayer?) {
@@ -836,9 +817,6 @@ public final class HybridPlaybackSession:
             proxyNavigationTasks.values.forEach { $0.cancel() }
             proxyNavigationTasks.removeAll()
         }
-        installNativeMediaSelectionObserver(
-            for: player?.currentItem
-        )
         if attachedController?.player !== avPlayer {
             attachedController?.player = avPlayer
         }
@@ -1370,38 +1348,7 @@ public final class HybridPlaybackSession:
         publishSnapshot()
     }
 
-    private func installNativeMediaSelectionObserver(
-        for item: AVPlayerItem?
-    ) {
-        if let nativeMediaSelectionObserver {
-            NotificationCenter.default.removeObserver(
-                nativeMediaSelectionObserver
-            )
-            self.nativeMediaSelectionObserver = nil
-        }
-        guard let item else {
-            return
-        }
-        nativeMediaSelectionObserver =
-            NotificationCenter.default.addObserver(
-                forName:
-                    AVPlayerItem.mediaSelectionDidChangeNotification,
-                object: item,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else {
-                        return
-                    }
-                    self.audioSelectionRevision &+= 1
-                    self.refreshMenusAndSnapshot()
-                }
-            }
-    }
-
-    private func nativeHLSAudioSelection(
-        expectedRevision: UInt64
-    ) async throws -> HybridRemoteHLSAudioSelection {
+    private func nativeHLSAudioSelection() async throws -> HybridRemoteHLSAudioSelection {
         guard let item = engine.currentAVPlayer?.currentItem else {
             throw HybridFingerprintAudioError.sourceUnavailable
         }
@@ -1414,11 +1361,12 @@ public final class HybridPlaybackSession:
         } catch {
             throw HybridFingerprintAudioError.sourceUnavailable
         }
-        guard !stopped,
-              expectedRevision == audioSelectionRevision,
-              engine.currentAVPlayer?.currentItem.map(ObjectIdentifier.init)
+        guard !stopped else {
+            throw HybridFingerprintAudioError.sessionStopped
+        }
+        guard engine.currentAVPlayer?.currentItem.map(ObjectIdentifier.init)
                 == expectedItem else {
-            throw HybridFingerprintAudioError.audioSelectionChanged
+            throw HybridFingerprintAudioError.sessionChanged
         }
         guard let group else {
             return HybridRemoteHLSAudioSelection(
