@@ -721,7 +721,20 @@ public final class HybridPlaybackSession:
                     let selectionChanged =
                         self.snapshot.selectedAudioTrackID != selectedID
                     if selectionChanged {
+                        let previousRevision = self.audioSelectionRevision
                         self.audioSelectionRevision &+= 1
+                        HybridDiagnosticEmitter.emit(
+                            "SYNCNEXT_HYBRID_AUDIO_SELECTION "
+                                + "session=\(self.diagnosticsID) "
+                                + "event=revision-changed "
+                                + "source=activeAudioTrackIndex "
+                                + "oldRevision=\(previousRevision) "
+                                + "newRevision=\(self.audioSelectionRevision) "
+                                + "snapshotTrack=\(self.snapshot.selectedAudioTrackID.map(String.init) ?? "nil") "
+                                + "engineTrack=\(selectedID) "
+                                + "time=\(String(format: "%.3f", self.engine.currentTime)) "
+                                + "item=\(self.nativePlayerItemIdentity())"
+                        )
                     }
                     self.refreshMenusAndSnapshot()
                 }
@@ -1381,11 +1394,46 @@ public final class HybridPlaybackSession:
         let ordinal = selected.flatMap { selected in
             group.options.firstIndex { $0 === selected }
         }
+        let selectionSignature = nativeAudibleSelectionSignature(
+            item: item,
+            group: group
+        )
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_AUDIO_SELECTION "
+                + "session=\(diagnosticsID) "
+                + "event=fingerprint-selection-bound "
+                + "item=\(expectedItem) "
+                + "selection=\(selectionSignature)"
+        )
         return HybridRemoteHLSAudioSelection(
             displayName: selected?.displayName,
             language: selected?.extendedLanguageTag,
             optionOrdinal: ordinal
         )
+    }
+
+    private func nativePlayerItemIdentity() -> String {
+        engine.currentAVPlayer?.currentItem
+            .map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+    }
+
+    private func nativeAudibleSelectionSignature(
+        item: AVPlayerItem,
+        group: AVMediaSelectionGroup?
+    ) -> String {
+        guard let group else {
+            return "none"
+        }
+        guard let selected = item.currentMediaSelection.selectedMediaOption(
+            in: group
+        ) else {
+            return "unselected"
+        }
+        let ordinal = group.options.firstIndex { $0 === selected }
+        let displayName = selected.displayName
+            .replacingOccurrences(of: " ", with: "_")
+        let language = selected.extendedLanguageTag ?? "nil"
+        return "ordinal:\(ordinal.map(String.init) ?? "nil"),name:\(displayName),language:\(language)"
     }
 
     private func makeTrackMenus() -> [UIMenuElement] {
