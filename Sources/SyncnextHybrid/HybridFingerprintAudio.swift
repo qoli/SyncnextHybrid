@@ -73,7 +73,7 @@ enum HybridFingerprintAudioProviderResolver {
         admission: HybridRemoteSourceAdmission
     ) throws -> HybridFingerprintAudioProvider {
         switch admission {
-        case .hlsVOD, .hlsVODPQOnlyMaster:
+        case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster:
             return .independentRemoteHLS
         case .hlsVODHEVCMPEGTS:
             return .segmentCache

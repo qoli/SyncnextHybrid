@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-07-25  
+更新日期：2026-10-03
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -228,6 +228,25 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 已授權的有限 VOD 清單 fallback（2026-10-03）
+
+使用者已明確授權在 Hybrid source preparation 修正過小的
+`EXT-X-TARGETDURATION`。僅直接 media playlist、`ENDLIST`、既有 admission
+確認有限 native HLS VOD 時觸發：若最長 `EXTINF` 四捨五入後超過宣告值，
+將宣告值提高至最長分片時長的 ceiling。此修正不硬編碼站點或數值。
+
+Hybrid session 擁有僅綁定 loopback 的清單 listener；保留原分片時長、順序、
+tags、headers，並以有效 response URL 將相對資源引用轉為絕對 URL。分片仍由
+原站下載。診斷必須包含觸發原因、原／新 target duration、原／實際 source ID。
+清單準備失敗不回退至原始不合法清單；初始化失敗、取消、stop、owner release
+均釋放 listener。Live/DVR、master 的 ABR／音訊／字幕關係、HEVC remux 及既有
+加密 admission 不擴張；獨立音訊分析仍讀原 request。
+
+驗收使用原始 URL、原 headers、fresh HybridSmokePlayer `hybridAVKit` run，
+要求 `nativeAVPlayer`、startup progress、seek landing、post-seek progress
+及 terminal PASS，再於唯一授權的「書房電視」複驗。Direct `aetherEngine` baseline
+不套用此 Hybrid-owned fallback，應獨立記錄其真實結果。
 
 ```text
 一般 Hybrid 需求

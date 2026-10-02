@@ -43,6 +43,7 @@ public final class HybridPlaybackSession:
     private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
     private let sourceAdmission: HybridRemoteSourceAdmission
+    private var manifestFallbackServer: HybridHLSManifestServer?
     private var proxyTimeline: HybridHLSTimelineProxy {
         guard let proxyContext else {
             preconditionFailure("Proxy timeline requested by native AVPlayer route")
@@ -122,11 +123,31 @@ public final class HybridPlaybackSession:
             )
         sourceAdmission = admission
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
-        let plan = HybridPlaybackPlan.make(
+        let originalPlan = HybridPlaybackPlan.make(
             request: request,
             externalSubtitles: externalSubtitles,
             admission: admission
         )
+        let prepared: (plan: HybridPlaybackPlan, server: HybridHLSManifestServer?)
+        do {
+            prepared = try await originalPlan.prepareManifestFallback()
+        } catch is CancellationError {
+            engine.unbind(view: surface)
+            throw CancellationError()
+        } catch {
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_MANIFEST_FALLBACK session=\(diagnosticsID) event=failed"
+                    + " reason=preparation-failed"
+            )
+            engine.unbind(view: surface)
+            throw HybridPlaybackError.sourceLoadFailed(String(describing: error))
+        }
+        let plan = prepared.plan
+        manifestFallbackServer = prepared.server
+        var initialized = false
+        defer {
+            if !initialized { prepared.server?.stop() }
+        }
         HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_ADMISSION "
                 + "session=\(diagnosticsID) "
@@ -219,6 +240,7 @@ public final class HybridPlaybackSession:
             try await seek(to: initialPosition)
         }
         publishSnapshot()
+        initialized = true
     }
 
     public func attach(
@@ -629,12 +651,15 @@ public final class HybridPlaybackSession:
         proxyNavigationTasks.removeAll()
         detach()
         engine.stop()
+        manifestFallbackServer?.stop()
+        manifestFallbackServer = nil
         proxyContext?.player.pause()
         proxyContext?.timeline.stop()
         eventContinuation.finish()
     }
 
     deinit {
+        manifestFallbackServer?.stop()
         foregroundRecoveryTask?.cancel()
         proxyNavigationTasks.values.forEach { $0.cancel() }
         eventContinuation.finish()

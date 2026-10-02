@@ -162,7 +162,7 @@ public enum HybridIntroAudioExtractor {
                     httpHeaders: request.httpHeaders
                 )
             switch admission {
-            case .hlsVOD, .hlsVODPQOnlyMaster,
+            case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster,
                  .hlsVODHEVCMPEGTS:
                 let hlsRequest = HybridRemoteHLSAudioRequest(
                     url: request.url,

@@ -21,6 +21,7 @@ enum HybridRemoteSourceAdmission: Equatable {
     }
 
     case hlsVOD
+    case hlsVODRepairedManifest(HybridHLSManifestRepair)
     /// A single-variant finite HLS VOD whose master advertises only PQ video
     /// and owns no rendition, key, steering, or timeline contract. AVPlayer
     /// rejects the master on an SDR display route, while the validated media
@@ -40,7 +41,7 @@ enum HybridRemoteSourceAdmission: Equatable {
 
     var isConfirmedHLS: Bool {
         switch self {
-        case .hlsVOD, .hlsVODPQOnlyMaster,
+        case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster,
              .hlsVODHEVCMPEGTS, .hlsLive:
             true
         case .aetherDefault:
@@ -77,6 +78,11 @@ enum HybridRemoteSourceAdmission: Equatable {
         switch self {
         case .hlsVOD:
             return "result=hls-vod"
+        case .hlsVODRepairedManifest(let repair):
+            return "result=hls-vod-manifest-fallback reason=target-duration-too-small"
+                + " originalTargetDuration=\(repair.originalTargetDuration)"
+                + " correctedTargetDuration=\(repair.correctedTargetDuration)"
+                + " maximumSegmentDuration=\(repair.maximumSegmentDuration)"
         case .hlsVODPQOnlyMaster(_, let duration):
             return "result=hls-vod-pq-only-master duration="
                 + String(
@@ -143,12 +149,25 @@ enum HybridRemoteSourceAdmission: Equatable {
             guard !media.segments.isEmpty else {
                 return .aetherDefault(.invalidPlaylist)
             }
-            return await classifyMedia(
+            let mediaAdmission = await classifyMedia(
                 media,
                 responseURL: rootCandidate.responseURL,
                 httpHeaders: httpHeaders,
                 session: session
             )
+            try Task.checkCancellation()
+            // Repair only a direct finite native-HLS media playlist. A master
+            // must retain its variant and rendition graph, and HEVC remux keeps
+            // its existing source contract.
+            if case .hlsVOD = mediaAdmission,
+               let repair = try HybridHLSManifestRepair.make(
+                   text: rootCandidate.text,
+                   media: media,
+                   responseURL: rootCandidate.responseURL
+               ) {
+                return .hlsVODRepairedManifest(repair)
+            }
+            return mediaAdmission
 
         case .master(let master):
             guard let variant = master.variants.max(
@@ -468,11 +487,13 @@ struct HybridPlaybackPlan {
     enum SourceResolution: Equatable {
         case original
         case resolvedPQMediaPlaylist
+        case repairedVODManifest
     }
 
     let url: URL
     let options: LoadOptions
     let sourceResolution: SourceResolution
+    let manifestRepair: HybridHLSManifestRepair?
 
     static func make(
         request: HybridPlaybackRequest,
@@ -503,7 +524,36 @@ struct HybridPlaybackPlan {
         return Self(
             url: url,
             options: options,
-            sourceResolution: sourceResolution
+            sourceResolution: sourceResolution,
+            manifestRepair: {
+                if case .hlsVODRepairedManifest(let repair) = admission {
+                    return repair
+                }
+                return nil
+            }()
+        )
+    }
+
+    func prepareManifestFallback() async throws -> (
+        plan: Self, server: HybridHLSManifestServer?
+    ) {
+        try Task.checkCancellation()
+        guard let manifestRepair else { return (self, nil) }
+        let started = try await HybridHLSManifestServer.start(repair: manifestRepair)
+        do {
+            try Task.checkCancellation()
+        } catch {
+            started.server.stop()
+            throw error
+        }
+        return (
+            Self(
+                url: started.url,
+                options: options,
+                sourceResolution: .repairedVODManifest,
+                manifestRepair: nil
+            ),
+            started.server
         )
     }
 
@@ -515,6 +565,8 @@ struct HybridPlaybackPlan {
                     "original"
                 case .resolvedPQMediaPlaylist:
                     "resolved-pq-media-playlist"
+                case .repairedVODManifest:
+                    "repaired-vod-manifest"
                 }
             }()
             + " effectiveSourceID=" + Self.sourceID(url)
