@@ -128,14 +128,28 @@ V1 is tvOS-only. Pure-audio sessions and proxy-route PiP/AirPlay are explicit
 unsupported states. An analysis failure never changes playback route, audio
 selection, or playback state.
 
-Fingerprint v2 uses `HybridPlaybackSession.fingerprintAudio(request:)`.
-The request specifies a source-time range and deadline, without an audio-selection
-revision. Loopback VOD uses `SegmentCache`; native remote HLS and seekable
-sources use their explicit independent PCM providers. Each request captures its
-audio selection and returns timestamped PCM. Playback audio-selection changes
-do not invalidate the batch or terminate intro/outro analysis. Session stop,
-source replacement, and unavailable or incomplete media remain explicit failures.
-There is no implicit provider fallback.
+Fingerprint v2 uses `HybridPlaybackSession.fingerprintAudio(request:)` for
+bounded timestamped PCM. The request specifies front/back, source-time range and
+deadline. HEVC loopback VOD front uses `SegmentCache`; back uses the existing
+independent HLS provider. Other admissions retain their providers. Audio selection
+is captured for the request; playback audio changes do not invalidate an acquired
+batch. Session stop, source replacement, unavailable or incomplete material remain
+explicit failures.
+
+`fingerprintArtifact(request:label:onProgress:)` composes the existing PCM and
+file matcher entrypoints. Successful default acquisition uses
+`RepeatedSegmentFingerprint.compute(audioBatch:)`. Only source/coverage acquisition
+failures may invoke the explicitly user-authorized `HybridIntroAudioExtractor.extract(request:)`
+once, then `RepeatedSegmentFingerprint.compute(audioFileURL:)`. Invalid input,
+unsupported Live/DVR, unbound audio, lifecycle failure, cancellation and expired
+budget do not start extraction. Matching errors do not trigger another acquisition.
+The extractor retains its existing artifact gate and remux lifecycle, accepts the
+captured audible selection, uses the existing bounded HLS window and reports the
+actual first packet source time. Source admission may inspect the first segment;
+range extraction downloads only its window. The AAC file is temporary and removed
+by the caller. Other audio codecs fail explicitly; there is no new decoder, skip
+algorithm, Aether API or patch. Existing blocking-I/O timeouts and cooperative
+cancellation remain; returning a deadline error is not a new hard-interrupt guarantee.
 
 ## tvOS smoke player
 

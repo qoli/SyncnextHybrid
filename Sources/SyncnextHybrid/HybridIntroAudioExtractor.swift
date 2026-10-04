@@ -29,19 +29,22 @@ public struct HybridIntroAudioArtifact:
     public let packetCount: Int
     public let byteCount: Int64
     public let elapsedSeconds: Double
+    public let sourceStartSeconds: Double
 
     public init(
         url: URL,
         sourceDuration: Double,
         packetCount: Int,
         byteCount: Int64,
-        elapsedSeconds: Double
+        elapsedSeconds: Double,
+        sourceStartSeconds: Double = 0
     ) {
         self.url = url
         self.sourceDuration = sourceDuration
         self.packetCount = packetCount
         self.byteCount = byteCount
         self.elapsedSeconds = elapsedSeconds
+        self.sourceStartSeconds = sourceStartSeconds
     }
 }
 
@@ -57,6 +60,8 @@ public struct HybridIntroAudioExtractionRequest:
     public let httpHeaders: [String: String]
     public let sourceRange: Range<Double>
     public let outputURL: URL
+    public let audioSelection: HybridRemoteHLSAudioSelection?
+    public let selectedTrack: TrackInfo?
 
     public var maximumDuration: Double {
         sourceRange.upperBound - sourceRange.lowerBound
@@ -66,24 +71,32 @@ public struct HybridIntroAudioExtractionRequest:
         url: URL,
         httpHeaders: [String: String] = [:],
         maximumDuration: Double = 180,
-        outputURL: URL
+        outputURL: URL,
+        audioSelection: HybridRemoteHLSAudioSelection? = nil,
+        selectedTrack: TrackInfo? = nil
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
         self.sourceRange = 0..<maximumDuration
         self.outputURL = outputURL
+        self.audioSelection = audioSelection
+        self.selectedTrack = selectedTrack
     }
 
     public init(
         url: URL,
         httpHeaders: [String: String] = [:],
         sourceRange: Range<Double>,
-        outputURL: URL
+        outputURL: URL,
+        audioSelection: HybridRemoteHLSAudioSelection? = nil,
+        selectedTrack: TrackInfo? = nil
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
         self.sourceRange = sourceRange
         self.outputURL = outputURL
+        self.audioSelection = audioSelection
+        self.selectedTrack = selectedTrack
     }
 }
 
@@ -167,7 +180,7 @@ public enum HybridIntroAudioExtractor {
                 let hlsRequest = HybridRemoteHLSAudioRequest(
                     url: request.url,
                     httpHeaders: request.httpHeaders,
-                    selection: HybridRemoteHLSAudioSelection(
+                    selection: request.audioSelection ?? HybridRemoteHLSAudioSelection(
                         displayName: nil,
                         language: nil,
                         optionOrdinal: nil
@@ -176,7 +189,8 @@ public enum HybridIntroAudioExtractor {
                 let prepared = try await
                     HybridHLSVODAudioSource.prepare(
                         request: hlsRequest,
-                        range: request.sourceRange
+                        range: request.sourceRange,
+                        scope: .boundedRange
                     )
                 preparedHLSCursor = prepared
                 try Task.checkCancellation()
@@ -199,8 +213,20 @@ public enum HybridIntroAudioExtractor {
         }
 
         let tracks = demuxer.audioTrackInfos()
-        guard let selected = tracks.first(where: \.isDefault)
-                ?? tracks.first,
+        let selected: TrackInfo?
+        if let preparedHLSCursor, request.audioSelection != nil {
+            selected = try? HybridHLSVODAudioSource.resolveSelectedTrack(
+                from: tracks, prepared: preparedHLSCursor
+            )
+        } else if let expected = request.selectedTrack {
+            selected = tracks.first {
+                $0.id == expected.id && $0.codec == expected.codec
+                    && $0.language == expected.language && $0.channels == expected.channels
+            }
+        } else {
+            selected = tracks.first(where: \.isDefault) ?? tracks.first
+        }
+        guard let selected,
               let inputStream = demuxer.stream(
                 at: Int32(selected.id)
               ) else {
@@ -211,6 +237,7 @@ public enum HybridIntroAudioExtractor {
                 .unsupportedAudioCodec(selected.codec)
         }
         let timelineOrigin = demuxer.formatStartTimeSeconds
+        let timelineOffset = preparedHLSCursor?.timelineOffset ?? 0
         if request.sourceRange.lowerBound > 0,
            preparedHLSCursor == nil,
            !demuxer.seek(
@@ -274,6 +301,8 @@ public enum HybridIntroAudioExtractor {
 
         let inputTimeBase = inputStream.pointee.time_base
         var firstTimestamp: Int64?
+        var sourceStartSeconds: Double?
+        var previousPacketEnd: Double?
         var sourceDuration = 0.0
         var packetCount = 0
 
@@ -299,21 +328,26 @@ public enum HybridIntroAudioExtractor {
             let timestamp = packet.pointee.pts != Int64.min
                 ? packet.pointee.pts
                 : packet.pointee.dts
-            if timestamp != Int64.min {
-                if firstTimestamp == nil {
-                    firstTimestamp = timestamp
-                }
-                if let firstTimestamp {
-                    let endTimestamp =
-                        timestamp - firstTimestamp
-                            + max(packet.pointee.duration, 0)
-                    sourceDuration = Double(endTimestamp)
-                        * Double(inputTimeBase.num)
-                        / Double(inputTimeBase.den)
-                    if sourceDuration > maximumDuration + 0.001 {
-                        break
-                    }
-                }
+            guard timestamp != Int64.min else {
+                throw HybridIntroAudioExtractionError.packetReadFailed
+            }
+            let scale = Double(inputTimeBase.num) / Double(inputTimeBase.den)
+            let sourceTime = Double(timestamp) * scale - timelineOrigin + timelineOffset
+            let packetEnd = sourceTime + Double(max(packet.pointee.duration, 0)) * scale
+            if packetEnd <= request.sourceRange.lowerBound { continue }
+            if sourceTime >= request.sourceRange.upperBound { break }
+            if let previousPacketEnd,
+               abs(sourceTime - previousPacketEnd) > max(scale, 1 / Double(max(inputStream.pointee.codecpar.pointee.sample_rate, 1))) {
+                throw HybridIntroAudioExtractionError.packetReadFailed
+            }
+            previousPacketEnd = packetEnd
+            if firstTimestamp == nil {
+                sourceStartSeconds = sourceTime
+                firstTimestamp = timestamp
+            }
+            if let firstTimestamp {
+                let endTimestamp = timestamp - firstTimestamp + max(packet.pointee.duration, 0)
+                sourceDuration = Double(endTimestamp) * scale
             }
 
             av_packet_rescale_ts(
@@ -351,11 +385,12 @@ public enum HybridIntroAudioExtractor {
         }
         return HybridIntroAudioArtifact(
             url: outputURL,
-            sourceDuration: min(sourceDuration, maximumDuration),
+            sourceDuration: sourceDuration,
             packetCount: packetCount,
             byteCount: byteCount,
             elapsedSeconds:
-                ProcessInfo.processInfo.systemUptime - startedAt
+                ProcessInfo.processInfo.systemUptime - startedAt,
+            sourceStartSeconds: sourceStartSeconds ?? request.sourceRange.lowerBound
         )
     }
 }

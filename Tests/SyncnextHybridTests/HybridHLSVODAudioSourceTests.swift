@@ -1,4 +1,5 @@
 import AetherEngine
+import AVFAudio
 import AetherLibavcodec
 import Foundation
 import XCTest
@@ -103,6 +104,111 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
             )
         }
     }
+
+    func testHEVCBackDoesNotUsePlaybackCache() throws {
+        let admission = HybridRemoteSourceAdmission.hlsVODHEVCMPEGTS(
+            duration: 2_700, evidence: .standardStreamType(0x24)
+        )
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .front), .segmentCache)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .back), .independentRemoteHLS)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: .hlsVOD, region: .back), .independentRemoteHLS)
+    }
+
+    func testOnlyMaterialFailuresPermitExtractorFallback() {
+        for error: HybridFingerprintAudioError in [.sourceUnavailable, .discontinuousRange, .incompleteRange] {
+            XCTAssertTrue(error.canUseIntroAudioExtraction)
+        }
+        for error: HybridFingerprintAudioError in [.invalidRange, .invalidDeadline, .deadlineExceeded,
+                .liveOrDVRUnsupported, .audioTrackUnavailable, .sessionChanged, .sessionStopped] {
+            XCTAssertFalse(error.canUseIntroAudioExtraction)
+        }
+    }
+
+    #if os(macOS)
+    func testExtractorNonzeroHLSRangeDoesNotDownloadPrefix() async throws {
+        let server = try HLSExtractorTestServer()
+        defer { server.stop() }
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aac")
+        defer {
+            if FileManager.default.fileExists(atPath: output.path) {
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
+        let artifact = try await HybridIntroAudioExtractor.extract(
+            request: HybridIntroAudioExtractionRequest(
+                url: server.url,
+                httpHeaders: ["X-Hybrid-Fixture": "allowed"],
+                sourceRange: 2.5..<6, outputURL: output
+            )
+        )
+        XCTAssertGreaterThan(artifact.packetCount, 0)
+        XCTAssertEqual(artifact.sourceStartSeconds, 2.5, accuracy: 0.05)
+        XCTAssertEqual(artifact.sourceStartSeconds + artifact.sourceDuration, 6, accuracy: 0.25)
+        let paths = server.paths
+        // Source admission may inspect the first TS once; range extraction must not fetch it again.
+        XCTAssertLessThanOrEqual(paths.filter { $0 == "hevc-00.ts" }.count, 1)
+        XCTAssertFalse(paths.contains("hevc-01.ts"))
+        XCTAssertTrue(paths.contains("hevc-05.ts"))
+    }
+
+    func testDefaultHEVCTailPCMOnlyDownloadsItsBoundedWindow() async throws {
+        let server = try HLSExtractorTestServer()
+        defer { server.stop() }
+        let batch = try await HybridIndependentFingerprintAudio.decode(
+            source: .remoteHLS(HybridRemoteHLSAudioRequest(
+                url: server.url, httpHeaders: ["X-Hybrid-Fixture": "allowed"],
+                selection: HybridRemoteHLSAudioSelection(displayName: nil, language: "zho", optionOrdinal: 1)
+            )),
+            range: 2.5..<6
+        )
+        XCTAssertEqual(batch.provider, .independentRemoteHLS)
+        let first = try XCTUnwrap(batch.buffers.first)
+        let last = try XCTUnwrap(batch.buffers.last)
+        XCTAssertEqual(first.sourceTime, 2.5, accuracy: 0.05)
+        XCTAssertEqual(last.sourceTime + Double(last.buffer.frameLength) / last.buffer.format.sampleRate, 6, accuracy: 0.25)
+        XCTAssertFalse(server.paths.contains("hevc-00.ts"))
+        XCTAssertFalse(server.paths.contains("hevc-01.ts"))
+        XCTAssertTrue(server.paths.contains("hevc-05.ts"))
+        XCTAssertFalse(server.paths.contains("hevc-06.ts"))
+        XCTAssertFalse(try RepeatedSegmentFingerprint.compute(audioBatch: batch, label: "tail").fingerprints.isEmpty)
+    }
+
+    func testExtractorSelectedAudioAndExistingFileMatcherForFrontAndBack() async throws {
+        let server = try HLSExtractorTestServer()
+        defer { server.stop() }
+        for range in [0.0..<2.0, 2.5..<6.0] {
+            let output = server.directory.appendingPathComponent(UUID().uuidString + ".aac")
+            let audio = try await HybridIntroAudioExtractor.extract(
+                request: HybridIntroAudioExtractionRequest(
+                    url: server.url, httpHeaders: ["X-Hybrid-Fixture": "allowed"],
+                    sourceRange: range, outputURL: output,
+                    audioSelection: HybridRemoteHLSAudioSelection(
+                        displayName: nil, language: "zho", optionOrdinal: 1
+                    )
+                )
+            )
+            XCTAssertEqual(audio.sourceStartSeconds, range.lowerBound, accuracy: 0.05)
+            let artifact = try RepeatedSegmentFingerprint.compute(
+                audioFileURL: audio.url, label: "fixture", sourceStartSeconds: audio.sourceStartSeconds
+            )
+            XCTAssertEqual(artifact.sourceStartSeconds, audio.sourceStartSeconds)
+            XCTAssertFalse(artifact.fingerprints.isEmpty)
+            let file = try AVAudioFile(forReading: audio.url)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)
+            ))
+            try file.read(into: buffer)
+            let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+            var crossings = 0
+            for index in 1..<Int(buffer.frameLength) {
+                if (channel[index - 1] < 0) != (channel[index] < 0) { crossings += 1 }
+            }
+            let frequency = Double(crossings) / (Double(buffer.frameLength) / buffer.format.sampleRate) / 2
+            XCTAssertEqual(frequency, 880, accuracy: 30)
+        }
+    }
+
+    #endif
 
     func testDedicatedHLSVODRenditionBuildsIndependentFFmpegCursor()
         async throws
@@ -473,10 +579,66 @@ private final class HybridHLSFixtureURLProtocol:
               let url = Bundle.module.url(
                 forResource: String(parts[0]),
                 withExtension: String(parts[1]),
-                subdirectory: "Fixtures/hls-vod"
+                subdirectory: name.hasPrefix("hevc") ? "Fixtures/hevc-hls" : "Fixtures/hls-vod"
               ) else {
             return nil
         }
         return try? Data(contentsOf: url)
     }
 }
+
+#if os(macOS)
+private final class HLSExtractorTestServer {
+    let process = Process()
+    let directory: URL
+    let url: URL
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fixtures = try XCTUnwrap(Bundle.module.url(
+            forResource: "hevc", withExtension: "m3u8", subdirectory: "Fixtures/hevc-hls"
+        )).deletingLastPathComponent()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", "-u", "-c", """
+        import sys, pathlib
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        class Handler(SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=sys.argv[1], **kwargs)
+            def do_GET(self):
+                with open(sys.argv[2], 'a') as log:
+                    log.write(self.path.rsplit('/', 1)[-1] + '\\n')
+                if self.headers.get('X-Hybrid-Fixture') != 'allowed':
+                    self.send_error(403)
+                    return
+                super().do_GET()
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        print(server.server_port, flush=True)
+        server.serve_forever()
+        """, fixtures.path, directory.appendingPathComponent("requests.txt").path]
+        process.standardOutput = output
+        try process.run()
+        var bytes = Data()
+        while let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty {
+            if byte == Data([10]) { break }
+            bytes.append(byte)
+        }
+        let port = try XCTUnwrap(String(data: bytes, encoding: .utf8).flatMap(Int.init))
+        url = URL(string: "http://127.0.0.1:\(port)/hevc.m3u8")!
+    }
+
+    var paths: [String] {
+        ((try? String(contentsOf: directory.appendingPathComponent("requests.txt"), encoding: .utf8)) ?? "")
+            .split(separator: "\n").map(String.init)
+    }
+
+    func stop() {
+        if process.isRunning { process.terminate(); process.waitUntilExit() }
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+#endif

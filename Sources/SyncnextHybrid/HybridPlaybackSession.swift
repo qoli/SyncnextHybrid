@@ -520,6 +520,7 @@ public final class HybridPlaybackSession:
     /// invalidate an in-flight fingerprint batch.
     public func fingerprintAudio(
         request fingerprintRequest: HybridFingerprintAudioRequest,
+        audioSelection: HybridRemoteHLSAudioSelection? = nil,
         onProgress: HybridFingerprintAudioProgressHandler? = nil
     ) async throws -> HybridFingerprintAudioBatch {
         guard !stopped else {
@@ -531,7 +532,7 @@ public final class HybridPlaybackSession:
             throw HybridFingerprintAudioError.invalidDeadline
         }
         let provider = try HybridFingerprintAudioProviderResolver.resolve(
-            admission: sourceAdmission
+            admission: sourceAdmission, region: fingerprintRequest.region
         )
         HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_FINGERPRINT_PROVIDER "
@@ -564,7 +565,12 @@ public final class HybridPlaybackSession:
                     decodeSeconds: cached.decodeSeconds
                 )
             case .independentRemoteHLS:
-                let selection = try await nativeHLSAudioSelection()
+                let selection: HybridRemoteHLSAudioSelection
+                if let audioSelection {
+                    selection = audioSelection
+                } else {
+                    selection = try await nativeHLSAudioSelection()
+                }
                 let source = HybridIndependentFingerprintAudioSource.remoteHLS(
                     HybridRemoteHLSAudioRequest(
                         url: request.url,
@@ -599,6 +605,7 @@ public final class HybridPlaybackSession:
                 }.value
             }
         } catch let error as AetherFingerprintAudioError {
+            HybridDiagnosticEmitter.emit("SYNCNEXT_HYBRID_FINGERPRINT_CACHE event=failed error=\(error)")
             switch error {
             case .invalidRange:
                 throw HybridFingerprintAudioError.invalidRange
@@ -621,6 +628,92 @@ public final class HybridPlaybackSession:
         }
 
         return batch
+    }
+
+    /// Uses the existing PCM/file fingerprint entrypoints. Only a material
+    /// acquisition failure activates the explicitly authorized extractor fallback.
+    public func fingerprintArtifact(
+        request fingerprintRequest: HybridFingerprintAudioRequest,
+        label: String,
+        onProgress: HybridFingerprintAudioProgressHandler? = nil
+    ) async throws -> RepeatedSegmentFingerprintArtifact {
+        guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
+        guard fingerprintRequest.deadlineSeconds.isFinite, fingerprintRequest.deadlineSeconds > 0 else {
+            throw HybridFingerprintAudioError.invalidDeadline
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + fingerprintRequest.deadlineSeconds
+        _ = try HybridFingerprintAudioProviderResolver.resolve(
+            admission: sourceAdmission, region: fingerprintRequest.region
+        )
+        let selectedTrack = engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }
+        let selection = sourceAdmission.isConfirmedHLS ? try await nativeHLSAudioSelection() : nil
+        let batch: HybridFingerprintAudioBatch
+        do {
+            try Task.checkCancellation()
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { throw HybridFingerprintAudioError.deadlineExceeded }
+            batch = try await fingerprintAudio(
+                request: HybridFingerprintAudioRequest(
+                    sourceRange: fingerprintRequest.sourceRange,
+                    deadlineSeconds: remaining, region: fingerprintRequest.region
+                ),
+                audioSelection: selection, onProgress: onProgress
+            )
+        } catch let error as HybridFingerprintAudioError where error.canUseIntroAudioExtraction {
+            try Task.checkCancellation()
+            guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw HybridFingerprintAudioError.deadlineExceeded
+            }
+            let extraction = HybridIntroAudioExtractionRequest(
+                url: request.url, httpHeaders: request.httpHeaders,
+                sourceRange: fingerprintRequest.sourceRange,
+                outputURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aac"),
+                audioSelection: selection, selectedTrack: selectedTrack
+            )
+            HybridDiagnosticEmitter.emit("SYNCNEXT_HYBRID_FINGERPRINT_FALLBACK event=started primaryError=\(error)")
+            do {
+                let artifact = try await Task.detached(priority: .utility) {
+                    defer {
+                        if FileManager.default.fileExists(atPath: extraction.outputURL.path) {
+                            try? FileManager.default.removeItem(at: extraction.outputURL)
+                        }
+                    }
+                    let audio = try await HybridIntroAudioExtractor.extract(request: extraction)
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        throw HybridFingerprintAudioError.deadlineExceeded
+                    }
+                    let range = extraction.sourceRange
+                    // Same leading/trailing coverage tolerances as the PCM provider.
+                    guard audio.sourceStartSeconds <= range.lowerBound + 0.05,
+                          audio.sourceStartSeconds + audio.sourceDuration >= range.upperBound - 0.25 else {
+                        throw HybridFingerprintAudioError.incompleteRange
+                    }
+                    return try RepeatedSegmentFingerprint.compute(
+                        audioFileURL: audio.url, label: label, sourceStartSeconds: audio.sourceStartSeconds
+                    )
+                }.value
+                try Task.checkCancellation()
+                guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
+                HybridDiagnosticEmitter.emit("SYNCNEXT_HYBRID_FINGERPRINT_FALLBACK event=completed")
+                return artifact
+            } catch {
+                HybridDiagnosticEmitter.emit("SYNCNEXT_HYBRID_FINGERPRINT_FALLBACK event=failed error=\(error)")
+                throw error
+            }
+        }
+        try Task.checkCancellation()
+        guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
+        guard ProcessInfo.processInfo.systemUptime < deadline else {
+            throw HybridFingerprintAudioError.deadlineExceeded
+        }
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_PCM provider=\(batch.provider.rawValue) segments=\(batch.segmentCount) "
+                + "preparationSeconds=\(batch.preparationSeconds) cacheWaitSeconds=\(batch.cacheWaitSeconds) decodeSeconds=\(batch.decodeSeconds)"
+        )
+        return try await Task.detached(priority: .utility) {
+            try RepeatedSegmentFingerprint.compute(audioBatch: batch, label: label)
+        }.value
     }
 
     public func selectSubtitleTrack(id: Int?) {
@@ -1387,6 +1480,15 @@ public final class HybridPlaybackSession:
     }
 
     private func nativeHLSAudioSelection() async throws -> HybridRemoteHLSAudioSelection {
+        if sourceAdmission.requiresAetherHLSVODRemux {
+            guard let ordinal = engine.audioTracks.firstIndex(where: { $0.id == engine.activeAudioTrackIndex }) else {
+                throw HybridFingerprintAudioError.audioTrackUnavailable
+            }
+            let track = engine.audioTracks[ordinal]
+            return HybridRemoteHLSAudioSelection(
+                displayName: track.name, language: track.language, optionOrdinal: ordinal
+            )
+        }
         guard let item = engine.currentAVPlayer?.currentItem else {
             throw HybridFingerprintAudioError.sourceUnavailable
         }

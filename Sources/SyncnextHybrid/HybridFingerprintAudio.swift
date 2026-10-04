@@ -1,18 +1,26 @@
 import AVFAudio
 import Foundation
 
+public enum HybridFingerprintAudioRegion: Sendable, Equatable {
+    case front
+    case back
+}
+
 public struct HybridFingerprintAudioRequest: Sendable, Equatable {
     public static let defaultDeadlineSeconds = 240.0
 
     public let sourceRange: Range<Double>
     public let deadlineSeconds: Double
+    public let region: HybridFingerprintAudioRegion
 
     public init(
         sourceRange: Range<Double>,
-        deadlineSeconds: Double = Self.defaultDeadlineSeconds
+        deadlineSeconds: Double = Self.defaultDeadlineSeconds,
+        region: HybridFingerprintAudioRegion = .front
     ) {
         self.sourceRange = sourceRange
         self.deadlineSeconds = deadlineSeconds
+        self.region = region
     }
 }
 
@@ -66,17 +74,28 @@ public enum HybridFingerprintAudioError: Error, Sendable, Equatable {
     case incompleteRange
     case sessionChanged
     case sessionStopped
+
+    /// Only material acquisition failures may use the caller-authorized extractor.
+    public var canUseIntroAudioExtraction: Bool {
+        switch self {
+        case .sourceUnavailable, .discontinuousRange, .incompleteRange:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum HybridFingerprintAudioProviderResolver {
     static func resolve(
-        admission: HybridRemoteSourceAdmission
+        admission: HybridRemoteSourceAdmission,
+        region: HybridFingerprintAudioRegion = .front
     ) throws -> HybridFingerprintAudioProvider {
         switch admission {
         case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster:
             return .independentRemoteHLS
         case .hlsVODHEVCMPEGTS:
-            return .segmentCache
+            return region == .front ? .segmentCache : .independentRemoteHLS
         case .hlsLive:
             throw HybridFingerprintAudioError.liveOrDVRUnsupported
         case .aetherDefault:
