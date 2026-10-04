@@ -113,20 +113,14 @@ for the authority boundaries, seek event ordering, thumbnail suppression,
 known-invalid approaches, observability contract, and physical-device
 acceptance procedure.
 
-`HybridAudioAnalysisStream` opens a separate FFmpeg cursor for the audible
-selection captured when the request is made. It never reads the playback
-demuxer or a playback tap. Output is mono, non-interleaved Float32 PCM at
-48 kHz with a zero-based source sample position and explicit discontinuity.
-Only one stream and one consumer are admitted per playback session.
+Bounded fingerprint PCM is mono, non-interleaved Float32 at 48 kHz.
+Seekable HLS VOD is prepared as a bounded cursor for the requested range,
+with original headers and the captured audible selection. Live/DVR and
+unsupported encrypted sources fail explicitly.
 
-Seekable HLS VOD is prepared as a bounded local cursor for the requested
-range. The original headers and current native HLS audible selection are
-preserved; Live/DVR playlists fail explicitly. V1 does not analyze protected,
-SAMPLE-AES, or other encrypted HLS.
-
-V1 is tvOS-only. Pure-audio sessions and proxy-route PiP/AirPlay are explicit
-unsupported states. An analysis failure never changes playback route, audio
-selection, or playback state.
+Hybrid playback is tvOS-only. Pure-audio sessions and proxy-route PiP/AirPlay
+are explicit unsupported states. Analysis failures never change playback route,
+audio selection or playback state.
 
 Fingerprint v2 uses `HybridPlaybackSession.fingerprintAudio(request:)` for
 bounded timestamped PCM. The request specifies front/back, source-time range and

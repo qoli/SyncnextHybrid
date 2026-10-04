@@ -181,7 +181,6 @@ public struct HybridHLSProxyServerObservation: Sendable, Equatable {
 public enum HybridPlaybackEvent: Sendable, Equatable {
     case snapshot(HybridPlaybackSnapshot)
     case playerBindingChanged(HybridPlaybackRoute)
-    case audioAnalysisUnavailable(HybridAudioAnalysisError)
 }
 
 public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {

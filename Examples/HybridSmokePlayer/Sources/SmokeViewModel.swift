@@ -1717,14 +1717,6 @@ final class SmokeViewModel: ObservableObject {
                                 : "mismatched",
                         ]
                     )
-                case .audioAnalysisUnavailable(let error):
-                    emitter.emit(
-                        "audio_analysis_unavailable",
-                        metrics: [
-                            "message":
-                                error.localizedDescription,
-                        ]
-                    )
                 }
             }
         }
