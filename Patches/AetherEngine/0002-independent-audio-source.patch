@@ -1,8 +1,8 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index d645a114..b479fb3b 100644
+index fde9b153..03023635 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -227,7 +227,9 @@ public final class Demuxer: @unchecked Sendable {
+@@ -366,7 +366,9 @@ public final class Demuxer: @unchecked Sendable {
      var avioBytesFetched: Int64 { avioProvider?.cumulativeBytesFetched ?? 0 }
  
      // Forward-only custom sources report false.
@@ -13,7 +13,7 @@ index d645a114..b479fb3b 100644
  
      /// True when libavformat opened the source itself, which it does only for a local path
      /// (`openLocal`). Every network, disc and custom source is read through an `AVIOProvider`.
-@@ -397,6 +399,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -655,6 +657,11 @@ public final class Demuxer: @unchecked Sendable {
          }
      }
  
@@ -25,7 +25,7 @@ index d645a114..b479fb3b 100644
      // MARK: - Open Strategies
  
      private func openLocal(url: URL) throws {
-@@ -443,6 +450,11 @@ public final class Demuxer: @unchecked Sendable {
+@@ -707,6 +714,11 @@ public final class Demuxer: @unchecked Sendable {
          try openWithProvider(bridge, inputFormat: inputFormat, isLive: isLive)
      }
  
@@ -37,7 +37,7 @@ index d645a114..b479fb3b 100644
      /// A remote disc image (ISO 9660 / UDF / BDMV) by URL extension. Gates the HTTP disc-adapter
      /// path so a normal media URL keeps the optimized streaming AVIOReader open with no probe cost.
      static func isDiscImageURL(_ url: URL) -> Bool {
-@@ -820,6 +832,13 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1235,6 +1247,13 @@ public final class Demuxer: @unchecked Sendable {
          return ctx.pointee.start_time
      }
  
@@ -51,25 +51,25 @@ index d645a114..b479fb3b 100644
      /// Index of the best video stream, or -1.
      /// Clamped: av_find_best_stream returns AVERROR_STREAM_NOT_FOUND (-1381258232)
      /// on failure, not -1; normalize to -1 to avoid garbage in logs.
-@@ -860,7 +879,7 @@ public final class Demuxer: @unchecked Sendable {
-         return -1
+@@ -1266,7 +1285,7 @@ public final class Demuxer: @unchecked Sendable {
+         answeredFromStreams(\.firstAudioStreamIndexByType) { Self.firstAudioStreamIndexByType($0) }
      }
  
 -    func audioTrackInfos() -> [TrackInfo] {
 +    public func audioTrackInfos() -> [TrackInfo] {
-         guard let ctx = formatContext else { return [] }
-         var tracks: [TrackInfo] = []
-         for i in 0..<Int(ctx.pointee.nb_streams) {
-@@ -1183,7 +1202,7 @@ public final class Demuxer: @unchecked Sendable {
-         return 0
+         answeredFromStreams(\.audioTracks) { trackInfos(in: $0, ofType: AVMEDIA_TYPE_AUDIO) }
      }
  
--    func stream(at index: Int32) -> UnsafeMutablePointer<AVStream>? {
-+    public func stream(at index: Int32) -> UnsafeMutablePointer<AVStream>? {
-         guard let ctx = formatContext, index >= 0, index < ctx.pointee.nb_streams else {
-             return nil
-         }
-@@ -1197,7 +1216,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1736,7 +1755,7 @@ public final class Demuxer: @unchecked Sendable {
+     /// here is counted, `close()` waits for the count to drain before it frees anything, and once
+     /// `close()` has started no new caller gets a stream. Never waits on `accessLock`, so it cannot
+     /// wait out a network read either. `body` must be short and must not call back into the demuxer.
+-    func withStream<T>(at index: Int32, _ body: (UnsafeMutablePointer<AVStream>) -> T) -> T? {
++    public func withStream<T>(at index: Int32, _ body: (UnsafeMutablePointer<AVStream>) -> T) -> T? {
+         guard index >= 0 else { return nil }
+         streamTableLock.lock()
+         guard Int(index) < streamTable.count else {
+@@ -1762,7 +1781,7 @@ public final class Demuxer: @unchecked Sendable {
      /// `pacing`, when >= 0 and not already in `keep`, is delivered at `AVDISCARD_NONKEY` instead of
      /// being dropped: keyframes only, enough to give a side reader a read-position control point
      /// between sparse target packets (#230). -1 keeps the original all-or-nothing behavior.
@@ -78,7 +78,7 @@ index d645a114..b479fb3b 100644
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return }
-@@ -1249,7 +1268,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1813,7 +1832,7 @@ public final class Demuxer: @unchecked Sendable {
          return result
      }
  
@@ -86,8 +86,8 @@ index d645a114..b479fb3b 100644
 +    public func readPacket(isCurrent: @Sendable () -> Bool = { true }) throws -> UnsafeMutablePointer<AVPacket>? {
          accessLock.lock()
          defer { accessLock.unlock() }
-         while true {
-@@ -1434,7 +1453,7 @@ public final class Demuxer: @unchecked Sendable {
+         if !peekedPackets.isEmpty {
+@@ -2142,7 +2161,7 @@ public final class Demuxer: @unchecked Sendable {
      /// from regardless, so the result is discardable; a caller that would otherwise read the wrong
      /// region on a forward-only source (AE#366's prime hunt) has to be able to ask.
      @discardableResult
@@ -95,13 +95,13 @@ index d645a114..b479fb3b 100644
 +    public func seek(to seconds: Double) -> Bool {
          accessLock.lock()
          defer { accessLock.unlock() }
-         guard let ctx = formatContext else { return false }
-@@ -1885,7 +1904,7 @@ public final class Demuxer: @unchecked Sendable {
-         avioProvider?.markClosed()
+         guard let ctx = formatContext,
+@@ -2666,7 +2685,7 @@ public final class Demuxer: @unchecked Sendable {
+         return (avioProvider?.readByteBudgetExhausted ?? false) || interrupt.inputCeilingHit
      }
  
 -    func close() {
 +    public func close() {
+         interrupt.requestClose()
          avioProvider?.markClosed()  // unblocks av_read_frame (tvOS suspends threads in background)
          accessLock.lock()
-         if formatContext != nil {

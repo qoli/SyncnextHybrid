@@ -5,8 +5,8 @@ import PackageDescription
 let package = Package(
     name: "SyncnextHybrid",
     platforms: [
-        .tvOS(.v17),
-        .macOS(.v14),
+        .tvOS(.v18),
+        .macOS(.v15),
     ],
     products: [
         .library(

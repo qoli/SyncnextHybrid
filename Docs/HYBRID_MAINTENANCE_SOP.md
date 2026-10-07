@@ -47,13 +47,7 @@ Syncnext-specific 行為，都必須實作在：
 2. `0002-independent-audio-source.patch`
    - 暴露獨立音訊 reader 所需的最小 source、timeline 與 selected-track
      interface。
-3. `0003-hevc-mpegts-hls-vod-remux-workaround.patch`
-   - 臨時修補 AetherEngine #246：僅在 Hybrid 已確認為有限 HEVC
-     MPEG-TS HLS 且明確設定 `nativeRemoteHLS=false` 時，提供可按時間 seek
-     的 TS ingest，再沿 AetherEngine fMP4 remux 路徑播放。
-   - 此項是可拋棄的下游 workaround；移除條件與驗收證據記錄於
-     `Docs/Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md`。
-4. `0004-cache-backed-fingerprint-audio.patch`
+3. `0004-cache-backed-fingerprint-audio.patch`
    - 為 fingerprint v2 暴露最小、有限、可取消的 loopback VOD cache PCM
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
    - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
@@ -67,6 +61,11 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - AVKit proxy 行為；
 - 日誌、telemetry 或 diagnostics forwarding；
 - 與獨立音訊 reader 無關的 access-level 擴張。
+
+原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已於 AetherEngine 6.4.2
+由上游正式能力取代並移除；歷史退出證據仍保留於
+`Docs/Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md`，不得把它重新加入
+現行 `series`。
 
 ## 3. 新需求的上游侵入 Gate
 

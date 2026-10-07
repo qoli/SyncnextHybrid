@@ -251,13 +251,13 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
                 prepared: prepared
         )
         XCTAssertEqual(selected.codec, "aac")
-        let stream = try XCTUnwrap(
-            demuxer.stream(at: Int32(selected.id))
-        )
         demuxer.discardAllStreamsExcept([Int32(selected.id)])
 
         let decoder = HybridFFmpegAudioDecoder()
-        try decoder.open(stream: stream)
+        try decoder.open(
+            demuxer: demuxer,
+            streamIndex: Int32(selected.id)
+        )
         defer { decoder.close() }
         var decoded = [HybridDecodedAudioChunk]()
         while decoded.isEmpty, let packet = try demuxer.readPacket() {

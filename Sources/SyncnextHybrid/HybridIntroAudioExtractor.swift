@@ -226,10 +226,7 @@ public enum HybridIntroAudioExtractor {
         } else {
             selected = tracks.first(where: \.isDefault) ?? tracks.first
         }
-        guard let selected,
-              let inputStream = demuxer.stream(
-                at: Int32(selected.id)
-              ) else {
+        guard let selected else {
             throw HybridIntroAudioExtractionError.noAudioStream
         }
         guard selected.codec == "aac" else {
@@ -275,17 +272,29 @@ public enum HybridIntroAudioExtractor {
             avformat_free_context(outputContext)
         }
 
-        guard let outputStream = avformat_new_stream(
-            outputContext,
-            nil
-        ), avcodec_parameters_copy(
-            outputStream.pointee.codecpar,
-            inputStream.pointee.codecpar
-        ) >= 0 else {
+        guard let outputStream = avformat_new_stream(outputContext, nil) else {
             throw HybridIntroAudioExtractionError.outputPreparationFailed
         }
-        outputStream.pointee.codecpar.pointee.codec_tag = 0
-        outputStream.pointee.time_base = inputStream.pointee.time_base
+        var inputTimeBase = AVRational(num: 0, den: 1)
+        var inputSampleRate: Int32 = 0
+        let copiedStream = demuxer.withStream(
+            at: Int32(selected.id)
+        ) { inputStream -> Bool in
+            guard avcodec_parameters_copy(
+                outputStream.pointee.codecpar,
+                inputStream.pointee.codecpar
+            ) >= 0 else {
+                return false
+            }
+            inputTimeBase = inputStream.pointee.time_base
+            inputSampleRate = inputStream.pointee.codecpar.pointee.sample_rate
+            outputStream.pointee.codecpar.pointee.codec_tag = 0
+            outputStream.pointee.time_base = inputTimeBase
+            return true
+        }
+        guard copiedStream == true else {
+            throw HybridIntroAudioExtractionError.outputPreparationFailed
+        }
 
         guard avio_open(
             &outputContext.pointee.pb,
@@ -299,7 +308,6 @@ public enum HybridIntroAudioExtractor {
             throw HybridIntroAudioExtractionError.outputPreparationFailed
         }
 
-        let inputTimeBase = inputStream.pointee.time_base
         var firstTimestamp: Int64?
         var sourceStartSeconds: Double?
         var previousPacketEnd: Double?
@@ -337,7 +345,10 @@ public enum HybridIntroAudioExtractor {
             if packetEnd <= request.sourceRange.lowerBound { continue }
             if sourceTime >= request.sourceRange.upperBound { break }
             if let previousPacketEnd,
-               abs(sourceTime - previousPacketEnd) > max(scale, 1 / Double(max(inputStream.pointee.codecpar.pointee.sample_rate, 1))) {
+               abs(sourceTime - previousPacketEnd) > max(
+                scale,
+                1 / Double(max(inputSampleRate, 1))
+               ) {
                 throw HybridIntroAudioExtractionError.packetReadFailed
             }
             previousPacketEnd = packetEnd

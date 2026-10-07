@@ -126,9 +126,6 @@ enum HybridIndependentFingerprintAudio {
             )
         }
 
-        guard let stream = demuxer.stream(at: Int32(selected.id)) else {
-            throw HybridFingerprintAudioError.audioTrackUnavailable
-        }
         let timelineOrigin = demuxer.formatStartTimeSeconds
         let timelineOffset = preparedHLSCursor?.timelineOffset ?? 0
         HybridDiagnosticEmitter.emit(
@@ -149,7 +146,10 @@ enum HybridIndependentFingerprintAudio {
         let decoder = HybridFFmpegAudioDecoder()
         defer { decoder.close() }
         do {
-            try decoder.open(stream: stream)
+            try decoder.open(
+                demuxer: demuxer,
+                streamIndex: Int32(selected.id)
+            )
         } catch {
             throw HybridFingerprintAudioError.sourceUnavailable
         }

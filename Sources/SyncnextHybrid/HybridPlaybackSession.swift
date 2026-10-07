@@ -609,7 +609,7 @@ public final class HybridPlaybackSession:
             switch error {
             case .invalidRange:
                 throw HybridFingerprintAudioError.invalidRange
-            case .loopbackVODRequired:
+            case .loopbackVODRequired, .sourceAxisUnavailable:
                 throw HybridFingerprintAudioError.sourceUnavailable
             case .audioTrackUnavailable:
                 throw HybridFingerprintAudioError.audioTrackUnavailable

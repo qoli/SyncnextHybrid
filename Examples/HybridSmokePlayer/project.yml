@@ -2,7 +2,7 @@ name: HybridSmokePlayer
 options:
   minimumXcodeGenVersion: 2.44.1
   deploymentTarget:
-    tvOS: "17.0"
+    tvOS: "18.0"
 packages:
   SyncnextHybrid:
     path: ../..

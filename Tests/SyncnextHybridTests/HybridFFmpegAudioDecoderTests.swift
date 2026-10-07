@@ -19,12 +19,11 @@ final class HybridFFmpegAudioDecoderTests: XCTestCase {
 
         XCTAssertTrue(demuxer.isSourceSeekable)
         let track = try XCTUnwrap(demuxer.audioTrackInfos().first)
-        let stream = try XCTUnwrap(demuxer.stream(at: Int32(track.id)))
         XCTAssertTrue(demuxer.seek(to: 0.25))
         demuxer.discardAllStreamsExcept([Int32(track.id)])
 
         let decoder = HybridFFmpegAudioDecoder()
-        try decoder.open(stream: stream)
+        try decoder.open(demuxer: demuxer, streamIndex: Int32(track.id))
         defer { decoder.close() }
 
         var decoded = [HybridDecodedAudioChunk]()

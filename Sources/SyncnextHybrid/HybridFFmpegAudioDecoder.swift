@@ -1,4 +1,5 @@
 import AVFAudio
+import AetherEngine
 import AetherLibavcodec
 import AetherLibavformat
 import AetherLibavutil
@@ -47,22 +48,34 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
     private var pending: [Float] = []
     private var pendingStartPTS: Double = 0
 
-    func open(stream: UnsafeMutablePointer<AVStream>) throws {
-        guard let parameters = stream.pointee.codecpar else {
-            throw HybridAudioAnalysisError.decoderFailed(
-                "audio stream has no codec parameters"
-            )
+    func open(demuxer: Demuxer, streamIndex: Int32) throws {
+        var preparedContext: UnsafeMutablePointer<AVCodecContext>?
+        var preparedCodec: UnsafePointer<AVCodec>?
+        let copied = demuxer.withStream(at: streamIndex) { stream -> Bool in
+            guard let parameters = stream.pointee.codecpar,
+                  let codec = avcodec_find_decoder(parameters.pointee.codec_id),
+                  let context = avcodec_alloc_context3(codec) else {
+                return false
+            }
+            guard avcodec_parameters_to_context(context, parameters) >= 0 else {
+                var contextToFree: UnsafeMutablePointer<AVCodecContext>? = context
+                avcodec_free_context(&contextToFree)
+                return false
+            }
+            timeBase = stream.pointee.time_base
+            preparedContext = context
+            preparedCodec = codec
+            return true
         }
-        timeBase = stream.pointee.time_base
-        guard let codec = avcodec_find_decoder(parameters.pointee.codec_id),
-              let context = avcodec_alloc_context3(codec) else {
+        guard copied == true,
+              let context = preparedContext,
+              let codec = preparedCodec else {
             throw HybridAudioAnalysisError.decoderFailed(
                 "audio codec is unavailable"
             )
         }
         codecContext = context
-        guard avcodec_parameters_to_context(context, parameters) >= 0,
-              avcodec_open2(context, codec, nil) >= 0 else {
+        guard avcodec_open2(context, codec, nil) >= 0 else {
             avcodec_free_context(&codecContext)
             throw HybridAudioAnalysisError.decoderFailed(
                 "FFmpeg could not open the audio decoder"
