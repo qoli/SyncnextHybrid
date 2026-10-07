@@ -13,36 +13,36 @@ Physical-device acceptance on 2026-08-06 proved the Syncnext AVKit proxy path
 with four fast-forward seeks and four long-distance forward seeks. Patch 0003
 is therefore no longer part of the applied series.
 
-## Problem and boundary
+## Historical problem and boundary
 
 For a finite HLS VOD whose MPEG-TS PMT declares HEVC (`stream_type 0x24`),
-AetherEngine 5.29.0 changes an explicit `nativeRemoteHLS=false` decision back to
+AetherEngine 5.29.0 changed an explicit `nativeRemoteHLS=false` decision back to
 the native remote-HLS path after recognizing the playlist. On the affected tvOS
-device that path reaches `readyToPlay` but renders black.
+device that path reached `readyToPlay` but rendered black.
 
-SyncnextHybrid must choose the route before its single `engine.load()` call.
-It therefore inspects the finite media playlist and the first TS PMT. Only a
-confirmed HEVC MPEG-TS VOD disables native remote HLS and forces the AVKit UI
-proxy. Live playlists remain on the existing native route; this workaround does
-not use HLSLive.
+SyncnextHybrid had to choose the route before its single `engine.load()` call.
+It therefore inspected the finite media playlist and the first TS PMT. Only a
+confirmed HEVC MPEG-TS VOD disabled native remote HLS and forced the AVKit UI
+proxy. Live playlists remained on the existing native route; this workaround
+did not use HLSLive.
 
-## Patch responsibility
+## Former Patch responsibility
 
-`Patches/AetherEngine/0003-hevc-mpegts-hls-vod-remux-workaround.patch` adds:
+`Patches/AetherEngine/0003-hevc-mpegts-hls-vod-remux-workaround.patch` added:
 
 - a bounded, header-preserving finite HLS MPEG-TS ingest reader;
 - a time-seekable custom-reader seam used by AetherEngine's demuxer;
-- an AetherEngine #246 branch that preserves the host's explicit
-  `nativeRemoteHLS=false` choice and feeds that reader to the existing MPEG-TS
+- an AetherEngine #246 branch that preserved the host's explicit
+  `nativeRemoteHLS=false` choice and fed that reader to the existing MPEG-TS
   to fMP4 loopback remux path.
 
-The reader resolves a master playlist to the highest-bandwidth variant,
-requires `#EXT-X-ENDLIST`, downloads at most four segments concurrently, commits
-them in playlist order, and restarts from the segment containing a requested
-seek time. AES-128 clear-key segments are supported through the existing
-decryptor.
+The reader resolved a master playlist to the highest-bandwidth variant,
+required `#EXT-X-ENDLIST`, downloaded at most four segments concurrently,
+committed them in playlist order, and restarted from the segment containing a
+requested seek time. AES-128 clear-key segments were supported through the
+existing decryptor.
 
-Unsupported inputs fail explicitly. The patch does not silently redirect:
+Unsupported inputs failed explicitly. The patch did not silently redirect:
 
 - live or DVR playlists;
 - fMP4 HLS containing `#EXT-X-MAP`;
@@ -51,16 +51,17 @@ Unsupported inputs fail explicitly. The patch does not silently redirect:
 
 Signed media URLs and header values are intentionally absent from this file.
 
-## Hybrid and AVKit proxy changes
+## Associated Hybrid and AVKit proxy changes at the time
 
-The Hybrid layer keeps the Aether video surface attached even though the remux
-backend exposes an internal loopback `AVPlayer`. Its separate AVKit proxy owns
-transport UI only. Proxy changes make delayed rate observations order-safe,
-defer clock correction across the pause-before-navigation window, avoid exact
-clock corrections while both clocks are already playing at the same rate, and
-wait for the proxy item to become ready before accepting playback rates. The
-bundled black proxy is a 30 fps H.264 clip with silent AAC, so tvOS reports
-fast-forward support and retains the audio-capable transport contract.
+The Hybrid layer kept the Aether video surface attached even though the remux
+backend exposed an internal loopback `AVPlayer`. Its separate AVKit proxy owned
+transport UI only. Proxy changes made delayed rate observations order-safe,
+deferred clock correction across the pause-before-navigation window, avoided
+exact clock corrections while both clocks were already playing at the same
+rate, and waited for the proxy item to become ready before accepting playback
+rates. The bundled black proxy was a 30 fps H.264 clip with silent AAC, so tvOS
+reported fast-forward support and retained the audio-capable transport
+contract.
 
 ## Acceptance evidence
 

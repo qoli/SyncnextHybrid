@@ -160,6 +160,11 @@ failure. The Aether overlay also provides an explicit diagnostic seek button;
 using it cancels the bounded automation before moving the engine clock so a
 manual jump cannot create a false smoke PASS.
 
+The current smoke contract is defined by the checked-in app source, tests, and
+[`Examples/HybridSmokePlayer/README.md`](Examples/HybridSmokePlayer/README.md).
+The original implementation evidence is a dated historical report:
+[`HYBRID_SMOKE_PLAYER_IMPLEMENTATION_2026-07-25.md`](Docs/Reports/HYBRID_SMOKE_PLAYER_IMPLEMENTATION_2026-07-25.md).
+
 For the proxy route, the automated seek enters Hybrid through
 `AVPlayerViewControllerDelegate`'s user-navigation callback. Hybrid does not
 interpret `AVPlayerItem.timeJumpedNotification` as user intent because the
@@ -180,6 +185,20 @@ necessity, alternatives, long-term cost, and exact minimal boundary with the
 developer before changing any patch or upstream-owned source. Never commit or
 push a patched AetherEngine or FFmpegBuild submodule.
 
-Latest validation:
+Current code baseline:
 
-- [AetherEngine 5.20.6 — blocked, pin not promoted](Docs/Reports/AETHERENGINE_5.20.6_UPSTREAM_VALIDATION_2026-07-25.md)
+- `Versions.env` pins AetherEngine `7.28.3`
+  (`3cc256a0c1b9d9ec5302fac3f48b3c04cb9ab3e5`) and FFmpegBuild `3.6.0`
+  (`fda08325455bc12c112b5b82d014b98fa0fee0be`).
+- `Package.swift` requires tvOS 18 and macOS 15. Playback integration remains
+  tvOS-only; macOS supports the non-playback package and test surfaces.
+- The active AetherEngine series is exactly `0001`, `0002`, and `0004`.
+  Historical `0003` was removed after AetherEngine 6.4.2 superseded it.
+- [AetherEngine 7.28.3 — promoted on 2026-10-07](Docs/Reports/AETHERENGINE_7.28.3_UPSTREAM_VALIDATION_2026-10-07.md)
+
+Historical validation reports describe their dated candidates, not the current
+repository state:
+
+- [AetherEngine 6.74.0](Docs/Reports/AETHERENGINE_6.74.0_UPSTREAM_VALIDATION_2026-09-09.md)
+- [AetherEngine 6.4.2](Docs/Reports/AETHERENGINE_6.4.2_UPSTREAM_VALIDATION_2026-08-06.md)
+- [AetherEngine 5.20.6 — blocked, not promoted](Docs/Reports/AETHERENGINE_5.20.6_UPSTREAM_VALIDATION_2026-07-25.md)

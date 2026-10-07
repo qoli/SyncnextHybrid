@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-03
+更新日期：2026-10-07
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -14,12 +14,28 @@ Owner：SyncnextHybrid
    維護負擔。
 3. 所有上游例外修改都必須可見、可重播、可審核及可撤回。
 
+### 1.1 現況權威順序
+
+文件描述與 repository 現況不一致時，以可執行 contract 為權威：
+
+1. `Versions.env` 與 root gitlinks 定義正式 AetherEngine／FFmpegBuild pins；
+2. `Patches/<repo>/series` 定義實際套用的 Patch，`Patches/manifest.sha256`
+   驗證其內容；
+3. `Package.swift` 與 checked-in project configuration 定義支援平台下限；
+4. production source 與 tests 定義現行 API、ownership 與失敗行為；
+5. dated validation reports 與 workaround 文件只記錄當時證據及歷史決策，
+   不得反向覆寫以上現況。
+
+目前正式 pins 與平台下限不在本 SOP 重複抄錄；應直接讀取上述檔案。第 2.2
+節只為 active Patch identities 說明已批准責任，必須與 `series` 同步；
+`series` 仍是 Patch 是否實際套用的唯一權威。
+
 ## 2. 不可違反的責任邊界
 
 ### 2.1 一般開發不得修改上游 owner code
 
-任何一般功能、錯誤處理、UI、route、recovery、日誌、automation 或
-Syncnext-specific 行為，都必須實作在：
+任何一般功能、錯誤處理、UI、Syncnext-specific admission／AVKit presentation
+route、recovery、日誌、automation 或其他產品行為，都必須實作在：
 
 - `Sources/SyncnextHybrid/`；
 - Syncnext App；
@@ -31,9 +47,13 @@ Syncnext-specific 行為，都必須實作在：
 - 把 patched commit 推到官方 repo、遠端 fork 或臨時 fork；
 - 將沒有對應正式 `.patch` 的 dirty worktree 當作實作成果；
 - 為了方便整合而更換 `.gitmodules` 的官方 remote；
-- 把 Syncnext 判定、AVKit proxy、播放 recovery 或 log forwarding 放入上游
-  source；
+- 把 Syncnext-specific admission、AVKit presentation、產品 recovery 或 log
+  forwarding 放入上游 source；
 - 使用模糊 fallback、另一個播放器或未記錄的替代路徑掩蓋 Patch／播放失敗。
+
+AetherEngine 仍擁有 host options 之後基於 codec、carriage、能力與媒體正確性的
+effective media-pipeline routing。Hybrid 不得複製該判斷；以上限制只禁止把
+Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上游。
 
 `Scripts/apply-patches.sh` 套用後出現在 submodule 的 modified files 只是
 可丟棄的本地建置狀態，不是可提交的上游開發工作。
@@ -63,9 +83,8 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - 與獨立音訊 reader 無關的 access-level 擴張。
 
 原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已於 AetherEngine 6.4.2
-由上游正式能力取代並移除；歷史退出證據仍保留於
-`Docs/Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md`，不得把它重新加入
-現行 `series`。
+由上游正式能力取代並移除；[歷史退出證據](Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md)
+仍保留於 repository，不得把它重新加入現行 `series`。
 
 ## 3. 新需求的上游侵入 Gate
 

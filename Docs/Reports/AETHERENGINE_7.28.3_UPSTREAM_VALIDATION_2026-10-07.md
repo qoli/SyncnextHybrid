@@ -2,9 +2,9 @@
 
 Date: 2026-10-07
 
-Status: the isolated candidate satisfies every required promotion gate. The
-machine-readable verdict is `safe_to_promote`. Promotion was authorized on
-2026-10-07; the accepted root commit is the promotion unit. No Syncnext release
+Status: promoted to `SyncnextHybrid/main` in root commit
+`ca116d6c4c46c0056133a7376ca3e318b2e82aa2` on 2026-10-07 after every required
+gate passed with machine verdict `safe_to_promote`. No Syncnext release
 operation was performed.
 
 ## Candidate identity
@@ -126,7 +126,7 @@ An additional physical-device check attempted to request source range
 extraction: the HLS fixture failed during source loading on the native route
 with CoreMedia error `-12927`.
 
-The exact current-product AetherEngine 6.74 baseline was then built and run on
+The exact pre-promotion AetherEngine 6.74 baseline was then built and run on
 the same device with the same fixture and contract. It failed at the same
 source-loading stage with the same error, before segment-cache analysis began.
 This supplemental check is therefore recorded as `blocked` with attribution
@@ -156,7 +156,8 @@ All twelve required gates pass:
 
 The machine verdict is `safe_to_promote`. The supplemental segment-cache
 device smoke remains explicitly visible as blocked outside the required gate
-set. Promotion still requires separate owner authorization.
+set. Owner authorization was granted and the root promotion commit was pushed
+to `SyncnextHybrid/main`; this did not authorize or perform a Syncnext release.
 
 Machine-readable evidence:
 
