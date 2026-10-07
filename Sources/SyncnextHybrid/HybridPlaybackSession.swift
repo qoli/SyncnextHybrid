@@ -849,7 +849,7 @@ public final class HybridPlaybackSession:
                                 + "oldRevision=\(previousRevision) "
                                 + "newRevision=\(self.audioSelectionRevision) "
                                 + "snapshotTrack=\(self.snapshot.selectedAudioTrackID.map(String.init) ?? "nil") "
-                                + "engineTrack=\(selectedID) "
+                                + "engineTrack=\(selectedID.map(String.init) ?? "nil") "
                                 + "time=\(String(format: "%.3f", self.engine.currentTime)) "
                                 + "item=\(self.nativePlayerItemIdentity())"
                         )
