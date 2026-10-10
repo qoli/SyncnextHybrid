@@ -72,6 +72,21 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
    - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
      不回退至獨立來源下載。
+4. `0005-query-wrapped-hls-segment-ingest.patch`
+   - 對明確 `.m3u8`／`.m3u` 的有限 VOD 先做 bounded playlist 與首段 PMT
+     admission；只有 outer segment URL 無 MPEG-TS 副檔名、query 內包裹實際
+     MPEG-TS URL，且 carriage 明確為 HEVC-in-MPEG-TS 時，才進入上游既有的
+     seekable VOD ingest。
+   - 上述窄路由逐段串行、以 bounded chunk 增量交付；避免 query-wrapper 將
+     多個並行全段請求排隊至 resource timeout，也避免等待整段完成才讓 demux
+     開始讀取。由於單一有效傳輸可能超過 45 秒，此路由保留 15 秒「無新資料」
+     request timeout 與既有 byte ceiling／generation cancellation，但不套用 45 秒
+     whole-resource ceiling；普通 VOD ingest 仍保留 45 秒 resource timeout 與既有
+     adaptive prefetch。
+   - 不關閉 FFmpeg `extension_picky`／`allowed_segment_extensions`，不處理 live、
+     fMP4、H.264、加密、不可達或 carriage 不明來源，也不新增播放器 fallback。
+   - 上游若能在 generic URL open 前以相同正向證據完成此 admission，或 FFmpeg
+     提供不降低 extension 安全邊界的正式 query-wrapper 支援，即移除此 Patch。
 
 FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責任，不得順便加入：
 

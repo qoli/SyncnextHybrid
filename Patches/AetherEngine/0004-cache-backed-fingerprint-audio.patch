@@ -344,10 +344,10 @@ index 00000000..f75f4d4f
 +    }
 +}
 diff --git a/Sources/AetherEngine/Video/HLSSegmentProducer.swift b/Sources/AetherEngine/Video/HLSSegmentProducer.swift
-index 7431f833..3ea041cf 100644
+index 0bb8c29c..4c0f3896 100644
 --- a/Sources/AetherEngine/Video/HLSSegmentProducer.swift
 +++ b/Sources/AetherEngine/Video/HLSSegmentProducer.swift
-@@ -792,6 +792,16 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -802,6 +802,16 @@ final class HLSSegmentProducer: @unchecked Sendable {
      private var videoShiftPts: Int64 = Int64.min
      private var audioShiftPts: Int64 = Int64.min
  
@@ -364,7 +364,7 @@ index 7431f833..3ea041cf 100644
      /// Max segments ahead of AVPlayer's highest fetched segment. Historically a constant (cut from 20 to
      /// 10; 4K HEVC ~10 MB/seg = 200 MB old buffer); now per session from `LoadOptions.forwardBufferSegments`
      /// via `HLSVideoEngine.forwardWindowSegments`. MUST equal the SegmentCache's forwardWindow so the muxer
-@@ -2377,7 +2387,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -2404,7 +2414,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
              cache.adopt(index: currentMuxerSegmentIndex,
                          stagingPath: path,
                          byteCount: bytesWritten,
@@ -374,7 +374,7 @@ index 7431f833..3ea041cf 100644
              // AE#286: per-epoch head. cache.highestStoredIndex is monotonic across restarts and would
              // credit this pump with the previous epoch's production.
              pumpEpochHighestStored = max(pumpEpochHighestStored, currentMuxerSegmentIndex)
-@@ -2610,7 +2621,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -2652,7 +2663,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
              )
              cache.adopt(index: idx, stagingPath: result.path,
                          byteCount: result.bytesWritten,
@@ -385,10 +385,10 @@ index 7431f833..3ea041cf 100644
                  reportLiveSegmentFinalized(index: idx, nextIndex: nil)
              } else if onSequentialSegmentFinalized != nil {
 diff --git a/Sources/AetherEngine/Video/SegmentCache.swift b/Sources/AetherEngine/Video/SegmentCache.swift
-index 4fcc1388..8df2604d 100644
+index 7d7cddc4..915d1224 100644
 --- a/Sources/AetherEngine/Video/SegmentCache.swift
 +++ b/Sources/AetherEngine/Video/SegmentCache.swift
-@@ -48,6 +48,10 @@ final class SegmentCache: @unchecked Sendable {
+@@ -52,6 +52,10 @@ final class SegmentCache: @unchecked Sendable {
      /// Per-index byte ledger for _totalBytes. Stat-on-eviction was wrong when same index was
      /// overwritten (stat returned new size, old bytes stayed counted forever).
      private var entryBytes: [Int: Int] = [:]
@@ -397,9 +397,9 @@ index 4fcc1388..8df2604d 100644
 +    /// under `condition` with the generation URL rather than consulting session-global state.
 +    private var audioSourceShifts: [Int: Double] = [:]
  
-     /// Pinned in RAM (~3.5 KB); AVPlayer fetches exactly once per session; never evicted.
-     private var initSegment: Data?
-@@ -59,6 +63,10 @@ final class SegmentCache: @unchecked Sendable {
+     /// Progressive delivery: the segments a producer is writing right now, index to staging file.
+     /// Registered when the producer opens the segment (`beginInProgress`), removed when it is
+@@ -76,6 +80,10 @@ final class SegmentCache: @unchecked Sendable {
      /// Declared by provider at top of each mediaSegment(at:); non-monotonic (backward scrub is valid).
      private var currentTargetIndex: Int = -1
  
@@ -410,7 +410,7 @@ index 4fcc1388..8df2604d 100644
      /// Lowest index of the consumer's current uninterrupted fetch sequence, and the highest index it has
      /// reached in it. A seek flushes the consumer's buffer, so only within one sequence does everything
      /// between the playhead and the target sit in that buffer, which is what
-@@ -273,6 +281,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -338,6 +346,7 @@ final class SegmentCache: @unchecked Sendable {
              residentSetChanged = superseded == nil
              if let superseded { supersededFile = superseded }
              entryBytes[index] = data.count
@@ -418,7 +418,7 @@ index 4fcc1388..8df2604d 100644
              _totalBytes += data.count
              if index > _highestStoredIndex { _highestStoredIndex = index }
          }
-@@ -289,7 +298,8 @@ final class SegmentCache: @unchecked Sendable {
+@@ -354,7 +363,8 @@ final class SegmentCache: @unchecked Sendable {
      ///
      /// `videoReach` (AE#412) is what this segment's video offers a cold arrival; nil leaves the
      /// previous claim in place only if the index is re-adopted without one, which no caller does.
@@ -428,7 +428,7 @@ index 4fcc1388..8df2604d 100644
          let fileURL = nextSegmentFileURL(index: index)
          var renameOK: Bool
          do {
-@@ -331,6 +341,9 @@ final class SegmentCache: @unchecked Sendable {
+@@ -407,6 +417,9 @@ final class SegmentCache: @unchecked Sendable {
              // AE#412: the claim describes THESE bytes, so a re-adoption replaces it, and an
              // adoption that cannot state one must not leave the old epoch's claim standing.
              videoReaches[index] = videoReach
@@ -438,20 +438,23 @@ index 4fcc1388..8df2604d 100644
          }
          let doomed = pruneOutsideWindow()
          if !doomed.isEmpty { residentSetChanged = true }
-@@ -349,10 +362,12 @@ final class SegmentCache: @unchecked Sendable {
+@@ -427,6 +440,7 @@ final class SegmentCache: @unchecked Sendable {
          entries.removeAll(keepingCapacity: false)
          entryBytes.removeAll(keepingCapacity: false)
          videoReaches.removeAll(keepingCapacity: false)
 +        audioSourceShifts.removeAll(keepingCapacity: false)
          initSegment = nil
          initVersions.removeAll(keepingCapacity: false)
+         inProgress.removeAll(keepingCapacity: false)
+@@ -434,6 +448,7 @@ final class SegmentCache: @unchecked Sendable {
+         sealedStagingOrder.removeAll(keepingCapacity: false)
          _totalBytes = 0
          _highestStoredIndex = -1
 +        analysisDemands.removeAll(keepingCapacity: false)
          condition.broadcast()
          condition.unlock()
  
-@@ -379,6 +394,24 @@ final class SegmentCache: @unchecked Sendable {
+@@ -461,6 +476,24 @@ final class SegmentCache: @unchecked Sendable {
          if !doomed.isEmpty { onResidentSetChanged?() }
      }
  
@@ -476,7 +479,7 @@ index 4fcc1388..8df2604d 100644
      /// Must be called with condition held.
      ///
      /// A fetch that leaves a gap above the front, or that drops further back than a handover refetch
-@@ -431,6 +464,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -513,6 +546,7 @@ final class SegmentCache: @unchecked Sendable {
          entries.removeValue(forKey: index)
          _totalBytes -= entryBytes.removeValue(forKey: index) ?? 0
          videoReaches.removeValue(forKey: index)
@@ -484,7 +487,7 @@ index 4fcc1388..8df2604d 100644
          condition.broadcast()
          condition.unlock()
          EngineLog.emit("[SegmentCache] seg-\(index) vanished from disk; entry dropped (AE#451)",
-@@ -463,6 +497,26 @@ final class SegmentCache: @unchecked Sendable {
+@@ -545,6 +579,26 @@ final class SegmentCache: @unchecked Sendable {
          return readOrDrop(index: index, url: url)
      }
  
@@ -508,10 +511,10 @@ index 4fcc1388..8df2604d 100644
 +        return (data, shift)
 +    }
 +
-     /// AE#451: a read that comes back empty for a file the bookkeeping still lists is the same lie
-     /// `peekURL` guards against, and here it is load-bearing: this serve answers a retriable 503,
-     /// and an entry left standing means every retry takes this branch again while the producer,
-@@ -491,11 +545,20 @@ final class SegmentCache: @unchecked Sendable {
+     // MARK: - Progressive delivery
+ 
+     /// How many adoptions `sealedFromStaging` remembers: enough for every reader still draining.
+@@ -644,11 +698,20 @@ final class SegmentCache: @unchecked Sendable {
      func awaitFetchHighWater(reaching target: Int, timeout: TimeInterval = 1.0) -> Bool {
          condition.lock()
          defer { condition.unlock() }
@@ -534,7 +537,7 @@ index 4fcc1388..8df2604d 100644
      }
  
      /// Evict segments strictly below cutoff, which the live caller bounds at the consumer's own fetch
-@@ -508,6 +571,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -661,6 +724,7 @@ final class SegmentCache: @unchecked Sendable {
              _totalBytes -= entryBytes[k] ?? byteSize(of: url)
              entryBytes.removeValue(forKey: k)
              entries.removeValue(forKey: k)
@@ -542,7 +545,15 @@ index 4fcc1388..8df2604d 100644
              doomed.append(url)
          }
          condition.unlock()
-@@ -799,6 +863,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -998,6 +1062,7 @@ final class SegmentCache: @unchecked Sendable {
+                     _totalBytes -= bytes
+                     entryBytes.removeValue(forKey: index)
+                     videoReaches.removeValue(forKey: index)
++                    audioSourceShifts.removeValue(forKey: index)
+                     doomed.append(url)
+                 }
+             }
+@@ -1027,6 +1092,7 @@ final class SegmentCache: @unchecked Sendable {
                      entryBytes.removeValue(forKey: k)
                      entries.removeValue(forKey: k)
                      videoReaches.removeValue(forKey: k)
@@ -550,7 +561,7 @@ index 4fcc1388..8df2604d 100644
                      doomed.append(url)
                  }
              }
-@@ -810,6 +875,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -1038,6 +1104,7 @@ final class SegmentCache: @unchecked Sendable {
                  entryBytes.removeValue(forKey: k)
                  entries.removeValue(forKey: k)
                  videoReaches.removeValue(forKey: k)

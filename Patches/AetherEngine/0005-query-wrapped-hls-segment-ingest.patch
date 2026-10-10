@@ -1,0 +1,475 @@
+diff --git a/Sources/AetherEngine/AetherEngine.swift b/Sources/AetherEngine/AetherEngine.swift
+index 557971c9..1424b731 100644
+--- a/Sources/AetherEngine/AetherEngine.swift
++++ b/Sources/AetherEngine/AetherEngine.swift
+@@ -3877,12 +3877,22 @@ public final class AetherEngine: ObservableObject {
+         audioSourceStreamIndex: Int32?,
+         discTitleID: Int?,
+         generation: UInt64,
+-        evidence: String
++        evidence: String,
++        queryWrappedOnly: Bool = false
+     ) async throws -> HLSVODIngestReroute {
+-        guard let reader = try await HLSVODIngestReader.makeIfHEVCMPEGTS(
+-            playlistURL: playlistURL,
+-            httpHeaders: options.httpHeaders
+-        ) else { return .notTaken }
++        let reader: HLSVODIngestReader?
++        if queryWrappedOnly {
++            reader = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++                playlistURL: playlistURL,
++                httpHeaders: options.httpHeaders
++            )
++        } else {
++            reader = try await HLSVODIngestReader.makeIfHEVCMPEGTS(
++                playlistURL: playlistURL,
++                httpHeaders: options.httpHeaders
++            )
++        }
++        guard let reader else { return .notTaken }
+         try checkLoadCurrent(generation)
+         EngineLog.emit(
+             "[AetherEngine] AE#268: \(evidence); routing through the seekable TS -> fMP4 ingest",
+@@ -4282,6 +4292,28 @@ public final class AetherEngine: ObservableObject {
+             return nil
+         }
+ 
++        // Downstream patch: an explicit VOD playlist can contain segment endpoints such as
++        // `/api/ts?url=...segment.ts`. FFmpeg's default extension gate rejects that outer path with
++        // AVERROR_INVALIDDATA before the normal AE#154 body classification can reach the existing
++        // AE#268 ingest. Inspect only the bounded playlist/segment head here, and take the ingest only
++        // when both the query-wrapped URL shape and HEVC-in-MPEG-TS PMT evidence are positive. A live,
++        // extensionless, encrypted, fMP4, H.264, unreachable or ambiguous source keeps its old route.
++        if !options.isLive,
++           case .url(let playlistURL) = source,
++           ["m3u8", "m3u"].contains(playlistURL.pathExtension.lowercased()),
++           case .taken(let probe) = try await rerouteOntoHEVCMPEGTSIngest(
++               playlistURL: playlistURL,
++               options: options,
++               startPosition: startPosition,
++               audioSourceStreamIndex: audioSourceStreamIndex,
++               discTitleID: discTitleID,
++               generation: gen,
++               evidence: "query-wrapped finite HEVC-in-MPEG-TS HLS",
++               queryWrappedOnly: true
++           ) {
++            return probe
++        }
++
+         // 1. Probe: detect format, frame rate, and track metadata.
+         //    HLSVideoEngine re-opens internally; the double-open keeps the failure-mode matrix small.
+         var detectedFormat: VideoFormat = .sdr
+diff --git a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
+index 9173ece2..6fa7ddf8 100644
+--- a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
++++ b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
+@@ -44,14 +44,39 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+     private var failed = false
+     private var closed = false
+     private var producer: Task<Void, Never>?
++    /// Query-wrapper origins can serialize all requests behind one token. Starting four full-segment
++    /// downloads at once then starves every request until the resource timeout. The narrowly admitted
++    /// query-wrapped path streams every needed segment serially.
++    private var serialQueryWrappedSegments = false
+     /// Playlist index the running producer opened at; lets a reposition onto that same segment, before
+     /// any byte was consumed, resolve without refetching it.
+     private var producerStartIndex: Int?
+ 
++    /// Builds the owned session policy. Ordinary finite-HLS reads keep the
++    /// existing 45-second whole-resource ceiling. Query-wrapper segments are
++    /// consumed incrementally, so their safety boundary is instead the
++    /// resetting 15-second no-new-data timeout plus the existing byte ceiling
++    /// and generation cancellation. Applying the whole-resource ceiling to
++    /// that path aborts an actively progressing large segment at 45 seconds.
++    static func ownedSessionConfiguration(
++        streamsQueryWrappedSegments: Bool
++    ) -> URLSessionConfiguration {
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.timeoutIntervalForRequest = 15
++        if !streamsQueryWrappedSegments {
++            configuration.timeoutIntervalForResource = 45
++        }
++        configuration.requestCachePolicy =
++            .reloadIgnoringLocalAndRemoteCacheData
++        configuration.urlCache = nil
++        return configuration
++    }
++
+     init(
+         playlistURL: URL,
+         httpHeaders: [String: String],
+-        session: URLSession? = nil
++        session: URLSession? = nil,
++        streamsQueryWrappedSegments: Bool = false
+     ) {
+         self.playlistURL = playlistURL
+         self.httpHeaders = httpHeaders
+@@ -59,11 +84,10 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+             self.session = session
+             ownsSession = false
+         } else {
+-            let configuration = URLSessionConfiguration.ephemeral
+-            configuration.timeoutIntervalForRequest = 15
+-            configuration.timeoutIntervalForResource = 45
+-            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+-            configuration.urlCache = nil
++            let configuration = Self.ownedSessionConfiguration(
++                streamsQueryWrappedSegments:
++                    streamsQueryWrappedSegments
++            )
+             self.session = URLSession(
+                 configuration: configuration, delegate: EngineTLS.sessionDelegate,
+                 delegateQueue: nil)
+@@ -78,11 +102,44 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         playlistURL: URL,
+         httpHeaders: [String: String],
+         session: URLSession? = nil
++    ) async throws -> HLSVODIngestReader? {
++        try await makeIfHEVCMPEGTS(
++            playlistURL: playlistURL,
++            httpHeaders: httpHeaders,
++            session: session,
++            requiresQueryWrappedSegmentURL: false
++        )
++    }
++
++    /// The narrow preflight used before the generic URL opener gets a chance to hand an explicit
++    /// playlist to FFmpeg's HLS demuxer. Newer FFmpeg releases reject a segment whose outer URL has
++    /// no media extension even when a query value contains the real `.ts` URL. Only that URL shape,
++    /// plus the same finite-playlist and HEVC-in-MPEG-TS evidence as `makeIfHEVCMPEGTS`, is admitted.
++    static func makeIfQueryWrappedHEVCMPEGTS(
++        playlistURL: URL,
++        httpHeaders: [String: String],
++        session: URLSession? = nil
++    ) async throws -> HLSVODIngestReader? {
++        try await makeIfHEVCMPEGTS(
++            playlistURL: playlistURL,
++            httpHeaders: httpHeaders,
++            session: session,
++            requiresQueryWrappedSegmentURL: true
++        )
++    }
++
++    private static func makeIfHEVCMPEGTS(
++        playlistURL: URL,
++        httpHeaders: [String: String],
++        session: URLSession?,
++        requiresQueryWrappedSegmentURL: Bool
+     ) async throws -> HLSVODIngestReader? {
+         let reader = HLSVODIngestReader(
+             playlistURL: playlistURL,
+             httpHeaders: httpHeaders,
+-            session: session
++            session: session,
++            streamsQueryWrappedSegments:
++                requiresQueryWrappedSegmentURL
+         )
+         var accepted = false
+         defer {
+@@ -90,6 +147,16 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         }
+         do {
+             let media = try await reader.resolveMedia()
++            if requiresQueryWrappedSegmentURL {
++                let hasQueryWrappedSegment = media.segments.contains { segment in
++                    guard let url = HLSPlaylistParser.resolve(uri: segment.uri, against: media.url) else {
++                        return false
++                    }
++                    return isQueryWrappedMPEGTSURL(url)
++                }
++                guard hasQueryWrappedSegment else { return nil }
++                reader.serialQueryWrappedSegments = true
++            }
+             guard let first = media.segments.first,
+                   first.crypt == nil,
+                   let segmentURL = HLSPlaylistParser.resolve(
+@@ -118,6 +185,24 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         }
+     }
+ 
++    /// True only when the outer endpoint hides a conventional MPEG-TS path in a query value. The
++    /// carriage probe still decides what the bytes are; this is merely the bounded admission hint
++    /// that says FFmpeg's extension gate cannot express the source correctly.
++    static func isQueryWrappedMPEGTSURL(_ url: URL) -> Bool {
++        let transportExtensions: Set<String> = [
++            "ts", "m2t", "m2ts", "mts", "mpg", "mpeg", "mpegts",
++        ]
++        guard !transportExtensions.contains(url.pathExtension.lowercased()),
++              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else {
++            return false
++        }
++        return items.contains { item in
++            guard let value = item.value, !value.isEmpty else { return false }
++            let nestedPath = URL(string: value)?.path ?? value
++            return transportExtensions.contains((nestedPath as NSString).pathExtension.lowercased())
++        }
++    }
++
+     var mediaDuration: Double {
+         condition.withLock { resolved?.duration ?? 0 }
+     }
+@@ -376,6 +461,22 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+             return (segment, url)
+         }
+ 
++        if serialQueryWrappedSegments {
++            for item in resolvedSegments {
++                guard item.0.crypt == nil else {
++                    throw HLSIngestError.encryptedNotSupported
++                }
++                try await streamSegment(
++                    item.1,
++                    limit: BoundedFetch.segmentLimit(forDuration: item.0.duration),
++                    generation: generation
++                )
++            }
++            return
++        }
++
++        guard !resolvedSegments.isEmpty else { return }
++
+         try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+             var nextToSpawn = 0
+             var nextToCommit = 0
+@@ -425,6 +526,53 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         }
+     }
+ 
++    /// Feed each segment needed by a query-wrapper seek to FFmpeg as bytes arrive. Waiting for a
++    /// complete segment recreates the same long startup stall as the rejected FFmpeg HLS request, and
++    /// parallel full-body fetches can make every request miss the resource timeout. Every response is
++    /// still bounded and format-checked before its first chunk crosses the reader boundary.
++    private func streamSegment(_ url: URL, limit: Int, generation: UInt64) async throws {
++        let (bytes, response) = try await session.bytes(for: makeRequest(url))
++        defer { bytes.task.cancel() }
++        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
++        guard (200..<300).contains(status) else {
++            throw HLSIngestError.playlistUnreachable(status: status)
++        }
++        let declared = response.expectedContentLength
++        guard declared <= Int64(limit) else {
++            throw HLSIngestError.playlistInvalid(reason: "body exceeds \(limit) bytes")
++        }
++
++        let chunkLimit = 64 * 1024
++        var chunk = Data()
++        chunk.reserveCapacity(chunkLimit)
++        var received = 0
++        var classified = false
++        for try await byte in bytes {
++            try Task.checkCancellation()
++            received += 1
++            guard received <= limit else {
++                throw HLSIngestError.playlistInvalid(reason: "body exceeds \(limit) bytes")
++            }
++            chunk.append(byte)
++            if !classified, chunk.count >= 3 {
++                guard LiveSegmentFormat.classify(chunk) == .mpegts else {
++                    throw HLSIngestError.unsupportedSegmentFormat
++                }
++                classified = true
++            }
++            if classified, chunk.count >= chunkLimit {
++                guard append(chunk, generation: generation) else { return }
++                chunk.removeAll(keepingCapacity: true)
++            }
++        }
++        guard received > 0, classified else {
++            throw HLSIngestError.unsupportedSegmentFormat
++        }
++        if !chunk.isEmpty {
++            _ = append(chunk, generation: generation)
++        }
++    }
++
+     private func append(_ data: Data, generation: UInt64) -> Bool {
+         condition.lock()
+         defer { condition.unlock() }
+diff --git a/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift b/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
+index af29171c..af784ff6 100644
+--- a/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
++++ b/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
+@@ -45,6 +45,151 @@ final class Issue268HLSVODIngestTests: XCTestCase {
+         )
+     }
+ 
++    func testQueryWrappedHEVCSegmentBuildsTheNarrowPreflightReader() async throws {
++        let root = try XCTUnwrap(URL(string: "https://vod.test/media.m3u8?token=fixture"))
++        let segment = try XCTUnwrap(URL(
++            string: "https://vod.test/api/ts?url=https%3A%2F%2Fedge.test%2Fsegment.ts"
++        ))
++        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(segment.absoluteString)
++        Issue268URLProtocol.bodyByURL[segment.absoluteString] = transportStream(streamType: 0x24)
++
++        let session = makeSession()
++        defer { session.invalidateAndCancel() }
++        let reader = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++            playlistURL: root,
++            httpHeaders: ["User-Agent": "fixture-agent"],
++            session: session
++        )
++        let admitted = try XCTUnwrap(reader)
++        defer { admitted.close() }
++
++        var bytes = [UInt8](repeating: 0, count: 188)
++        let count = bytes.withUnsafeMutableBufferPointer {
++            admitted.read($0.baseAddress, size: Int32($0.count))
++        }
++        XCTAssertEqual(count, 188)
++        XCTAssertEqual(bytes[0], 0x47)
++        XCTAssertEqual(
++            Issue268URLProtocol.headersByURL[segment.absoluteString]?["User-Agent"],
++            "fixture-agent"
++        )
++    }
++
++    func testQueryWrappedReaderDeliversBeforeTheWholeSegmentFinishes() async throws {
++        let root = try XCTUnwrap(URL(string: "https://vod.test/streaming.m3u8"))
++        let segment = try XCTUnwrap(URL(
++            string: "https://vod.test/api/ts?url=https%3A%2F%2Fedge.test%2Fstreaming.ts"
++        ))
++        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(segment.absoluteString)
++        var body = transportStream(streamType: 0x24)
++        body.append(Data(repeating: 0xFF, count: 128 * 1024))
++        Issue268URLProtocol.bodyByURL[segment.absoluteString] = body
++        let tailGate = DispatchSemaphore(value: 0)
++        Issue268URLProtocol.streamTailGateByURL[segment.absoluteString] = tailGate
++
++        let session = makeSession()
++        defer { session.invalidateAndCancel() }
++        let made = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++            playlistURL: root,
++            httpHeaders: [:],
++            session: session
++        )
++        let reader = try XCTUnwrap(made)
++        defer {
++            tailGate.signal()
++            reader.close()
++        }
++
++        var bytes = [UInt8](repeating: 0, count: 188)
++        let readStartedAt = Date.timeIntervalSinceReferenceDate
++        let count = bytes.withUnsafeMutableBufferPointer {
++            reader.read($0.baseAddress, size: Int32($0.count))
++        }
++        let readElapsed = Date.timeIntervalSinceReferenceDate - readStartedAt
++
++        XCTAssertEqual(count, 188)
++        XCTAssertEqual(bytes[0], 0x47)
++        XCTAssertLessThan(
++            readElapsed,
++            1,
++            "the query-wrapper ingest must release bounded chunks before the response tail arrives"
++        )
++    }
++
++    func testQueryWrappedOwnedSessionDoesNotUseTheWholeResourceCeiling() {
++        let ordinary = HLSVODIngestReader.ownedSessionConfiguration(
++            streamsQueryWrappedSegments: false
++        )
++        let streaming = HLSVODIngestReader.ownedSessionConfiguration(
++            streamsQueryWrappedSegments: true
++        )
++        let foundationDefault = URLSessionConfiguration.ephemeral
++
++        XCTAssertEqual(ordinary.timeoutIntervalForRequest, 15)
++        XCTAssertEqual(ordinary.timeoutIntervalForResource, 45)
++        XCTAssertEqual(streaming.timeoutIntervalForRequest, 15)
++        XCTAssertEqual(
++            streaming.timeoutIntervalForResource,
++            foundationDefault.timeoutIntervalForResource,
++            "an actively progressing bounded segment must not be cut off at 45 seconds"
++        )
++        XCTAssertGreaterThan(streaming.timeoutIntervalForResource, 45)
++    }
++
++    func testNarrowPreflightRefusesOrdinaryAndNonTransportQueryURLs() async throws {
++        let ordinaryRoot = try XCTUnwrap(URL(string: "https://vod.test/ordinary.m3u8"))
++        let ordinarySegment = try XCTUnwrap(URL(string: "https://vod.test/segment.ts?token=fixture"))
++        Issue268URLProtocol.bodyByURL[ordinaryRoot.absoluteString] = mediaPlaylist(
++            ordinarySegment.absoluteString
++        )
++        Issue268URLProtocol.bodyByURL[ordinarySegment.absoluteString] = transportStream(streamType: 0x24)
++
++        let nonTransportRoot = try XCTUnwrap(URL(string: "https://vod.test/nontransport.m3u8"))
++        let nonTransportSegment = try XCTUnwrap(URL(
++            string: "https://vod.test/api/media?url=https%3A%2F%2Fedge.test%2Fsegment.mp4"
++        ))
++        Issue268URLProtocol.bodyByURL[nonTransportRoot.absoluteString] = mediaPlaylist(
++            nonTransportSegment.absoluteString
++        )
++        Issue268URLProtocol.bodyByURL[nonTransportSegment.absoluteString] = transportStream(streamType: 0x24)
++
++        let session = makeSession()
++        defer { session.invalidateAndCancel() }
++        let ordinary = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++            playlistURL: ordinaryRoot,
++            httpHeaders: [:],
++            session: session
++        )
++        let nonTransport = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++            playlistURL: nonTransportRoot,
++            httpHeaders: [:],
++            session: session
++        )
++
++        XCTAssertNil(ordinary)
++        XCTAssertNil(nonTransport)
++        XCTAssertNil(
++            Issue268URLProtocol.headersByURL[ordinarySegment.absoluteString],
++            "an ordinary segment must be rejected from URL shape alone, before any media request"
++        )
++        XCTAssertNil(Issue268URLProtocol.headersByURL[nonTransportSegment.absoluteString])
++    }
++
++    func testQueryWrappedURLRecognitionRequiresAnOuterMismatchAndNestedTransportPath() throws {
++        XCTAssertTrue(HLSVODIngestReader.isQueryWrappedMPEGTSURL(try XCTUnwrap(URL(
++            string: "https://vod.test/api/ts?url=https%3A%2F%2Fedge.test%2Fsegment.ts"
++        ))))
++        XCTAssertFalse(HLSVODIngestReader.isQueryWrappedMPEGTSURL(try XCTUnwrap(URL(
++            string: "https://vod.test/segment.ts?token=fixture"
++        ))))
++        XCTAssertFalse(HLSVODIngestReader.isQueryWrappedMPEGTSURL(try XCTUnwrap(URL(
++            string: "https://vod.test/api/media?url=https%3A%2F%2Fedge.test%2Fsegment.mp4"
++        ))))
++        XCTAssertFalse(HLSVODIngestReader.isQueryWrappedMPEGTSURL(try XCTUnwrap(URL(
++            string: "https://vod.test/api/ts"
++        ))))
++    }
++
+     func testMasterPlaylistUsesHighestBandwidthHEVCVariant() async throws {
+         let root = try XCTUnwrap(URL(string: "https://vod.test/master.m3u8"))
+         let low = try XCTUnwrap(URL(string: "https://vod.test/low.m3u8"))
+@@ -424,10 +569,12 @@ final class Issue268HLSVODIngestTests: XCTestCase {
+ final class Issue268URLProtocol: URLProtocol, @unchecked Sendable {
+     nonisolated(unsafe) static var bodyByURL: [String: Data] = [:]
+     nonisolated(unsafe) static var headersByURL: [String: [String: String]] = [:]
++    nonisolated(unsafe) static var streamTailGateByURL: [String: DispatchSemaphore] = [:]
+ 
+     static func reset() {
+         bodyByURL = [:]
+         headersByURL = [:]
++        streamTailGateByURL = [:]
+     }
+ 
+     override class func canInit(with request: URLRequest) -> Bool { true }
+@@ -451,6 +598,18 @@ final class Issue268URLProtocol: URLProtocol, @unchecked Sendable {
+             headerFields: ["Content-Length": String(data.count)]
+         )!
+         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
++        if request.value(forHTTPHeaderField: "Range") == nil,
++           let gate = Self.streamTailGateByURL[url.absoluteString],
++           data.count > 64 * 1024 {
++            let split = 64 * 1024
++            client?.urlProtocol(self, didLoad: data.prefix(split))
++            DispatchQueue.global().async { [self] in
++                _ = gate.wait(timeout: .now() + 3)
++                client?.urlProtocol(self, didLoad: data.dropFirst(split))
++                client?.urlProtocolDidFinishLoading(self)
++            }
++            return
++        }
+         client?.urlProtocol(self, didLoad: data)
+         client?.urlProtocolDidFinishLoading(self)
+     }

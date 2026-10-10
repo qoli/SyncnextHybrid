@@ -1,3 +1,4 @@
 0001-local-ffmpegbuild.patch
 0002-independent-audio-source.patch
 0004-cache-backed-fingerprint-audio.patch
+0005-query-wrapped-hls-segment-ingest.patch
