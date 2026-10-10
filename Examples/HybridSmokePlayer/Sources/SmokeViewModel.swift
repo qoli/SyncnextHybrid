@@ -71,11 +71,8 @@ final class SmokeViewModel: ObservableObject {
     init() {
         EngineLog.handler = { line in
             let isMaintainerEvidence =
-                line.contains("[AetherEngine] AE#268:")
-                || line.contains(
-                    "[HLSVODIngest] resolved finite MPEG-TS VOD"
-                )
-                || line.contains("[HLSVODIngest] seek elapsed=")
+                line.contains("[AetherEngine] AE#268")
+                || line.contains("[HLSVODIngest]")
                 || line.contains(
                     "[HLSVideoEngine] producer restarted at idx="
                 )

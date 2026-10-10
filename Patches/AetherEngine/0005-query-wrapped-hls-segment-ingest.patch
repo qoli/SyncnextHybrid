@@ -1,5 +1,5 @@
 diff --git a/Sources/AetherEngine/AetherEngine.swift b/Sources/AetherEngine/AetherEngine.swift
-index 557971c9..1424b731 100644
+index 557971c9a5b80f9901e03fd66d4150b5af420921..1424b731e80f9ffb928f273ea7ae2e638830fe43 100644
 --- a/Sources/AetherEngine/AetherEngine.swift
 +++ b/Sources/AetherEngine/AetherEngine.swift
 @@ -3877,12 +3877,22 @@ public final class AetherEngine: ObservableObject {
@@ -59,68 +59,474 @@ index 557971c9..1424b731 100644
          // 1. Probe: detect format, frame rate, and track metadata.
          //    HLSVideoEngine re-opens internally; the double-open keeps the failure-mode matrix small.
          var detectedFormat: VideoFormat = .sdr
+diff --git a/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift b/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
+index 87e9623c7b1c627bbe7a63257e43617e49847728..fd5754cf3d54050ed26c5ad888c68232e6ecaeb9 100644
+--- a/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
++++ b/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
+@@ -86,7 +86,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+ 
+     private weak var delegate: HeldSourceConnectionDelegate?
+     private let extraHeaders: [String: String]
+-    private let offset: Int64
++    private let offset: Int64?
+     private let userAgent: String?
+     private let queue: DispatchQueue
+     /// The reader's connection generation this transfer belongs to. Carried here because the
+@@ -107,7 +107,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+     private(set) var respondedBy: URL
+ 
+     init(url: URL,
+-         offset: Int64,
++         offset: Int64?,
+          extraHeaders: [String: String],
+          userAgent: String?,
+          label: String,
+@@ -448,7 +448,7 @@ extension HeldSourceConnection {
+                              host: String,
+                              port: Int,
+                              secure: Bool,
+-                             offset: Int64,
++                             offset: Int64?,
+                              extraHeaders: [String: String],
+                              userAgent: String?) throws -> Data {
+         // Audit DMX-4: the path goes on the wire as the URL spells it. `URL.path` is decoded, so
+@@ -465,10 +465,12 @@ extension HeldSourceConnection {
+ 
+         var lines = ["GET \(path) HTTP/1.1",
+                      "Host: \(hostHeader)",
+-                     "Range: bytes=\(offset)-",
+                      "Accept: */*",
+                      "Accept-Encoding: identity",
+                      "Connection: keep-alive"]
++        if let offset {
++            lines.insert("Range: bytes=\(offset)-", at: 2)
++        }
+         if let userAgent { lines.append("User-Agent: \(userAgent)") }
+         // The caller's headers win: they carry the source's authentication, and a duplicate of a
+         // header set above would be sent twice.
+@@ -486,6 +488,404 @@ extension HeldSourceConnection {
+     }
+ }
+ 
++/// A bounded HTTP/1.1 session for the finite query-wrapped HLS path.
++///
++/// Some query-wrapper origins bind consecutive segment authorizations to one HTTP/1.1 connection.
++/// Issuing one Foundation request per segment can negotiate HTTP/2 and, even when requests are made
++/// serially, replaces the connection between segments. This transport keeps exactly one connection
++/// for same-origin requests and never retries a refused request on another protocol or socket.
++final class PersistentHTTP1Session: @unchecked Sendable {
++    struct Result: Sendable {
++        let url: URL
++        let statusCode: Int
++        let byteCount: Int
++        let reusedConnection: Bool
++    }
++
++    enum TransferError: LocalizedError, Equatable {
++        case bodyExceedsLimit(Int)
++        case httpStatus(Int)
++        case malformedResponse(String)
++        case tooManyRedirects
++        case truncatedBody
++        case unsupportedURL(URL)
++
++        var errorDescription: String? {
++            switch self {
++            case .bodyExceedsLimit(let limit): return "body exceeds \(limit) bytes"
++            case .httpStatus(let status): return "HTTP status \(status)"
++            case .malformedResponse(let detail): return "malformed HTTP response: \(detail)"
++            case .tooManyRedirects: return "too many redirects"
++            case .truncatedBody: return "connection closed before Content-Length bytes arrived"
++            case .unsupportedURL(let url): return "unsupported URL for HTTP/1.1 session: \(url)"
++            }
++        }
++    }
++
++    private struct Origin: Equatable {
++        let scheme: String
++        let host: String
++        let port: Int
++
++        init?(_ url: URL) {
++            guard let scheme = url.scheme?.lowercased(),
++                  scheme == "http" || scheme == "https",
++                  let host = url.host?.lowercased() else { return nil }
++            self.scheme = scheme
++            self.host = host
++            self.port = url.port ?? (scheme == "https" ? 443 : 80)
++        }
++    }
++
++    private static let maxHeadBytes = 128 * 1024
++    private static let maxRedirects = 3
++    private static let readChunkBytes = 64 * 1024
++    private static let readTimeout: TimeInterval = 30
++    private static let writeTimeout: TimeInterval = 20
++
++    private let queue = DispatchQueue(label: "aether.hls.query-wrapped.http1")
++    private let stateLock = NSLock()
++    private var _cancelled = false
++    private var session: URLSession?
++    private var task: URLSessionStreamTask?
++    private var origin: Origin?
++    private var pending = Data()
++
++    deinit { cancel() }
++
++    var isCancelled: Bool {
++        stateLock.lock(); defer { stateLock.unlock() }
++        return _cancelled
++    }
++
++    /// Streams one complete response body while enforcing its byte ceiling. Calls made one after
++    /// another on the same origin reuse this object's socket. A cancellation permanently ends the
++    /// session so a superseded HLS generation cannot reopen behind its caller's back.
++    func stream(
++        for request: URLRequest,
++        limit: Int,
++        cancelSessionOnTaskCancellation: Bool = true,
++        receive: @escaping @Sendable (Data) throws -> Void
++    ) async throws -> Result {
++        try Task.checkCancellation()
++        let result = try await withTaskCancellationHandler {
++            try await withCheckedThrowingContinuation { continuation in
++                queue.async { [self] in
++                    do {
++                        continuation.resume(returning: try perform(
++                            request: request,
++                            limit: limit,
++                            receive: receive
++                        ))
++                    } catch {
++                        continuation.resume(throwing: isCancelled ? CancellationError() : error)
++                    }
++                }
++            }
++        } onCancel: { [self] in
++            if cancelSessionOnTaskCancellation { cancel() }
++        }
++        // A reader-generation cancellation may deliberately drain the current response so the
++        // next generation can keep the same socket. The canceled caller still observes
++        // CancellationError, but only after the framing boundary has made reuse safe.
++        if !cancelSessionOnTaskCancellation { try Task.checkCancellation() }
++        return result
++    }
++
++    func cancel() {
++        stateLock.lock()
++        if _cancelled {
++            stateLock.unlock()
++            return
++        }
++        _cancelled = true
++        let task = self.task
++        let session = self.session
++        self.task = nil
++        self.session = nil
++        origin = nil
++        pending = Data()
++        stateLock.unlock()
++        task?.closeRead()
++        task?.closeWrite()
++        session?.invalidateAndCancel()
++    }
++
++    private func perform(
++        request: URLRequest,
++        limit: Int,
++        receive: @escaping @Sendable (Data) throws -> Void
++    ) throws -> Result {
++        guard limit >= 0, let source = request.url else {
++            throw TransferError.malformedResponse("request has no URL or a negative body limit")
++        }
++        let originalHeaders = request.allHTTPHeaderFields ?? [:]
++        var target = source
++        var hops = 0
++
++        do {
++            while true {
++                if isCancelled { throw CancellationError() }
++                let headers = RedirectHeaderPolicy.headersToReplay(
++                    extraHeaders: originalHeaders,
++                    originalURL: source,
++                    redirectURL: target
++                )
++                let (head, reused) = try openOrReuse(target, headers: headers)
++                if let location = HeldSourceConnection.redirectLocation(head) {
++                    guard hops < Self.maxRedirects else { throw TransferError.tooManyRedirects }
++                    guard let next = URL(string: location, relativeTo: target)?.absoluteURL else {
++                        throw TransferError.malformedResponse("unresolvable Location: \(location)")
++                    }
++                    hops += 1
++                    closeSocket()
++                    OriginRequestBudget.shared.noteRedirect(from: source, to: next)
++                    target = next
++                    continue
++                }
++                guard (200..<300).contains(head.status) else {
++                    closeSocket()
++                    throw TransferError.httpStatus(head.status)
++                }
++                if let raw = head.headers["content-length"] {
++                    guard let declared = Int64(raw), declared >= 0 else {
++                        throw TransferError.malformedResponse("invalid Content-Length: \(raw)")
++                    }
++                    if declared > Int64(limit) {
++                        closeSocket()
++                        throw TransferError.bodyExceedsLimit(limit)
++                    }
++                }
++
++                let framing = HeldSourceConnection.framing(for: head)
++                let count = try pump(framing: framing, limit: limit, receive: receive)
++                if !Self.canReuse(head: head, framing: framing) { closeSocket() }
++                return Result(
++                    url: target,
++                    statusCode: head.status,
++                    byteCount: count,
++                    reusedConnection: reused
++                )
++            }
++        } catch {
++            closeSocket()
++            throw error
++        }
++    }
++
++    private static func canReuse(
++        head: HeldSourceConnection.ResponseHead,
++        framing: HeldSourceConnection.BodyFraming
++    ) -> Bool {
++        if case .untilClose = framing { return false }
++        let connection = head.headers["connection"]?.lowercased() ?? ""
++        if connection.split(separator: ",").contains(where: { $0.trimmingCharacters(in: .whitespaces) == "close" }) {
++            return false
++        }
++        if head.statusLine.uppercased().hasPrefix("HTTP/1.0") {
++            return connection.split(separator: ",").contains {
++                $0.trimmingCharacters(in: .whitespaces) == "keep-alive"
++            }
++        }
++        return true
++    }
++
++    private func openOrReuse(
++        _ target: URL,
++        headers: [String: String]
++    ) throws -> (HeldSourceConnection.ResponseHead, Bool) {
++        guard let requestedOrigin = Origin(target), let host = target.host else {
++            throw TransferError.unsupportedURL(target)
++        }
++        let secure = requestedOrigin.scheme == "https"
++        let reused: Bool
++
++        stateLock.lock()
++        let hasMatchingSocket = !_cancelled && task != nil && origin == requestedOrigin
++        stateLock.unlock()
++        if hasMatchingSocket {
++            reused = true
++        } else {
++            closeSocket()
++            let configuration = URLSessionConfiguration.ephemeral
++            configuration.timeoutIntervalForRequest = Self.readTimeout
++            configuration.timeoutIntervalForResource = .greatestFiniteMagnitude
++            let session = URLSession(
++                configuration: configuration,
++                delegate: EngineTLS.sessionDelegate,
++                delegateQueue: nil
++            )
++            let task = session.streamTask(withHostName: host, port: requestedOrigin.port)
++
++            stateLock.lock()
++            if _cancelled {
++                stateLock.unlock()
++                session.invalidateAndCancel()
++                throw CancellationError()
++            }
++            self.session = session
++            self.task = task
++            origin = requestedOrigin
++            pending = Data()
++            stateLock.unlock()
++
++            task.resume()
++            if secure { task.startSecureConnection() }
++            reused = false
++        }
++
++        try write(HeldSourceConnection.requestBytes(
++            target: target,
++            host: host,
++            port: requestedOrigin.port,
++            secure: secure,
++            offset: nil,
++            extraHeaders: headers,
++            userAgent: nil
++        ))
++        return (try readHead(), reused)
++    }
++
++    private func pump(
++        framing: HeldSourceConnection.BodyFraming,
++        limit: Int,
++        receive: @escaping @Sendable (Data) throws -> Void
++    ) throws -> Int {
++        var framing = framing
++        var received = 0
++        while true {
++            if isCancelled { throw CancellationError() }
++            let data: Data?
++            switch framing {
++            case .identity(let remaining):
++                if remaining == 0 { return received }
++                guard let next = try readBody(upTo: Int(min(Int64(Self.readChunkBytes), remaining))) else {
++                    throw TransferError.truncatedBody
++                }
++                framing = .identity(remaining: remaining - Int64(next.count))
++                data = next
++            case .chunked(let decoder):
++                if let next = try decoder.take(upTo: Self.readChunkBytes) {
++                    data = next
++                } else if decoder.isComplete {
++                    return received
++                } else {
++                    guard let wire = try readBody(upTo: Self.readChunkBytes) else {
++                        throw TransferError.malformedResponse("connection closed inside a chunked body")
++                    }
++                    decoder.feed(wire)
++                    continue
++                }
++            case .untilClose:
++                guard let next = try readBody(upTo: Self.readChunkBytes) else {
++                    return received
++                }
++                data = next
++            }
++
++            guard let data, !data.isEmpty else { continue }
++            guard data.count <= limit - received else {
++                throw TransferError.bodyExceedsLimit(limit)
++            }
++            received += data.count
++            try receive(data)
++        }
++    }
++
++    private func write(_ data: Data) throws {
++        guard let task = currentTask() else { throw CancellationError() }
++        let outcome = CallbackOutcome()
++        let done = DispatchSemaphore(value: 0)
++        task.write(data, timeout: Self.writeTimeout) { error in
++            outcome.error = error
++            done.signal()
++        }
++        done.wait()
++        if let error = outcome.error { throw error }
++    }
++
++    private func readHead() throws -> HeldSourceConnection.ResponseHead {
++        var bytes = Data()
++        let separator = Data("\r\n\r\n".utf8)
++        while bytes.range(of: separator) == nil {
++            let (chunk, eof) = try readFromSocket(maxLength: 64 * 1024)
++            if chunk.isEmpty && eof {
++                throw TransferError.malformedResponse("connection closed before a response head")
++            }
++            bytes.append(chunk)
++            guard bytes.count <= Self.maxHeadBytes else {
++                throw TransferError.malformedResponse("no head terminator in \(Self.maxHeadBytes) bytes")
++            }
++        }
++        guard let split = bytes.range(of: separator) else {
++            throw TransferError.malformedResponse("head terminator vanished")
++        }
++        let body = Data(bytes[split.upperBound...])
++        stateLock.lock()
++        pending = body + pending
++        stateLock.unlock()
++        return try HeldSourceConnection.ResponseHead(rawHead: bytes[..<split.lowerBound])
++    }
++
++    private func readBody(upTo limit: Int) throws -> Data? {
++        stateLock.lock()
++        if !pending.isEmpty {
++            let slice = pending.prefix(limit)
++            pending.removeFirst(slice.count)
++            stateLock.unlock()
++            return Data(slice)
++        }
++        stateLock.unlock()
++        let (data, eof) = try readFromSocket(maxLength: limit)
++        if data.isEmpty && eof { return nil }
++        return data
++    }
++
++    private func readFromSocket(maxLength: Int) throws -> (Data, Bool) {
++        guard let task = currentTask() else { throw CancellationError() }
++        let outcome = CallbackOutcome()
++        let done = DispatchSemaphore(value: 0)
++        task.readData(
++            ofMinLength: 1,
++            maxLength: max(1, maxLength),
++            timeout: Self.readTimeout
++        ) { data, eof, error in
++            outcome.data = data ?? Data()
++            outcome.atEOF = eof
++            outcome.error = error
++            done.signal()
++        }
++        done.wait()
++        if let error = outcome.error { throw error }
++        return (outcome.data, outcome.atEOF)
++    }
++
++    private final class CallbackOutcome: @unchecked Sendable {
++        var data = Data()
++        var atEOF = false
++        var error: Error?
++    }
++
++    private func currentTask() -> URLSessionStreamTask? {
++        stateLock.lock(); defer { stateLock.unlock() }
++        return _cancelled ? nil : task
++    }
++
++    private func closeSocket() {
++        stateLock.lock()
++        let task = self.task
++        let session = self.session
++        self.task = nil
++        self.session = nil
++        origin = nil
++        pending = Data()
++        stateLock.unlock()
++        task?.closeRead()
++        task?.closeWrite()
++        session?.invalidateAndCancel()
++    }
++}
++
+ /// `Transfer-Encoding: chunked` decoder. Fed wire bytes, asked for body bytes.
+ ///
+ /// An origin serving a Range answers 206 with a `Content-Length`, so this is the residual case: a
 diff --git a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
-index 9173ece2..6fa7ddf8 100644
+index 9173ece2dd043c3b686fdee1e9e111f7987daa4f..07957737b72f4d6ce77f887e6b10cea23e003f2b 100644
 --- a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
 +++ b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
-@@ -44,14 +44,39 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -44,6 +44,12 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
      private var failed = false
      private var closed = false
      private var producer: Task<Void, Never>?
-+    /// Query-wrapper origins can serialize all requests behind one token. Starting four full-segment
-+    /// downloads at once then starves every request until the resource timeout. The narrowly admitted
-+    /// query-wrapped path streams every needed segment serially.
-+    private var serialQueryWrappedSegments = false
++    /// The narrowly admitted query-wrapper path uses one persistent HTTP/1.1 connection for its
++    /// whole segment sequence. Ordinary finite HLS keeps the upstream Foundation fetch path.
++    private var usesQueryWrappedHTTP1Session = false
++    /// Reader-lifetime ownership is required: libavformat can reposition to byte/time zero while it
++    /// finishes opening. A producer-lifetime session would replace the socket on every such probe.
++    private var queryWrappedTransport: PersistentHTTP1Session?
      /// Playlist index the running producer opened at; lets a reposition onto that same segment, before
      /// any byte was consumed, resolve without refetching it.
      private var producerStartIndex: Int?
- 
-+    /// Builds the owned session policy. Ordinary finite-HLS reads keep the
-+    /// existing 45-second whole-resource ceiling. Query-wrapper segments are
-+    /// consumed incrementally, so their safety boundary is instead the
-+    /// resetting 15-second no-new-data timeout plus the existing byte ceiling
-+    /// and generation cancellation. Applying the whole-resource ceiling to
-+    /// that path aborts an actively progressing large segment at 45 seconds.
-+    static func ownedSessionConfiguration(
-+        streamsQueryWrappedSegments: Bool
-+    ) -> URLSessionConfiguration {
-+        let configuration = URLSessionConfiguration.ephemeral
-+        configuration.timeoutIntervalForRequest = 15
-+        if !streamsQueryWrappedSegments {
-+            configuration.timeoutIntervalForResource = 45
-+        }
-+        configuration.requestCachePolicy =
-+            .reloadIgnoringLocalAndRemoteCacheData
-+        configuration.urlCache = nil
-+        return configuration
-+    }
-+
-     init(
-         playlistURL: URL,
-         httpHeaders: [String: String],
--        session: URLSession? = nil
-+        session: URLSession? = nil,
-+        streamsQueryWrappedSegments: Bool = false
-     ) {
-         self.playlistURL = playlistURL
-         self.httpHeaders = httpHeaders
-@@ -59,11 +84,10 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
-             self.session = session
-             ownsSession = false
-         } else {
--            let configuration = URLSessionConfiguration.ephemeral
--            configuration.timeoutIntervalForRequest = 15
--            configuration.timeoutIntervalForResource = 45
--            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
--            configuration.urlCache = nil
-+            let configuration = Self.ownedSessionConfiguration(
-+                streamsQueryWrappedSegments:
-+                    streamsQueryWrappedSegments
-+            )
-             self.session = URLSession(
-                 configuration: configuration, delegate: EngineTLS.sessionDelegate,
-                 delegateQueue: nil)
-@@ -78,11 +102,44 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -78,6 +84,37 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
          playlistURL: URL,
          httpHeaders: [String: String],
          session: URLSession? = nil
@@ -158,32 +564,25 @@ index 9173ece2..6fa7ddf8 100644
      ) async throws -> HLSVODIngestReader? {
          let reader = HLSVODIngestReader(
              playlistURL: playlistURL,
-             httpHeaders: httpHeaders,
--            session: session
-+            session: session,
-+            streamsQueryWrappedSegments:
-+                requiresQueryWrappedSegmentURL
-         )
-         var accepted = false
-         defer {
-@@ -90,6 +147,16 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -90,6 +127,17 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
          }
          do {
              let media = try await reader.resolveMedia()
 +            if requiresQueryWrappedSegmentURL {
-+                let hasQueryWrappedSegment = media.segments.contains { segment in
++                let hasOnlyQueryWrappedSegments = !media.segments.isEmpty && media.segments.allSatisfy { segment in
 +                    guard let url = HLSPlaylistParser.resolve(uri: segment.uri, against: media.url) else {
 +                        return false
 +                    }
 +                    return isQueryWrappedMPEGTSURL(url)
 +                }
-+                guard hasQueryWrappedSegment else { return nil }
-+                reader.serialQueryWrappedSegments = true
++                guard hasOnlyQueryWrappedSegments else { return nil }
++                reader.usesQueryWrappedHTTP1Session = true
++                reader.queryWrappedTransport = PersistentHTTP1Session()
 +            }
              guard let first = media.segments.first,
                    first.crypt == nil,
                    let segmentURL = HLSPlaylistParser.resolve(
-@@ -118,6 +185,24 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -118,6 +166,24 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
          }
      }
  
@@ -208,11 +607,41 @@ index 9173ece2..6fa7ddf8 100644
      var mediaDuration: Double {
          condition.withLock { resolved?.duration ?? 0 }
      }
-@@ -376,6 +461,22 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -253,9 +319,11 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         failed = true
+         let task = producer
+         producer = nil
++        let transport = queryWrappedTransport
+         condition.broadcast()
+         condition.unlock()
+         task?.cancel()
++        transport?.cancel()
+     }
+ 
+     func close() {
+@@ -267,11 +335,14 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+         closed = true
+         let task = producer
+         producer = nil
++        let transport = queryWrappedTransport
++        queryWrappedTransport = nil
+         queue.removeAll()
+         bufferedBytes = 0
+         condition.broadcast()
+         condition.unlock()
+         task?.cancel()
++        transport?.cancel()
+         if ownsSession {
+             session.invalidateAndCancel()
+         }
+@@ -376,6 +447,27 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
              return (segment, url)
          }
  
-+        if serialQueryWrappedSegments {
++        if usesQueryWrappedHTTP1Session {
++            guard let transport = condition.withLock({ queryWrappedTransport }) else {
++                throw CancellationError()
++            }
 +            for item in resolvedSegments {
 +                guard item.0.crypt == nil else {
 +                    throw HLSIngestError.encryptedNotSupported
@@ -220,8 +649,10 @@ index 9173ece2..6fa7ddf8 100644
 +                try await streamSegment(
 +                    item.1,
 +                    limit: BoundedFetch.segmentLimit(forDuration: item.0.duration),
-+                    generation: generation
++                    generation: generation,
++                    transport: transport
 +                )
++                try Task.checkCancellation()
 +            }
 +            return
 +        }
@@ -231,54 +662,114 @@ index 9173ece2..6fa7ddf8 100644
          try await withThrowingTaskGroup(of: (Int, Data).self) { group in
              var nextToSpawn = 0
              var nextToCommit = 0
-@@ -425,6 +526,53 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
+@@ -425,6 +517,113 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
          }
      }
  
-+    /// Feed each segment needed by a query-wrapper seek to FFmpeg as bytes arrive. Waiting for a
-+    /// complete segment recreates the same long startup stall as the rejected FFmpeg HLS request, and
-+    /// parallel full-body fetches can make every request miss the resource timeout. Every response is
-+    /// still bounded and format-checked before its first chunk crosses the reader boundary.
-+    private func streamSegment(_ url: URL, limit: Int, generation: UInt64) async throws {
-+        let (bytes, response) = try await session.bytes(for: makeRequest(url))
-+        defer { bytes.task.cancel() }
-+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-+        guard (200..<300).contains(status) else {
-+            throw HLSIngestError.playlistUnreachable(status: status)
++    /// Feed one query-wrapped segment to FFmpeg as HTTP/1.1 body chunks arrive. The transport is
++    /// shared by the entire segment sequence, so this method never opens, retries or falls back on
++    /// its own. A refusal from the wrapper remains the terminal failure it actually was.
++    private func streamSegment(
++        _ url: URL,
++        limit: Int,
++        generation: UInt64,
++        transport: PersistentHTTP1Session
++    ) async throws {
++        let startedAt = Date.timeIntervalSinceReferenceDate
++        let resource = url.lastPathComponent
++        EngineLog.emit(
++            "[HLSVODIngest] query-wrapper fetch_started resource=\(resource) "
++                + "api=persistent_http1 protocol=http/1.1",
++            category: .engine
++        )
++        let sink = QueryWrappedSegmentSink(reader: self, generation: generation)
++        do {
++            let result = try await transport.stream(
++                for: makeRequest(url),
++                limit: limit,
++                cancelSessionOnTaskCancellation: false,
++                receive: { try sink.receive($0) }
++            )
++            try sink.finish()
++            let elapsed = Date.timeIntervalSinceReferenceDate - startedAt
++            EngineLog.emit(
++                String(
++                    format: "[HLSVODIngest] query-wrapper fetch_finished resource=%@ "
++                        + "api=persistent_http1 protocol=http/1.1 connectionReused=%@ "
++                        + "status=%d bytes=%d elapsed=%.3fs",
++                    resource,
++                    result.reusedConnection ? "true" : "false",
++                    result.statusCode,
++                    result.byteCount,
++                    elapsed
++                ),
++                category: .engine
++            )
++        } catch let error as PersistentHTTP1Session.TransferError {
++            let elapsed = Date.timeIntervalSinceReferenceDate - startedAt
++            EngineLog.emit(
++                String(
++                    format: "[HLSVODIngest] query-wrapper fetch_failed resource=%@ "
++                        + "api=persistent_http1 protocol=http/1.1 elapsed=%.3fs error=%@",
++                    resource,
++                    elapsed,
++                    EngineLog.summary(of: error)
++                ),
++                category: .engine
++            )
++            switch error {
++            case .httpStatus(let status):
++                throw HLSIngestError.playlistUnreachable(status: status)
++            case .bodyExceedsLimit(let limit):
++                throw HLSIngestError.playlistInvalid(reason: "body exceeds \(limit) bytes")
++            default:
++                throw error
++            }
 +        }
-+        let declared = response.expectedContentLength
-+        guard declared <= Int64(limit) else {
-+            throw HLSIngestError.playlistInvalid(reason: "body exceeds \(limit) bytes")
++    }
++
++    /// Mutable segment state lives in this serial sink instead of in an escaping `@Sendable`
++    /// closure. The HTTP/1.1 session calls it on its private queue, one body chunk at a time.
++    private final class QueryWrappedSegmentSink: @unchecked Sendable {
++        private unowned let reader: HLSVODIngestReader
++        private let generation: UInt64
++        private var prefix = Data()
++        private var received = 0
++        private var classified = false
++        private var discarding = false
++
++        init(reader: HLSVODIngestReader, generation: UInt64) {
++            self.reader = reader
++            self.generation = generation
++            prefix.reserveCapacity(3)
 +        }
 +
-+        let chunkLimit = 64 * 1024
-+        var chunk = Data()
-+        chunk.reserveCapacity(chunkLimit)
-+        var received = 0
-+        var classified = false
-+        for try await byte in bytes {
-+            try Task.checkCancellation()
-+            received += 1
-+            guard received <= limit else {
-+                throw HLSIngestError.playlistInvalid(reason: "body exceeds \(limit) bytes")
-+            }
-+            chunk.append(byte)
-+            if !classified, chunk.count >= 3 {
-+                guard LiveSegmentFormat.classify(chunk) == .mpegts else {
++        func receive(_ data: Data) throws {
++            received += data.count
++            if !classified {
++                prefix.append(data)
++                guard prefix.count >= 3 else { return }
++                guard LiveSegmentFormat.classify(prefix) == .mpegts else {
 +                    throw HLSIngestError.unsupportedSegmentFormat
 +                }
 +                classified = true
++                guard reader.append(prefix, generation: generation) else {
++                    discarding = true
++                    prefix.removeAll(keepingCapacity: false)
++                    return
++                }
++                prefix.removeAll(keepingCapacity: false)
++                return
 +            }
-+            if classified, chunk.count >= chunkLimit {
-+                guard append(chunk, generation: generation) else { return }
-+                chunk.removeAll(keepingCapacity: true)
++            if !discarding, !reader.append(data, generation: generation) {
++                discarding = true
 +            }
 +        }
-+        guard received > 0, classified else {
-+            throw HLSIngestError.unsupportedSegmentFormat
-+        }
-+        if !chunk.isEmpty {
-+            _ = append(chunk, generation: generation)
++
++        func finish() throws {
++            guard received > 0, classified else {
++                throw HLSIngestError.unsupportedSegmentFormat
++            }
 +        }
 +    }
 +
@@ -286,20 +777,23 @@ index 9173ece2..6fa7ddf8 100644
          condition.lock()
          defer { condition.unlock() }
 diff --git a/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift b/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
-index af29171c..af784ff6 100644
+index af29171c363292a9431575ec4615c74f8a5225d8..74eaf1b35dfcc2afb32266aa072c5b1803eca921 100644
 --- a/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
 +++ b/Tests/AetherEngineTests/Issue268HLSVODIngestTests.swift
-@@ -45,6 +45,151 @@ final class Issue268HLSVODIngestTests: XCTestCase {
+@@ -45,6 +45,167 @@ final class Issue268HLSVODIngestTests: XCTestCase {
          )
      }
  
 +    func testQueryWrappedHEVCSegmentBuildsTheNarrowPreflightReader() async throws {
 +        let root = try XCTUnwrap(URL(string: "https://vod.test/media.m3u8?token=fixture"))
++        let body = transportStream(streamType: 0x24)
++        let origin = try XCTUnwrap(KeepAliveRangeOrigin(data: body))
++        defer { origin.stop() }
 +        let segment = try XCTUnwrap(URL(
-+            string: "https://vod.test/api/ts?url=https%3A%2F%2Fedge.test%2Fsegment.ts"
++            string: "http://127.0.0.1:\(origin.port)/api/ts?url=https%3A%2F%2Fedge.test%2Fsegment.ts"
 +        ))
 +        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(segment.absoluteString)
-+        Issue268URLProtocol.bodyByURL[segment.absoluteString] = transportStream(streamType: 0x24)
++        Issue268URLProtocol.bodyByURL[segment.absoluteString] = body
 +
 +        let session = makeSession()
 +        defer { session.invalidateAndCancel() }
@@ -321,19 +815,22 @@ index af29171c..af784ff6 100644
 +            Issue268URLProtocol.headersByURL[segment.absoluteString]?["User-Agent"],
 +            "fixture-agent"
 +        )
++        XCTAssertEqual(origin.acceptedConnectionCount, 1)
++        XCTAssertEqual(origin.rangeHeaderCount, 0)
 +    }
 +
 +    func testQueryWrappedReaderDeliversBeforeTheWholeSegmentFinishes() async throws {
 +        let root = try XCTUnwrap(URL(string: "https://vod.test/streaming.m3u8"))
-+        let segment = try XCTUnwrap(URL(
-+            string: "https://vod.test/api/ts?url=https%3A%2F%2Fedge.test%2Fstreaming.ts"
-+        ))
-+        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(segment.absoluteString)
 +        var body = transportStream(streamType: 0x24)
 +        body.append(Data(repeating: 0xFF, count: 128 * 1024))
-+        Issue268URLProtocol.bodyByURL[segment.absoluteString] = body
 +        let tailGate = DispatchSemaphore(value: 0)
-+        Issue268URLProtocol.streamTailGateByURL[segment.absoluteString] = tailGate
++        let origin = try XCTUnwrap(KeepAliveRangeOrigin(data: body, tailGate: tailGate))
++        defer { origin.stop() }
++        let segment = try XCTUnwrap(URL(
++            string: "http://127.0.0.1:\(origin.port)/api/ts?url=https%3A%2F%2Fedge.test%2Fstreaming.ts"
++        ))
++        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(segment.absoluteString)
++        Issue268URLProtocol.bodyByURL[segment.absoluteString] = body
 +
 +        let session = makeSession()
 +        defer { session.invalidateAndCancel() }
@@ -349,39 +846,49 @@ index af29171c..af784ff6 100644
 +        }
 +
 +        var bytes = [UInt8](repeating: 0, count: 188)
-+        let readStartedAt = Date.timeIntervalSinceReferenceDate
 +        let count = bytes.withUnsafeMutableBufferPointer {
 +            reader.read($0.baseAddress, size: Int32($0.count))
 +        }
-+        let readElapsed = Date.timeIntervalSinceReferenceDate - readStartedAt
 +
 +        XCTAssertEqual(count, 188)
 +        XCTAssertEqual(bytes[0], 0x47)
-+        XCTAssertLessThan(
-+            readElapsed,
-+            1,
-+            "the query-wrapper ingest must release bounded chunks before the response tail arrives"
-+        )
++        XCTAssertEqual(origin.requestCount, 1)
 +    }
 +
-+    func testQueryWrappedOwnedSessionDoesNotUseTheWholeResourceCeiling() {
-+        let ordinary = HLSVODIngestReader.ownedSessionConfiguration(
-+            streamsQueryWrappedSegments: false
++    func testQueryWrappedSegmentsReuseOneHTTP1Connection() async throws {
++        let root = try XCTUnwrap(URL(string: "https://vod.test/reuse.m3u8"))
++        let body = transportStream(streamType: 0x24)
++        let origin = try XCTUnwrap(KeepAliveRangeOrigin(data: body))
++        defer { origin.stop() }
++        let segments = try (0..<3).map { index in
++            try XCTUnwrap(URL(
++                string: "http://127.0.0.1:\(origin.port)/api/ts?url=https%3A%2F%2Fedge.test%2Fsegment\(index).ts"
++            ))
++        }
++        Issue268URLProtocol.bodyByURL[root.absoluteString] = mediaPlaylist(
++            segments.map(\.absoluteString)
 +        )
-+        let streaming = HLSVODIngestReader.ownedSessionConfiguration(
-+            streamsQueryWrappedSegments: true
-+        )
-+        let foundationDefault = URLSessionConfiguration.ephemeral
++        for segment in segments {
++            Issue268URLProtocol.bodyByURL[segment.absoluteString] = body
++        }
 +
-+        XCTAssertEqual(ordinary.timeoutIntervalForRequest, 15)
-+        XCTAssertEqual(ordinary.timeoutIntervalForResource, 45)
-+        XCTAssertEqual(streaming.timeoutIntervalForRequest, 15)
-+        XCTAssertEqual(
-+            streaming.timeoutIntervalForResource,
-+            foundationDefault.timeoutIntervalForResource,
-+            "an actively progressing bounded segment must not be cut off at 45 seconds"
++        let session = makeSession()
++        defer { session.invalidateAndCancel() }
++        let made = try await HLSVODIngestReader.makeIfQueryWrappedHEVCMPEGTS(
++            playlistURL: root,
++            httpHeaders: [:],
++            session: session
 +        )
-+        XCTAssertGreaterThan(streaming.timeoutIntervalForResource, 45)
++        let reader = try XCTUnwrap(made)
++        defer { reader.close() }
++
++        var bytes = [UInt8](repeating: 0, count: 188)
++        _ = bytes.withUnsafeMutableBufferPointer {
++            reader.read($0.baseAddress, size: Int32($0.count))
++        }
++        try await waitFor { origin.requestCount == segments.count }
++        XCTAssertEqual(origin.acceptedConnectionCount, 1)
++        XCTAssertEqual(origin.rangeHeaderCount, 0)
 +    }
 +
 +    func testNarrowPreflightRefusesOrdinaryAndNonTransportQueryURLs() async throws {
@@ -441,35 +948,233 @@ index af29171c..af784ff6 100644
      func testMasterPlaylistUsesHighestBandwidthHEVCVariant() async throws {
          let root = try XCTUnwrap(URL(string: "https://vod.test/master.m3u8"))
          let low = try XCTUnwrap(URL(string: "https://vod.test/low.m3u8"))
-@@ -424,10 +569,12 @@ final class Issue268HLSVODIngestTests: XCTestCase {
- final class Issue268URLProtocol: URLProtocol, @unchecked Sendable {
-     nonisolated(unsafe) static var bodyByURL: [String: Data] = [:]
-     nonisolated(unsafe) static var headersByURL: [String: [String: String]] = [:]
-+    nonisolated(unsafe) static var streamTailGateByURL: [String: DispatchSemaphore] = [:]
- 
-     static func reset() {
-         bodyByURL = [:]
-         headersByURL = [:]
-+        streamTailGateByURL = [:]
+diff --git a/Tests/AetherEngineTests/Issue377HeldConnectionTests.swift b/Tests/AetherEngineTests/Issue377HeldConnectionTests.swift
+index f9e7d91db0a98b5f1515097766ad3c691c8c2b9f..5a27c56369fda7f929a966af8cd79735f4b8c83b 100644
+--- a/Tests/AetherEngineTests/Issue377HeldConnectionTests.swift
++++ b/Tests/AetherEngineTests/Issue377HeldConnectionTests.swift
+@@ -93,6 +93,23 @@ struct Issue377HeldConnectionTests {
+         #expect(text.hasSuffix("\r\n\r\n"))
      }
  
-     override class func canInit(with request: URLRequest) -> Bool { true }
-@@ -451,6 +598,18 @@ final class Issue268URLProtocol: URLProtocol, @unchecked Sendable {
-             headerFields: ["Content-Length": String(data.count)]
-         )!
-         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-+        if request.value(forHTTPHeaderField: "Range") == nil,
-+           let gate = Self.streamTailGateByURL[url.absoluteString],
-+           data.count > 64 * 1024 {
-+            let split = 64 * 1024
-+            client?.urlProtocol(self, didLoad: data.prefix(split))
-+            DispatchQueue.global().async { [self] in
-+                _ = gate.wait(timeout: .now() + 3)
-+                client?.urlProtocol(self, didLoad: data.dropFirst(split))
-+                client?.urlProtocolDidFinishLoading(self)
-+            }
-+            return
++    @Test("a whole-body request omits Range instead of smuggling a second request shape")
++    func wholeBodyRequestOmitsRange() throws {
++        let url = try #require(URL(string: "https://cdn.example.com/api/ts?url=segment.ts"))
++        let text = String(decoding: try HeldSourceConnection.requestBytes(
++            target: url,
++            host: "cdn.example.com",
++            port: 443,
++            secure: true,
++            offset: nil,
++            extraHeaders: ["Range": "bytes=99-"],
++            userAgent: nil
++        ), as: UTF8.self)
++
++        #expect(!text.lowercased().contains("\r\nrange:"))
++        #expect(text.contains("\r\nConnection: keep-alive\r\n"))
++    }
++
+     @Test("a non-default port rides in Host, because an origin may route on it")
+     func hostCarriesNonDefaultPort() throws {
+         let url = try #require(URL(string: "http://192.168.1.10:8096/Videos/1/stream"))
+@@ -209,6 +226,140 @@ struct Issue377HeldConnectionTests {
+ 
+     // MARK: - Against a real socket
+ 
++    @Test("query-wrapped requests reuse one HTTP/1.1 connection without Range")
++    func persistentSessionReusesOneConnection() async throws {
++        let body = Data(repeating: 0x47, count: 256 * 1024)
++        let origin = try #require(KeepAliveRangeOrigin(data: body))
++        defer { origin.stop() }
++        let transport = PersistentHTTP1Session()
++        defer { transport.cancel() }
++
++        var reuse: [Bool] = []
++        for index in 0..<3 {
++            let url = try #require(URL(
++                string: "http://127.0.0.1:\(origin.port)/api/ts?url=segment\(index).ts"
++            ))
++            let result = try await transport.stream(
++                for: URLRequest(url: url),
++                limit: body.count,
++                receive: { _ in }
++            )
++            #expect(result.statusCode == 206)
++            #expect(result.byteCount == body.count)
++            reuse.append(result.reusedConnection)
 +        }
-         client?.urlProtocol(self, didLoad: data)
-         client?.urlProtocolDidFinishLoading(self)
++
++        #expect(reuse == [false, true, true])
++        #expect(origin.acceptedConnectionCount == 1)
++    }
++
++    @Test("a wrapper refusal is terminal and is not retried on a new connection")
++    func persistentSessionDoesNotRetryARefusal() async throws {
++        let scripted = ThrottledOriginServer(
++            totalSize: 64 * 1024,
++            throttleUs: 0,
++            respond: { requestIndex, _, _ in
++                requestIndex == 1 ? .status(403) : .serve200
++            }
++        )
++        let origin = try #require(scripted)
++        defer { origin.stop() }
++        let transport = PersistentHTTP1Session()
++        defer { transport.cancel() }
++        let url = try #require(URL(
++            string: "http://127.0.0.1:\(origin.port)/api/ts?url=segment.ts"
++        ))
++
++        _ = try await transport.stream(
++            for: URLRequest(url: url),
++            limit: 128 * 1024,
++            receive: { _ in }
++        )
++        await #expect(throws: PersistentHTTP1Session.TransferError.httpStatus(403)) {
++            _ = try await transport.stream(
++                for: URLRequest(url: url),
++                limit: 128 * 1024,
++                receive: { _ in }
++            )
++        }
++        #expect(origin.requestLog.count == 2)
++    }
++
++    @Test("cancelling a query-wrapped transfer closes its held socket")
++    func persistentSessionCancellationClosesSocket() async throws {
++        let tailGate = DispatchSemaphore(value: 0)
++        let origin = try #require(KeepAliveRangeOrigin(
++            data: Data(repeating: 0x47, count: 128 * 1024),
++            tailGate: tailGate
++        ))
++        defer {
++            tailGate.signal()
++            origin.stop()
++        }
++        let transport = PersistentHTTP1Session()
++        let url = try #require(URL(
++            string: "http://127.0.0.1:\(origin.port)/api/ts?url=segment.ts"
++        ))
++        let transfer = Task {
++            try await transport.stream(
++                for: URLRequest(url: url),
++                limit: 128 * 1024,
++                receive: { _ in }
++            )
++        }
++
++        try await waitFor { origin.requestCount == 1 }
++        #expect(origin.openConnectionCount == 1)
++        transfer.cancel()
++        await #expect(throws: CancellationError.self) { try await transfer.value }
++        tailGate.signal()
++        try await waitFor { origin.openConnectionCount == 0 }
++    }
++
++    @Test("a superseded consumer drains its response and preserves the socket for its successor")
++    func persistentSessionCanDrainAcrossReaderGenerations() async throws {
++        let tailGate = DispatchSemaphore(value: 0)
++        let body = Data(repeating: 0x47, count: 128 * 1024)
++        let origin = try #require(KeepAliveRangeOrigin(data: body, tailGate: tailGate))
++        defer {
++            tailGate.signal()
++            origin.stop()
++        }
++        let transport = PersistentHTTP1Session()
++        defer { transport.cancel() }
++        let url = try #require(URL(
++            string: "http://127.0.0.1:\(origin.port)/api/ts?url=segment.ts"
++        ))
++
++        let superseded = Task {
++            try await transport.stream(
++                for: URLRequest(url: url),
++                limit: body.count,
++                cancelSessionOnTaskCancellation: false,
++                receive: { _ in }
++            )
++        }
++        try await waitFor { origin.requestCount == 1 }
++        superseded.cancel()
++        tailGate.signal()
++        await #expect(throws: CancellationError.self) { try await superseded.value }
++
++        let successor = Task {
++            try await transport.stream(
++                for: URLRequest(url: url),
++                limit: body.count,
++                cancelSessionOnTaskCancellation: false,
++                receive: { _ in }
++            )
++        }
++        try await waitFor { origin.requestCount == 2 }
++        tailGate.signal()
++        let result = try await successor.value
++
++        #expect(result.reusedConnection)
++        #expect(origin.acceptedConnectionCount == 1)
++    }
++
+     @Test("one request serves the whole body, and the pull budget is what comes off the wire")
+     func onePullRequestServesTheBody() async throws {
+         let total: Int64 = 3 * 1024 * 1024
+diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
+index c6d8c32690f93d7fe1bb8b71d5550f9d7e7e1dd0..df664836ec0cac630339a23d753c104656238d07 100644
+--- a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
++++ b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
+@@ -9,13 +9,17 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+     let port: UInt16
+     private let listener: LoopbackListener
+     private let data: Data
++    private let tailGate: DispatchSemaphore?
+     private let lock = NSLock()
+     private var connections: Set<Int32> = []
+     private var stopped = false
+     private var accepted = 0
++    private var requests = 0
++    private var rangeHeaders = 0
+ 
+-    init?(data: Data) {
++    init?(data: Data, tailGate: DispatchSemaphore? = nil) {
+         self.data = data
++        self.tailGate = tailGate
+         guard let listener = LoopbackListener(backlog: 16) else { return nil }
+         self.listener = listener
+         port = listener.port
+@@ -24,6 +28,8 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+ 
+     var openConnectionCount: Int { lock.withLock { connections.count } }
+     var acceptedConnectionCount: Int { lock.withLock { accepted } }
++    var requestCount: Int { lock.withLock { requests } }
++    var rangeHeaderCount: Int { lock.withLock { rangeHeaders } }
+ 
+     func stop() {
+         lock.lock()
+@@ -58,6 +64,10 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+             lock.unlock()
+         }
+         while let head = readRequestHead(fd) {
++            lock.withLock {
++                requests += 1
++                if Self.range(in: head) != nil { rangeHeaders += 1 }
++            }
+             var start = 0
+             var end = data.count - 1
+             if let range = Self.range(in: head) {
+@@ -73,8 +83,15 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+                 + "Content-Length: \(end - start + 1)\r\n"
+                 + "Content-Range: bytes \(start)-\(end)/\(data.count)\r\n"
+                 + "Accept-Ranges: bytes\r\nConnection: keep-alive\r\n\r\n"
+-            guard writeAll(fd, Data(header.utf8)),
+-                  writeAll(fd, data.subdata(in: start..<(end + 1))) else { return }
++            guard writeAll(fd, Data(header.utf8)) else { return }
++            let body = data.subdata(in: start..<(end + 1))
++            if let tailGate, body.count > 64 * 1024 {
++                guard writeAll(fd, Data(body.prefix(64 * 1024))) else { return }
++                tailGate.wait()
++                guard writeAll(fd, Data(body.dropFirst(64 * 1024))) else { return }
++            } else if !writeAll(fd, body) {
++                return
++            }
+         }
      }
+ 

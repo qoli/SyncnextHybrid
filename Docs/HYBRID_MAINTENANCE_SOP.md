@@ -77,11 +77,17 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      admission；只有 outer segment URL 無 MPEG-TS 副檔名、query 內包裹實際
      MPEG-TS URL，且 carriage 明確為 HEVC-in-MPEG-TS 時，才進入上游既有的
      seekable VOD ingest。
-   - 上述窄路由逐段串行、以 bounded chunk 增量交付；避免 query-wrapper 將
-     多個並行全段請求排隊至 resource timeout，也避免等待整段完成才讓 demux
-     開始讀取。由於單一有效傳輸可能超過 45 秒，此路由保留 15 秒「無新資料」
-     request timeout 與既有 byte ceiling／generation cancellation，但不套用 45 秒
-     whole-resource ceiling；普通 VOD ingest 仍保留 45 秒 resource timeout 與既有
+   - 上述窄路由把整個同源 segment sequence 放在單一、可取消的 HTTP/1.1
+     keep-alive 連線上；請求不帶 `Range`，response body 以 bounded chunk 增量交付，
+     每段仍受既有 byte ceiling 約束。下一段只有在前一段 framing 完整結束後才寫入
+     同一 socket，因此這不是把併發上限改成 1，也不會為每段重新建連線。
+   - transport 由 reader lifetime 持有；libavformat opening 若 supersede producer，舊代
+     只排空當前 response 至 framing boundary、停止交付其資料，新代再沿用同一 socket。
+     真正 reader close／cancel 才立即關閉連線，並保持可取消。
+   - origin refusal、body framing 錯誤或超過 byte ceiling 均明確終止；不得改用 HTTP/2、
+     另開連線重試、解析 query 內層 URL，或退回另一播放器 route。跨 origin redirect
+     仍沿用既有 header replay policy，並因 origin 已改變而建立目標連線。
+     普通 VOD ingest 完全保留既有 Foundation session、45 秒 resource timeout 與
      adaptive prefetch。
    - 不關閉 FFmpeg `extension_picky`／`allowed_segment_extensions`，不處理 live、
      fMP4、H.264、加密、不可達或 carriage 不明來源，也不新增播放器 fallback。
