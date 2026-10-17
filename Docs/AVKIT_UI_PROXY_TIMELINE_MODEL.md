@@ -1,6 +1,6 @@
 # AVKit UI Proxy 時間軸模型與微調指南
 
-更新日期：2026-08-01
+更新日期：2026-10-17
 狀態：Active
 Owner：SyncnextHybrid
 
@@ -116,6 +116,42 @@ UI 截圖驗收。它不得：
 - 強制 Play；
 - 清除或偽造 `waitingToPlay`。
 
+### 4.5 片尾 seek、完成與重播
+
+`seek(to:intent:)` 的預設 `.position` 表示定位；`.automaticSkip` 表示跳過
+已辨識片段。兩者共用 generation、Aether 回應與 Server acknowledge，不從
+相同的 target 猜測使用者意圖。App 的 fingerprint 自動跳過傳入
+`.automaticSkip`；一般定位與歷史進度保持 `.position`。
+
+AetherEngine #164 將有限 VOD 結尾前 0.5 秒視為片尾，該位置的 `play()`
+會自行 seek 到 0。Hybrid 以相同既有容差集中判定，回歸測試直接比對 pinned
+Aether 的判定；不把 seek target 任意往前挪動。
+
+恢復播放前也檢查 Aether 實際落點；當請求位置尚未進入片尾、實際落點已進入
+片尾時，一樣暫停兩端，但不把原先的中段跳過升格為播放完成。
+
+- 手動定位到片尾：實際暫停 Aether 與 Proxy，Server rate 歸零，維持可回拖的
+  `.paused`；seek 返回後不發送 `engine.play()`。
+- 自動跳過到片尾：將 target 正規化為已知 duration，暫停兩端，Server 在同一
+  generation 完成並發布 `.ended`，由 App 既有播畢流程決定下一集或退出。
+- 明確 `replay()` 或片尾的 Play：先由 Server 建立回到 0 的新 navigation，
+  再接受 Aether 落點並按 Server 當下 rate 恢復。Aether 已 organic `.ended`
+  時，先以既有 API 重開同一 session；失敗明確回報，不另換來源或重試。
+- 導航期間的 Play／速度只更新當下意圖；Pause 可覆寫重播。後來的 seek 或
+  Pause 會取消尚未開始的 queued replay，舊 generation 不可完成新操作。
+
+實機 AVPlayer 在 seek 中也可能回寫 `rate=1`，不能當作新的 Play／重播意圖。
+Hybrid 分開追蹤 renderer navigation 與 AVPlayer client seek；client seek 完成
+前的 rate observation 不改寫 Server。當前 generation 的 client completion
+再把 Server 的既有 rate 套回 AVPlayer，避免 seek 內部延遲回寫覆蓋片尾暫停。
+
+正常 seek 回應後恢復播放與明確重播分開處理。`setRate` 在 paused renderer
+只記住速度，因此中段恢復先設定速度再 Play；片尾落點不執行 Play。Aether
+的一般時鐘讀值仍不能反向覆寫 Server playhead。
+
+Native route 同樣套用片尾意圖與完成投影，保留 Aether 原生 seek 的中段
+transport 行為；播放錯誤優先於片尾狀態。
+
 ## 5. `waitingToPlay` 與視覺一致性
 
 AVKit 的 transport UI 只能從它自己的 `AVPlayer`／HLS 狀態推導。Proxy 應透過
@@ -222,9 +258,8 @@ seek-prepared
 avkit-seek-projected
 navigation-forwarded-to-aether origin=avKit transport=seek-without-pause
 navigation-seek-dispatched
-navigation-aether-returned
 seek-response acknowledged=true
-navigation-server-wait-ended
+navigation-landed intent=position endDisposition=none
 navigation-will-resume
 ```
 
@@ -240,6 +275,53 @@ generation，而不是原始行數計算。
 - 舊 generation 的回應恢復了新 generation 後的播放。
 
 ## 9. 驗收方法
+
+片尾回歸分成兩層：`swift test` 的 `HybridSeekEndPolicyTests`／
+`HybridSeekTransportTests` 覆蓋原日誌數值、精確／超出片尾、暫停回拖、
+中段跳過與速度、重播、交錯 seek 及 reload 失敗；其中也直接執行 pinned
+Aether 的 hostless seek。HybridSmokePlayer 的
+`HybridPlaybackEndNavigationTests` 則在 tvOS 使用真實本地 HLS Proxy 與
+公開 Session seek／replay／Play／Pause 入口，等待實際 AVPlayer seek 完成並
+檢查 client 時間與 rate。hostless fixture 的供應材料由測試明確提供，保留
+真實 client transport observation；不存在的 renderer host 不提供 readiness。
+這些測試不等於實際影像解碼、
+音訊、AVKit 遙控操作或長影片實機驗收。
+
+2026-10-17 本次修復先移除已封存的 7.36.0 工作區差異，回到 root
+`2b029f9` 與正式 7.33.2＋原樣 0005，再重新套用本次變更。乾淨基線的
+`Scripts/apply-patches.sh` 全流程通過；套回修復後 `swift test` 共 111 項、
+零失敗（2 項既有外部 fixture 跳過），HybridSmokePlayer tvOS Simulator
+25 項全過。上述 5 項 Session／真實 Proxy client 回歸也在唯一授權的
+「書房電視」tvOS 26.6 通過；Syncnext `generic/platform=tvOS` 簽名建置通過。
+這些結果均來自恢復 0005 後的來源，不沿用清理前的驗收結果。
+
+同一「書房電視」對原日誌來源的單次 fresh 短驗收亦通過：實際 route 為
+`avKitProxy`，啟播前進 2.014 秒，AVKit 使用者 navigation 到 122 秒的落點為
+122.029 秒，seek 後再前進 2.051 秒並記錄 `run_passed`；fresh 截圖確認實際
+影片畫面。這次短驗收不涵蓋原影片片尾停駐／重播畫面、完整 EOS 或音訊聽感。
+
+同日 23:37:20–23:37:57 補上原影片片尾端到端自動驗收，使用同一
+「書房電視」、同一來源（SHA-256 `4ab0072a…63850250`）、0005 基線與修復版，
+run ID 為 `45de7c8f-6ffe-4a50-8ad3-e4ef2c80e47d`。新增的
+`HYBRID_SMOKE_SCENARIO=tailSeekReplay` 保留正常啟播檢查，先 seek 到 1314 秒並
+前進，再在播放中呼叫 App 相同的 automatic-skip 入口，target 為 1343.34 秒，
+duration 為 1343.44 秒；驗收前不額外 Pause。以 read-only `SmokeTesting` SPI
+讀取 renderer 時鐘，獨立對照 Server snapshot 與實際 AVKit client 時鐘：
+
+| 階段 | Aether | Server | AVKit client | 結果 |
+| --- | --- | --- | --- | --- |
+| 自動片尾跳過，停留 10.082 秒後 | 1343.440 | 1343.440／ended | 1343.000／rate 0 | 保持片尾 |
+| 明確 replay 落點 | 0.000 | 0.139 | 0.000 | 一起回零 |
+| replay 後進度 | 2.000 | 2.173 | 2.028 | 三者各前進至少 2 秒 |
+| 手動片尾 seek，停留 10.073 秒後 | 1343.340 | 1343.340／paused | 1343.000／rate 0 | 保持片尾 |
+| 明確 replay 落點 | 0.000 | 0.057 | 0.000 | 一起回零 |
+| replay 後進度 | 2.100 | 2.244 | 2.061 | 三者各前進至少 2 秒 |
+
+這次單次 fresh run 產生 `run_passed`，保留兩輪片尾與最終重播的實機截圖。
+原日誌的 renderer 0.08 秒／Server 1343.34 秒／client 1343.00 秒會被新增的
+clock acceptance 測試明確拒絕；新增設定及判定測試後 Simulator 共 30 項全過。
+此驗收刻意重建原 bug 的播放／seek 條件，驗證修復後不再隱式回零；它直接
+呼叫 automatic-skip 入口，不包含重新執行指紋辨識、完整自然 EOS 或音訊聽感。
 
 Proxy transport 不能只靠 unit test 或 AVPlayer callback 驗收。最低要求是：
 

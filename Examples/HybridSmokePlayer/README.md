@@ -14,11 +14,14 @@ player is created. A failed run never switches mode, source, route, or player.
 The smoke target directly links the local `../../AetherEngine` product only as
 a diagnostic exception. This does not change the production boundary:
 Syncnext still links and imports only `SyncnextHybrid`. The app does not edit
-SyncnextHybrid's public interface, AetherEngine, FFmpegBuild, or any Patch.
+AetherEngine, FFmpegBuild, or any Patch. Hybrid's read-only `SmokeTesting`
+SPI supplies independent renderer-clock evidence for the tail acceptance;
+production callers continue to use the normal playback interface.
 
 ## Smoke contract
 
-Every run uses one explicit seekable VOD URL and the same bounded contract:
+Every run uses one explicit seekable VOD URL. The default `playbackSeek`
+scenario follows this bounded contract:
 
 1. Create exactly one player for the selected mode.
 2. Within 30 seconds, require a paused snapshot with finite duration and valid
@@ -39,7 +42,7 @@ is always `not_applicable`.
 
 `hybridAVKit` additionally requires the Hybrid route to remain unchanged and
 `AVPlayerViewController.player === session.avPlayer` throughout.
-For `avKitProxy`, automation does not call `HybridPlaybackSession.seek(to:)`
+For `avKitProxy` in the default scenario, automation does not call `HybridPlaybackSession.seek(to:)`
 or `play()` after the navigation. This prevents a direct session command from
 masking a broken AVKit proxy path. The structured `seek_input` metric is
 `avkit_user_navigation`; `seek_distance_seconds` records the exercised
@@ -55,6 +58,33 @@ mismatch, or zero progress produce one terminal `FAIL`.
 This is a bounded smoke test. It does not prove playback to EOS, presented
 frames, HDR panel mode, audio/subtitle selection, independent audio analysis,
 PiP, or AirPlay.
+
+### Tail seek and replay acceptance
+
+Set `HYBRID_SMOKE_SCENARIO=tailSeekReplay` with `hybridAVKit` and
+`HYBRID_SMOKE_EXPECTED_ROUTE=avKitProxy` to exercise the automatic-skip
+regression. Use the original source with `HYBRID_SMOKE_PRESEEK_SECONDS=1314`
+and `HYBRID_SMOKE_SEEK_SECONDS=1343.34` (duration 1343.44 seconds).
+The normal startup and optional preseek checks still run. The final seek has
+a separate contract because remaining paused at the tail is the expected result:
+
+1. While playing, call the same `session.seek(to:intent: .automaticSkip)` entry
+   as the App's fingerprint skip. Require `.ended`, zero Server/client rate,
+   and renderer, Server, and AVKit client clocks at the tail for ten seconds.
+2. Explicitly call `session.replay()`, wait for the real AVKit client seek
+   completion, and require all three clocks to land within one second of zero
+   and then each advance by at least two seconds.
+3. Repeat with `.position`, requiring `.paused` at the tail, then explicit replay.
+
+The harness never pauses before either tail seek. It reads the renderer clock
+through read-only `SmokeTesting` SPI; a Proxy snapshot alone would miss the
+original renderer-at-zero/UI-at-end failure. `tail_hold_started`,
+`tail_hold_passed`, `replay_landed`, and `replay_progress_passed` include the
+independent renderer/client clocks, renderer phase, client rate, and Server
+generation. No implicit rewind, route change, reload, or substituted source is
+used to make a failed assertion pass. This scenario verifies the Hybrid skip
+entry and clocks; fingerprint detection and audible output remain separate
+acceptance surfaces.
 
 ## Generate and build
 
@@ -147,6 +177,7 @@ Supported environment values:
 | Name | Contract |
 | --- | --- |
 | `HYBRID_SMOKE_MODE` | Required for automation; exactly `aetherEngine` or `hybridAVKit` |
+| `HYBRID_SMOKE_SCENARIO` | Optional `playbackSeek` (default) or `tailSeekReplay`; the latter requires Hybrid and asserts the Proxy route |
 | `HYBRID_SMOKE_URL` | Required when any `HYBRID_SMOKE_*` automation value is present |
 | `HYBRID_SMOKE_HEADERS_JSON` | Optional JSON object whose values must all be strings |
 | `HYBRID_SMOKE_SEEK_SECONDS` | Optional; fixed contract default is `10` |

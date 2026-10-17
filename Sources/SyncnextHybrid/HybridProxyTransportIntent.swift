@@ -10,17 +10,20 @@ struct HybridProxyNavigation: Equatable {
     let oldTime: Double
     let targetTime: Double
     let origin: Origin
+    let intent: HybridPlaybackSeekIntent
 
     init(
         generation: UInt64,
         oldTime: Double,
         targetTime: Double,
-        origin: Origin = .avKit
+        origin: Origin = .avKit,
+        intent: HybridPlaybackSeekIntent = .position
     ) {
         self.generation = generation
         self.oldTime = oldTime
         self.targetTime = targetTime
         self.origin = origin
+        self.intent = intent
     }
 
     var distance: Double {

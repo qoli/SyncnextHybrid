@@ -150,6 +150,27 @@ final class HybridHLSProxyPlaylistTests: XCTestCase {
         )
     }
 
+    func testClientSeekRateEchoCannotCreateReplayOrReplaceServerIntent() {
+        for rate: Float in [0, 1] {
+            XCTAssertFalse(
+                HybridHLSProxyRateObservationPolicy.shouldAccept(
+                    rate: rate,
+                    clientIsWaiting: false,
+                    hasPendingNavigation: false,
+                    hasPendingClientSeek: true
+                )
+            )
+        }
+        XCTAssertTrue(
+            HybridHLSProxyRateObservationPolicy.shouldAccept(
+                rate: 1,
+                clientIsWaiting: false,
+                hasPendingNavigation: false,
+                hasPendingClientSeek: false
+            )
+        )
+    }
+
     func testServerAuthorityOwnsClockRateWaitingAndSeekGeneration() {
         var authority = HybridHLSTimelineAuthority(
             duration: 2_000,

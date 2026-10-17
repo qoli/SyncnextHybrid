@@ -19,6 +19,11 @@ enum SmokeExpectedRoute: String, Sendable, Equatable {
     case avKitProxy
 }
 
+enum SmokeScenario: String, Sendable, Equatable {
+    case playbackSeek
+    case tailSeekReplay
+}
+
 enum SmokeExpectedFingerprintProvider: String, Sendable, Equatable {
     case segmentCache
     case independentRemoteHLS
@@ -32,6 +37,7 @@ struct SmokeFingerprintConfiguration: Sendable, Equatable {
 
 struct SmokeConfiguration: Sendable, Equatable {
     static let modeEnvironmentKey = "HYBRID_SMOKE_MODE"
+    static let scenarioEnvironmentKey = "HYBRID_SMOKE_SCENARIO"
     static let urlEnvironmentKey = "HYBRID_SMOKE_URL"
     static let headersEnvironmentKey = "HYBRID_SMOKE_HEADERS_JSON"
     static let seekEnvironmentKey = "HYBRID_SMOKE_SEEK_SECONDS"
@@ -50,6 +56,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let defaultPlaybackRate: Float = 1
 
     let mode: SmokePlaybackMode
+    let scenario: SmokeScenario
     let sourceURL: URL
     let httpHeaders: [String: String]
     let seekSeconds: Double
@@ -89,6 +96,8 @@ struct SmokeConfiguration: Sendable, Equatable {
 
         return try make(
             rawMode: rawMode,
+            rawScenario: environment[scenarioEnvironmentKey]
+                ?? SmokeScenario.playbackSeek.rawValue,
             rawURL: rawURL,
             rawHeaders: environment[headersEnvironmentKey] ?? "",
             rawSeekSeconds:
@@ -117,6 +126,7 @@ struct SmokeConfiguration: Sendable, Equatable {
     ) throws -> SmokeConfiguration {
         try make(
             rawMode: mode.rawValue,
+            rawScenario: SmokeScenario.playbackSeek.rawValue,
             rawURL: rawURL,
             rawHeaders: rawHeaders,
             rawSeekSeconds: rawSeekSeconds,
@@ -131,6 +141,7 @@ struct SmokeConfiguration: Sendable, Equatable {
 
     private static func make(
         rawMode: String,
+        rawScenario: String,
         rawURL: String,
         rawHeaders: String,
         rawSeekSeconds: String,
@@ -143,6 +154,12 @@ struct SmokeConfiguration: Sendable, Equatable {
     ) throws -> SmokeConfiguration {
         guard let mode = SmokePlaybackMode(rawValue: rawMode) else {
             throw SmokeConfigurationError.invalidMode(rawMode)
+        }
+        guard let scenario = SmokeScenario(rawValue: rawScenario) else {
+            throw SmokeConfigurationError.invalidScenario(rawScenario)
+        }
+        if scenario == .tailSeekReplay, mode != .hybridAVKit {
+            throw SmokeConfigurationError.tailScenarioRequiresHybrid
         }
         let sourceURL = try parseURL(rawURL)
         let headers = try parseHeaders(rawHeaders)
@@ -211,6 +228,7 @@ struct SmokeConfiguration: Sendable, Equatable {
 
         return SmokeConfiguration(
             mode: mode,
+            scenario: scenario,
             sourceURL: sourceURL,
             httpHeaders: headers,
             seekSeconds: seekSeconds,
@@ -322,6 +340,8 @@ enum SmokeConfigurationError:
     case missingMode
     case invalidURL
     case invalidMode(String)
+    case invalidScenario(String)
+    case tailScenarioRequiresHybrid
     case invalidHeadersJSON
     case invalidSeekSeconds
     case invalidPlaybackRate
@@ -342,6 +362,10 @@ enum SmokeConfigurationError:
             "Media URL must be an absolute http, https, or file URL"
         case .invalidMode(let value):
             "Playback mode must be aetherEngine or hybridAVKit, not \(value)"
+        case .invalidScenario(let value):
+            "Smoke scenario must be playbackSeek or tailSeekReplay, not \(value)"
+        case .tailScenarioRequiresHybrid:
+            "tailSeekReplay requires hybridAVKit mode"
         case .invalidHeadersJSON:
             "HTTP headers must be a JSON object with string values"
         case .invalidSeekSeconds:

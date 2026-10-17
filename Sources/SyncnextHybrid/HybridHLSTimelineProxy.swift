@@ -82,8 +82,10 @@ enum HybridHLSProxyRateObservationPolicy {
     static func shouldAccept(
         rate: Float,
         clientIsWaiting: Bool,
-        hasPendingNavigation: Bool
+        hasPendingNavigation: Bool,
+        hasPendingClientSeek: Bool = false
     ) -> Bool {
+        guard !hasPendingClientSeek else { return false }
         guard rate == 0 else {
             return true
         }
@@ -159,8 +161,25 @@ struct HybridHLSTimelineAuthority {
         pendingSeekGeneration = seekGeneration
         resolvedSegmentIndices.removeAll(keepingCapacity: true)
         currentTime = min(duration, max(0, seconds))
+        if materialPhase == .ended {
+            materialPhase = .flowing
+        }
         lastUptime = uptime
         return seekGeneration
+    }
+
+    @discardableResult
+    mutating func completeSeek(
+        generation: UInt64,
+        uptime: TimeInterval
+    ) -> Bool {
+        guard generation == seekGeneration else { return false }
+        currentTime = duration
+        rate = 0
+        pendingSeekGeneration = nil
+        materialPhase = .ended
+        lastUptime = uptime
+        return true
     }
 
     mutating func recordResolvedSegment(
@@ -614,6 +633,13 @@ final class HybridHLSTimelineProxy {
         return acknowledged
     }
 
+    @discardableResult
+    func completeSeek(generation: UInt64) -> Bool {
+        let completed = server.completeSeek(generation: generation)
+        emitStateIfChanged()
+        return completed
+    }
+
     private func emitStateIfChanged(force: Bool = false) {
         let state = server.timelineState()
         server.updatePlayhead(state.currentTime)
@@ -844,6 +870,16 @@ private final class HybridHLSTimelineAuthorityStore:
         return generation
     }
 
+    func completeSeek(generation: UInt64) -> Bool {
+        lock.lock()
+        let completed = authority.completeSeek(
+            generation: generation,
+            uptime: ProcessInfo.processInfo.systemUptime
+        )
+        lock.unlock()
+        return completed
+    }
+
     func update(material: HybridHLSProxyMaterial) {
         lock.lock()
         authority.update(
@@ -1019,6 +1055,19 @@ private final class HybridHLSProxyServer: @unchecked Sendable {
         // release. The authoritative clock remains waiting until this Server
         // actually resolves the first segment for the same generation.
         return supply.acknowledgeSeekResponse(generation: generation)
+    }
+
+    func completeSeek(generation: UInt64) -> Bool {
+        guard authority.completeSeek(generation: generation) else {
+            return false
+        }
+        supply.update(
+            material: HybridHLSProxyMaterial(
+                phase: .ended,
+                bufferedThrough: authority.snapshot().duration
+            )
+        )
+        return true
     }
 
     func timelineState() -> HybridHLSTimelineState {

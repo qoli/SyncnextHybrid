@@ -2,7 +2,7 @@ import AetherEngine
 import AVKit
 import Combine
 import Foundation
-import SyncnextHybrid
+@_spi(SmokeTesting) import SyncnextHybrid
 
 @MainActor
 final class SmokeViewModel: ObservableObject {
@@ -285,6 +285,7 @@ final class SmokeViewModel: ObservableObject {
             "run_started",
             metrics: [
                 "mode": configuration.mode.rawValue,
+                "scenario": configuration.scenario.rawValue,
                 "header_names":
                     configuration.httpHeaders.keys.sorted()
                     .joined(separator: ","),
@@ -601,10 +602,17 @@ final class SmokeViewModel: ObservableObject {
             emitter: emitter
         )
         updateSnapshot(initial)
-        try SmokePolicy.validateDuration(
-            initial.duration,
-            seekSeconds: configuration.seekSeconds
-        )
+        if configuration.scenario == .tailSeekReplay {
+            try SmokePolicy.validateTailTarget(
+                duration: initial.duration,
+                seekSeconds: configuration.seekSeconds
+            )
+        } else {
+            try SmokePolicy.validateDuration(
+                initial.duration,
+                seekSeconds: configuration.seekSeconds
+            )
+        }
         try SmokePolicy.validateInitialTime(initial.currentTime)
         try requireBinding(playbackSession)
 
@@ -743,6 +751,15 @@ final class SmokeViewModel: ObservableObject {
             )
         }
 
+        if configuration.scenario == .tailSeekReplay {
+            try await runTailSeekReplay(
+                playbackSession,
+                configuration: configuration,
+                emitter: emitter
+            )
+            return
+        }
+
         runState = .seeking
         statusMessage =
             "Seeking to \(SmokeEventEmitter.number(configuration.seekSeconds))s"
@@ -862,6 +879,233 @@ final class SmokeViewModel: ObservableObject {
                 extra: passMetrics
             )
         )
+    }
+
+    private func runTailSeekReplay(
+        _ playbackSession: HybridPlaybackSession,
+        configuration: SmokeConfiguration,
+        emitter: SmokeEventEmitter
+    ) async throws {
+        try requireRoute(playbackSession.snapshot.route, expected: .avKitProxy)
+        let duration = playbackSession.snapshot.duration
+
+        for intent: HybridPlaybackSeekIntent in [.automaticSkip, .position] {
+            let intentName = intent == .automaticSkip ? "automaticSkip" : "position"
+            guard playbackSession.snapshot.phase == .playing,
+                  playbackSession.snapshot.rate > 0 else {
+                throw SmokeFailure.tailContractViolation(
+                    "\(intentName) must begin while playing"
+                )
+            }
+            runState = .seeking
+            statusMessage = "Playing → tail seek (\(intentName))"
+            emitter.emit(
+                "tail_seek_requested",
+                metrics: hybridClockMetrics(
+                    playbackSession,
+                    emitter: emitter,
+                    extra: [
+                        "seek_input": "hybrid_session",
+                        "seek_intent": intentName,
+                        "target_seconds":
+                            SmokeEventEmitter.number(configuration.seekSeconds),
+                    ]
+                )
+            )
+            // Deliberately preserve the playing state on entry, matching the
+            // original automatic-skip trigger. No harness pause or Play can
+            // hide an implicit renderer rewind here.
+            try await playbackSession.seek(
+                to: configuration.seekSeconds,
+                intent: intent
+            )
+            try await requireProxyClientSeekCompletion(playbackSession)
+
+            let expectedPhase: HybridPlaybackPhase =
+                intent == .automaticSkip ? .ended : .paused
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            emitter.emit(
+                "tail_hold_started",
+                metrics: hybridClockMetrics(
+                    playbackSession,
+                    emitter: emitter,
+                    extra: ["seek_intent": intentName]
+                )
+            )
+            statusMessage = "Holding at tail for 10 seconds (\(intentName))"
+            while true {
+                try Task.checkCancellation()
+                try requireBinding(playbackSession)
+                let snapshot = playbackSession.snapshot
+                let renderer = playbackSession.rendererClockObservation
+                let clientTime = playbackSession.avPlayer.currentTime().seconds
+                updateSnapshot(snapshot)
+                try requireRoute(snapshot.route, expected: .avKitProxy)
+                try SmokePolicy.validateSynchronizedClocks(
+                    renderer: renderer.currentTime,
+                    server: snapshot.currentTime,
+                    client: clientTime
+                )
+                try SmokePolicy.validateSeekLanding(
+                    target: duration,
+                    actual: renderer.currentTime
+                )
+                guard snapshot.phase == expectedPhase, snapshot.rate == 0,
+                      playbackSession.avPlayer.rate == 0,
+                      renderer.phase == .paused || renderer.phase == .ended,
+                      !renderer.isSeeking else {
+                    throw SmokeFailure.tailContractViolation(
+                        "\(intentName) did not remain stopped at the tail "
+                            + "(server=\(snapshot.phase.smokeName), "
+                            + "renderer=\(renderer.phase.smokeName))"
+                    )
+                }
+                if ProcessInfo.processInfo.systemUptime - startedAt
+                    >= SmokePolicy.strictPostSeekSustainSeconds {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            emitter.emit(
+                "tail_hold_passed",
+                metrics: hybridClockMetrics(
+                    playbackSession,
+                    emitter: emitter,
+                    extra: [
+                        "seek_intent": intentName,
+                        "hold_seconds": SmokeEventEmitter.number(
+                            ProcessInfo.processInfo.systemUptime - startedAt
+                        ),
+                    ]
+                )
+            )
+
+            statusMessage = "Explicit replay → zero (\(intentName))"
+            emitter.emit(
+                "replay_requested",
+                metrics: hybridClockMetrics(playbackSession, emitter: emitter)
+            )
+            try await playbackSession.replay()
+            try await requireProxyClientSeekCompletion(playbackSession)
+            let rendererStart = playbackSession.rendererClockObservation.currentTime
+            let serverStart = playbackSession.snapshot.currentTime
+            let clientStart = playbackSession.avPlayer.currentTime().seconds
+            for time in [rendererStart, serverStart, clientStart] {
+                try SmokePolicy.validateSeekLanding(target: 0, actual: time)
+            }
+            emitter.emit(
+                "replay_landed",
+                metrics: hybridClockMetrics(playbackSession, emitter: emitter)
+            )
+
+            runState = .checkingPostSeek
+            statusMessage = "Requiring all three clocks to advance after replay"
+            let replayStartedAt = ProcessInfo.processInfo.systemUptime
+            while true {
+                try Task.checkCancellation()
+                try requireBinding(playbackSession)
+                let snapshot = playbackSession.snapshot
+                let renderer = playbackSession.rendererClockObservation
+                let clientTime = playbackSession.avPlayer.currentTime().seconds
+                updateSnapshot(snapshot)
+                try requireRoute(snapshot.route, expected: .avKitProxy)
+                try SmokePolicy.validateSynchronizedClocks(
+                    renderer: renderer.currentTime,
+                    server: snapshot.currentTime,
+                    client: clientTime
+                )
+                if case .failed(let message) = snapshot.phase {
+                    throw SmokeFailure.playerFailed(message)
+                }
+                let advances = [
+                    renderer.currentTime - rendererStart,
+                    snapshot.currentTime - serverStart,
+                    clientTime - clientStart,
+                ]
+                if snapshot.phase == .playing,
+                   renderer.phase == .playing,
+                   playbackSession.avPlayer.rate > 0,
+                   advances.allSatisfy({
+                       $0 >= SmokePolicy.minimumPostSeekProgressSeconds
+                   }) {
+                    break
+                }
+                if ProcessInfo.processInfo.systemUptime - replayStartedAt
+                    >= SmokePolicy.maximumZeroProgressSeconds {
+                    throw SmokeFailure.tailContractViolation(
+                        "replay failed to advance all three clocks: \(advances)"
+                    )
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            emitter.emit(
+                "replay_progress_passed",
+                metrics: hybridClockMetrics(
+                    playbackSession,
+                    emitter: emitter,
+                    extra: ["after_seek_intent": intentName]
+                )
+            )
+        }
+
+        runState = .passed
+        statusMessage = "Tail skip, parked seek and explicit replay passed"
+        emitter.emit(
+            "run_passed",
+            metrics: hybridClockMetrics(
+                playbackSession,
+                emitter: emitter,
+                extra: ["scenario": SmokeScenario.tailSeekReplay.rawValue]
+            )
+        )
+    }
+
+    private func requireProxyClientSeekCompletion(
+        _ playbackSession: HybridPlaybackSession
+    ) async throws {
+        guard let generation = playbackSession.hlsProxyServerObservation?
+            .seekGeneration else {
+            throw SmokeFailure.tailContractViolation("missing Proxy generation")
+        }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        while !playbackSession.hasAVKitProxyClientCompletedSeek(
+            generation: generation
+        ) {
+            try Task.checkCancellation()
+            if case .failed(let message) = playbackSession.snapshot.phase {
+                throw SmokeFailure.playerFailed(message)
+            }
+            if ProcessInfo.processInfo.systemUptime - startedAt
+                >= SmokePolicy.maximumSessionReadinessSeconds {
+                throw SmokeFailure.tailContractViolation(
+                    "AVKit client did not complete seek generation \(generation)"
+                )
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func hybridClockMetrics(
+        _ playbackSession: HybridPlaybackSession,
+        emitter: SmokeEventEmitter,
+        extra: [String: String] = [:]
+    ) -> [String: String] {
+        let renderer = playbackSession.rendererClockObservation
+        var metrics = extra
+        metrics["renderer_time_seconds"] =
+            SmokeEventEmitter.number(renderer.currentTime)
+        metrics["renderer_source_time_seconds"] =
+            SmokeEventEmitter.number(renderer.sourceTime)
+        metrics["renderer_phase"] = renderer.phase.smokeName
+        metrics["client_time_seconds"] = SmokeEventEmitter.number(
+            playbackSession.avPlayer.currentTime().seconds
+        )
+        metrics["client_rate"] = SmokeEventEmitter.number(
+            Double(playbackSession.avPlayer.rate)
+        )
+        metrics["seek_generation"] = playbackSession.hlsProxyServerObservation
+            .map { String($0.seekGeneration) } ?? "unavailable"
+        return emitter.metrics(for: playbackSession.snapshot, extra: metrics)
     }
 
     private func requireFingerprintAudio(

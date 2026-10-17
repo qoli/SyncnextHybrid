@@ -14,6 +14,23 @@ enum SmokePolicy {
     static let readinessDiagnosticCheckpointsSeconds = [5.0, 15.0, 30.0]
     static let diagnosticCheckpointsSeconds = [15.0, 30.0, 45.0, 60.5]
 
+    static func validateTailTarget(
+        duration: Double,
+        seekSeconds: Double
+    ) throws {
+        guard duration.isFinite, duration > 0 else {
+            throw SmokeFailure.nonFiniteDuration
+        }
+        // Exercise Aether's pinned 0.5-second end/rewind boundary rather than
+        // weakening the normal seek-and-progress smoke contract.
+        guard seekSeconds.isFinite,
+              seekSeconds >= duration - 0.5 else {
+            throw SmokeFailure.tailContractViolation(
+                "target \(seekSeconds) does not reach the end of \(duration)"
+            )
+        }
+    }
+
     static func validateDuration(
         _ duration: Double,
         seekSeconds: Double
@@ -37,6 +54,21 @@ enum SmokePolicy {
         guard currentTime.isFinite,
               currentTime >= minimumInitialTimeSeconds else {
             throw SmokeFailure.invalidMediaTime(currentTime)
+        }
+    }
+
+    static func validateSynchronizedClocks(
+        renderer: Double,
+        server: Double,
+        client: Double
+    ) throws {
+        guard renderer.isFinite, server.isFinite, client.isFinite,
+              abs(renderer - server) <= seekLandingToleranceSeconds,
+              abs(renderer - client) <= seekLandingToleranceSeconds else {
+            throw SmokeFailure.tailContractViolation(
+                "clock divergence: renderer=\(renderer), "
+                    + "server=\(server), client=\(client)"
+            )
         }
     }
 
@@ -106,6 +138,7 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
     )
     case aetherContractViolation(String)
     case fingerprintContractViolation(String)
+    case tailContractViolation(String)
 
     var code: String {
         switch self {
@@ -149,6 +182,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "aether_contract_violation"
         case .fingerprintContractViolation:
             "fingerprint_contract_violation"
+        case .tailContractViolation:
+            "tail_contract_violation"
         }
     }
 
@@ -210,6 +245,8 @@ enum SmokeFailure: Error, Sendable, LocalizedError {
             "AetherEngine strict seek contract failed: \(message)"
         case .fingerprintContractViolation(let message):
             "Hybrid fingerprint PCM contract failed: \(message)"
+        case .tailContractViolation(let message):
+            "Hybrid tail seek/replay contract failed: \(message)"
         }
     }
 }

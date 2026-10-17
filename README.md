@@ -48,6 +48,12 @@ the controlled renderer and media-material provider. AVKit user navigation
 uses an explicit fast path to notify Aether immediately while preserving the
 same Server generation and acknowledgement gate.
 
+`seek(to:intent:)` defaults to `.position`: a VOD tail seek pauses both timelines
+and remains seekable. `.automaticSkip` finishes playback when a detected segment
+reaches the end. `replay()` (or Play while parked at the end) sends both timelines
+through a new seek to zero before restoring transport. Seek completion never
+uses Aether's implicit end-of-media rewind to resume playback.
+
 Hybrid has an explicitly authorized manifest fallback for direct finite HLS
 VOD media playlists whose `EXT-X-TARGETDURATION` is smaller than the rounded
 maximum `EXTINF`. It raises the target to the ceiling of the longest segment

@@ -54,6 +54,7 @@ final class SmokeConfigurationTests: XCTestCase {
         )
 
         XCTAssertEqual(configuration.mode, .hybridAVKit)
+        XCTAssertEqual(configuration.scenario, .playbackSeek)
         XCTAssertEqual(configuration.seekSeconds, 12.5)
         XCTAssertEqual(configuration.playbackRate, 2.0)
         XCTAssertEqual(
@@ -81,6 +82,49 @@ final class SmokeConfigurationTests: XCTestCase {
                 error as? SmokeConfigurationError,
                 .invalidHeadersJSON
             )
+        }
+    }
+
+    func testTailScenarioPreservesTheExactRegressionTarget() throws {
+        let configuration = try XCTUnwrap(
+            SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey: "hybridAVKit",
+                SmokeConfiguration.scenarioEnvironmentKey: "tailSeekReplay",
+                SmokeConfiguration.urlEnvironmentKey: "https://example.test/video.m3u8",
+                SmokeConfiguration.seekEnvironmentKey: "1343.34",
+                SmokeConfiguration.preseekEnvironmentKey: "1314",
+                SmokeConfiguration.expectedRouteEnvironmentKey: "avKitProxy",
+            ])
+        )
+        XCTAssertEqual(configuration.scenario, .tailSeekReplay)
+        XCTAssertEqual(configuration.seekSeconds, 1343.34)
+        XCTAssertEqual(configuration.preseekSeconds, 1314)
+    }
+
+    func testTailScenarioRejectsDirectAetherMode() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey: "aetherEngine",
+                SmokeConfiguration.scenarioEnvironmentKey: "tailSeekReplay",
+                SmokeConfiguration.urlEnvironmentKey: "https://example.test/video.m3u8",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SmokeConfigurationError,
+                .tailScenarioRequiresHybrid
+            )
+        }
+    }
+
+    func testUnknownScenarioFailsInsteadOfRunningTheOrdinarySmoke() {
+        XCTAssertThrowsError(
+            try SmokeConfiguration.fromEnvironment([
+                SmokeConfiguration.modeEnvironmentKey: "hybridAVKit",
+                SmokeConfiguration.scenarioEnvironmentKey: "tail",
+                SmokeConfiguration.urlEnvironmentKey: "https://example.test/video.m3u8",
+            ])
+        ) { error in
+            XCTAssertEqual(error as? SmokeConfigurationError, .invalidScenario("tail"))
         }
     }
 
