@@ -12,8 +12,8 @@ UI Proxy 在 seek、pause、buffering、thumbnail 與實機驗收上的微調經
 本模型解決的核心問題是：AVKit UI、HLS Proxy Server 與 AetherEngine 都有
 自己的時間與狀態，但三者不能同時爭奪播放權威。
 
-本文是後續修改 Proxy transport 行為時的設計約束。若實作與本文衝突，應先
-重新討論模型，而不是加入更多補償狀態、延遲或 fallback。
+以當前 source 與測試為準；本文保留跨時間軸 ownership 與手工驗收約束。
+修改前先由事件時間線定位責任，不以補償狀態、延遲或 fallback 掩蓋問題。
 
 ## 2. Proxy 的實際組成
 
@@ -276,53 +276,6 @@ generation，而不是原始行數計算。
 
 ## 9. 驗收方法
 
-片尾回歸分成兩層：`swift test` 的 `HybridSeekEndPolicyTests`／
-`HybridSeekTransportTests` 覆蓋原日誌數值、精確／超出片尾、暫停回拖、
-中段跳過與速度、重播、交錯 seek 及 reload 失敗；其中也直接執行 pinned
-Aether 的 hostless seek。HybridSmokePlayer 的
-`HybridPlaybackEndNavigationTests` 則在 tvOS 使用真實本地 HLS Proxy 與
-公開 Session seek／replay／Play／Pause 入口，等待實際 AVPlayer seek 完成並
-檢查 client 時間與 rate。hostless fixture 的供應材料由測試明確提供，保留
-真實 client transport observation；不存在的 renderer host 不提供 readiness。
-這些測試不等於實際影像解碼、
-音訊、AVKit 遙控操作或長影片實機驗收。
-
-2026-10-17 本次修復先移除已封存的 7.36.0 工作區差異，回到 root
-`2b029f9` 與正式 7.33.2＋原樣 0005，再重新套用本次變更。乾淨基線的
-`Scripts/apply-patches.sh` 全流程通過；套回修復後 `swift test` 共 111 項、
-零失敗（2 項既有外部 fixture 跳過），HybridSmokePlayer tvOS Simulator
-25 項全過。上述 5 項 Session／真實 Proxy client 回歸也在唯一授權的
-「書房電視」tvOS 26.6 通過；Syncnext `generic/platform=tvOS` 簽名建置通過。
-這些結果均來自恢復 0005 後的來源，不沿用清理前的驗收結果。
-
-同一「書房電視」對原日誌來源的單次 fresh 短驗收亦通過：實際 route 為
-`avKitProxy`，啟播前進 2.014 秒，AVKit 使用者 navigation 到 122 秒的落點為
-122.029 秒，seek 後再前進 2.051 秒並記錄 `run_passed`；fresh 截圖確認實際
-影片畫面。這次短驗收不涵蓋原影片片尾停駐／重播畫面、完整 EOS 或音訊聽感。
-
-同日 23:37:20–23:37:57 補上原影片片尾端到端自動驗收，使用同一
-「書房電視」、同一來源（SHA-256 `4ab0072a…63850250`）、0005 基線與修復版，
-run ID 為 `45de7c8f-6ffe-4a50-8ad3-e4ef2c80e47d`。新增的
-`HYBRID_SMOKE_SCENARIO=tailSeekReplay` 保留正常啟播檢查，先 seek 到 1314 秒並
-前進，再在播放中呼叫 App 相同的 automatic-skip 入口，target 為 1343.34 秒，
-duration 為 1343.44 秒；驗收前不額外 Pause。以 read-only `SmokeTesting` SPI
-讀取 renderer 時鐘，獨立對照 Server snapshot 與實際 AVKit client 時鐘：
-
-| 階段 | Aether | Server | AVKit client | 結果 |
-| --- | --- | --- | --- | --- |
-| 自動片尾跳過，停留 10.082 秒後 | 1343.440 | 1343.440／ended | 1343.000／rate 0 | 保持片尾 |
-| 明確 replay 落點 | 0.000 | 0.139 | 0.000 | 一起回零 |
-| replay 後進度 | 2.000 | 2.173 | 2.028 | 三者各前進至少 2 秒 |
-| 手動片尾 seek，停留 10.073 秒後 | 1343.340 | 1343.340／paused | 1343.000／rate 0 | 保持片尾 |
-| 明確 replay 落點 | 0.000 | 0.057 | 0.000 | 一起回零 |
-| replay 後進度 | 2.100 | 2.244 | 2.061 | 三者各前進至少 2 秒 |
-
-這次單次 fresh run 產生 `run_passed`，保留兩輪片尾與最終重播的實機截圖。
-原日誌的 renderer 0.08 秒／Server 1343.34 秒／client 1343.00 秒會被新增的
-clock acceptance 測試明確拒絕；新增設定及判定測試後 Simulator 共 30 項全過。
-此驗收刻意重建原 bug 的播放／seek 條件，驗證修復後不再隱式回零；它直接
-呼叫 automatic-skip 入口，不包含重新執行指紋辨識、完整自然 EOS 或音訊聽感。
-
 Proxy transport 不能只靠 unit test 或 AVPlayer callback 驗收。最低要求是：
 
 1. 使用真正會選擇 `avKitProxy` 的長影片；
@@ -335,17 +288,8 @@ Proxy transport 不能只靠 unit test 或 AVPlayer callback 驗收。最低要�
 7. 確認沒有 `pause-then-seek`，也沒有 AVKit seek 經 Server event 重複回送；
 8. 執行 `swift test`、HybridSmokePlayer tvOS build 與 Syncnext 實體裝置 build。
 
-2026-08-01 的基準驗收使用《鹿鼎記修復版（粵）》有限 HLS VOD：
-
-- 5 次連續 seek 通過；
-- 向前 900 秒通過；
-- 向後 600 秒通過；
-- HLS Proxy Server observation 全部落在預期 segment；
-- AVKit UI 截圖顯示正確時間軸與等待狀態；
-- `origin=avKit` 的 Server seek reflection 為 0；
-- `pause-then-seek` 為 0。
-
-驗收日誌與截圖可能包含本地裝置／路徑資訊，不應提交到公開 repository。
+驗收結果只適用於當時的 exact App／package／來源與裝置；歷史紀錄由 Git 查閱。
+日誌與截圖可能包含本地裝置／路徑資訊，不應提交到公開 repository。
 
 ## 10. 修改前檢查表
 

@@ -23,8 +23,7 @@ Owner：SyncnextHybrid
    驗證其內容；
 3. `Package.swift` 與 checked-in project configuration 定義支援平台下限；
 4. production source 與 tests 定義現行 API、ownership 與失敗行為；
-5. dated validation reports 與 workaround 文件只記錄當時證據及歷史決策，
-   不得反向覆寫以上現況。
+5. 舊驗收快照由 Git 歷史查閱，不得反向覆寫以上現況或代表目前 pin 已驗收。
 
 目前正式 pins 與平台下限不在本 SOP 重複抄錄；應直接讀取上述檔案。第 2.2
 節只為 active Patch identities 說明已批准責任，必須與 `series` 同步；
@@ -103,9 +102,8 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - 日誌、telemetry 或 diagnostics forwarding；
 - 與獨立音訊 reader 無關的 access-level 擴張。
 
-原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已於 AetherEngine 6.4.2
-由上游正式能力取代並移除；[歷史退出證據](Workarounds/AETHERENGINE_HEVC_HLS_BLACK_WORKAROUND.md)
-仍保留於 repository，不得把它重新加入現行 `series`。
+原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已被上游正式能力取代並移除；
+不得把它重新加入現行 `series`。退出紀錄見 Git 歷史。
 
 ## 3. 新需求的上游侵入 Gate
 

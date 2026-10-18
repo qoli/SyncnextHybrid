@@ -212,6 +212,3 @@ Examples of required terminal events:
 HYBRID_SMOKE_EVENT {"event":"run_passed",...}
 HYBRID_SMOKE_EVENT {"event":"run_failed",...}
 ```
-
-The dated implementation and Simulator results are recorded in
-[`Docs/Reports/HYBRID_SMOKE_PLAYER_IMPLEMENTATION_2026-07-25.md`](../../Docs/Reports/HYBRID_SMOKE_PLAYER_IMPLEMENTATION_2026-07-25.md).
