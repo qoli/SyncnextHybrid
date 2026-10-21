@@ -26,23 +26,21 @@ public struct HybridExternalSubtitle: Sendable, Equatable {
 public struct HybridPlaybackRequest: Sendable, Equatable {
     public let url: URL
     public let httpHeaders: [String: String]
+    /// Selects Aether's persistent HTTP/1.1 policy for this source.
+    public let heldSourceConnection: Bool
     public let initialPosition: Double?
     public let externalSubtitles: [HybridExternalSubtitle]
     public let preferredAudioLanguages: [String]
     public let preferredSubtitleLanguages: [String]
-    /// Use strict HTTP/1.1 for HLS admission and every upstream HLS resource.
-    /// False preserves existing networking. The host configures encrypted DNS.
-    /// A positively identified non-HLS source retains its normal demuxing route.
-    public let hlsUsesHTTP1: Bool
 
     public init(
         url: URL,
         httpHeaders: [String: String] = [:],
+        heldSourceConnection: Bool = false,
         initialPosition: Double? = nil,
         externalSubtitles: [HybridExternalSubtitle] = [],
         preferredAudioLanguages: [String] = [],
-        preferredSubtitleLanguages: [String] = [],
-        hlsUsesHTTP1: Bool = false
+        preferredSubtitleLanguages: [String] = []
     ) throws {
         if let initialPosition,
            (!initialPosition.isFinite || initialPosition < 0) {
@@ -50,11 +48,11 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         }
         self.url = url
         self.httpHeaders = httpHeaders
+        self.heldSourceConnection = heldSourceConnection
         self.initialPosition = initialPosition
         self.externalSubtitles = externalSubtitles
         self.preferredAudioLanguages = preferredAudioLanguages
         self.preferredSubtitleLanguages = preferredSubtitleLanguages
-        self.hlsUsesHTTP1 = hlsUsesHTTP1
     }
 }
 

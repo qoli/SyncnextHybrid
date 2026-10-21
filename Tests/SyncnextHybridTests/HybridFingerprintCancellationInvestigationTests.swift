@@ -105,6 +105,7 @@ final class HybridFingerprintCancellationInvestigationTests: XCTestCase {
 
 private final class CancellationProbeOrigin: @unchecked Sendable {
     private let process = Process()
+    private let termination = DispatchGroup()
     private let directory: URL
     private let gate: URL
     private let cancel: URL
@@ -149,7 +150,18 @@ private final class CancellationProbeOrigin: @unchecked Sendable {
         server.serve_forever()
         """, fixtures.path, directory.path]
         process.standardOutput = output
-        try process.run()
+        // Process.waitUntilExit() can keep its calling thread's run loop
+        // blocked after this async fixture's child has already exited.
+        termination.enter()
+        process.terminationHandler = { [termination] _ in
+            termination.leave()
+        }
+        do {
+            try process.run()
+        } catch {
+            termination.leave()
+            throw error
+        }
         var bytes = Data()
         while let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty {
             if byte == Data([10]) { break }
@@ -202,7 +214,8 @@ private final class CancellationProbeOrigin: @unchecked Sendable {
 
     func stop() {
         releaseFirstBatch()
-        if process.isRunning { process.terminate(); process.waitUntilExit() }
+        if process.isRunning { process.terminate() }
+        termination.wait()
         try? FileManager.default.removeItem(at: directory)
     }
 }

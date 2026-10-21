@@ -8,10 +8,8 @@ struct HybridHLSPreparedAudioCursor {
     let usesDedicatedAudioRendition: Bool
     let segmentCount: Int
     let timelineOffset: Double
-    let http1: HLSHTTP1Client?
 
     func close() {
-        http1?.cancel()
         reader.close()
     }
 }
@@ -33,11 +31,10 @@ enum HybridHLSVODAudioSource {
         scope: HybridHLSAudioCursorScope = .prefix,
         session: URLSession = makeSession()
     ) async throws -> HybridHLSPreparedAudioCursor {
-        let http1 = request.hlsUsesHTTP1 ? HLSHTTP1Client() : nil
         let rootText = try await fetchPlaylist(
             request.url,
             headers: request.httpHeaders,
-            session: session, http1: http1
+            session: session
         )
 
         let mediaURL: URL
@@ -63,7 +60,7 @@ enum HybridHLSVODAudioSource {
             mediaText = try await fetchPlaylist(
                 mediaURL,
                 headers: request.httpHeaders,
-                session: session, http1: http1
+                session: session
             )
         }
         guard case .media(let media) =
@@ -132,7 +129,7 @@ enum HybridHLSVODAudioSource {
                     batch,
                     relativeTo: mediaURL,
                     headers: request.httpHeaders,
-                    session: session, http1: http1
+                    session: session
                 )
                 for bytes in fetched {
                     writtenBytes += Int64(bytes.count)
@@ -165,7 +162,7 @@ enum HybridHLSVODAudioSource {
                             batch,
                             relativeTo: mediaURL,
                             headers: request.httpHeaders,
-                            session: session, http1: http1
+                            session: session
                         )
                         for bytes in fetched {
                             writtenBytes += Int64(bytes.count)
@@ -193,8 +190,7 @@ enum HybridHLSVODAudioSource {
             usesDedicatedAudioRendition:
                 usesDedicatedAudioRendition,
             segmentCount: selectedSegments.count,
-            timelineOffset: timelineOffset,
-            http1: http1
+            timelineOffset: timelineOffset
         )
     }
 
@@ -259,14 +255,13 @@ enum HybridHLSVODAudioSource {
     private static func fetchPlaylist(
         _ url: URL,
         headers: [String: String],
-        session: URLSession,
-        http1: HLSHTTP1Client? = nil
+        session: URLSession
     ) async throws -> String {
         let data = try await fetch(
             url,
             headers: headers,
             byteRange: nil,
-            session: session, http1: http1
+            session: session
         )
         guard data.count <= maximumPlaylistBytes,
               let text = String(data: data, encoding: .utf8) else {
@@ -281,8 +276,7 @@ enum HybridHLSVODAudioSource {
         _ resource: HLSByteResource,
         relativeTo baseURL: URL,
         headers: [String: String],
-        session: URLSession,
-        http1: HLSHTTP1Client? = nil
+        session: URLSession
     ) async throws -> Data {
         guard let url = URL(
             string: resource.uri,
@@ -296,7 +290,7 @@ enum HybridHLSVODAudioSource {
             url,
             headers: headers,
             byteRange: resource.byteRange,
-            session: session, http1: http1
+            session: session
         )
     }
 
@@ -304,8 +298,7 @@ enum HybridHLSVODAudioSource {
         _ resources: [HLSByteResource],
         relativeTo baseURL: URL,
         headers: [String: String],
-        session: URLSession,
-        http1: HLSHTTP1Client? = nil
+        session: URLSession
     ) async throws -> [Data] {
         try await withThrowingTaskGroup(
             of: (Int, Data).self,
@@ -319,7 +312,7 @@ enum HybridHLSVODAudioSource {
                             resource,
                             relativeTo: baseURL,
                             headers: headers,
-                            session: session, http1: http1
+                            session: session
                         )
                     )
                 }
@@ -347,8 +340,7 @@ enum HybridHLSVODAudioSource {
         _ url: URL,
         headers: [String: String],
         byteRange: HLSByteRange?,
-        session: URLSession,
-        http1: HLSHTTP1Client? = nil
+        session: URLSession
     ) async throws -> Data {
         var request = URLRequest(url: url)
         for (name, value) in headers {
@@ -363,11 +355,7 @@ enum HybridHLSVODAudioSource {
 
         let (data, response): (Data, URLResponse)
         do {
-            if let http1 {
-                (data, response) = try await http1.data(for: request, limit: Int(maximumAssembledBytes))
-            } else {
-                (data, response) = try await session.data(for: request)
-            }
+            (data, response) = try await session.data(for: request)
         } catch is CancellationError {
             throw HybridAudioAnalysisError.cancelled
         } catch {

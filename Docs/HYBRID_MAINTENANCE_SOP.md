@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-21
+更新日期：2026-10-22
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -71,46 +71,11 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
    - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
      不回退至獨立來源下載。
-4. `0005-query-wrapped-hls-segment-ingest.patch`
-   - 對明確 `.m3u8`／`.m3u` 的有限 VOD 先做 bounded playlist 與首段 PMT
-     admission；只有 outer segment URL 無 MPEG-TS 副檔名、query 內包裹實際
-     MPEG-TS URL，且 carriage 明確為 HEVC-in-MPEG-TS 時，才進入上游既有的
-     seekable VOD ingest。
-   - 上述窄路由把整個同源 segment sequence 放在單一、可取消的 HTTP/1.1
-     keep-alive 連線上；請求不帶 `Range`，response body 以 bounded chunk 增量交付，
-     每段仍受既有 byte ceiling 約束。下一段只有在前一段 framing 完整結束後才寫入
-     同一 socket，因此這不是把併發上限改成 1，也不會為每段重新建連線。
-   - transport 由 reader lifetime 持有；libavformat opening 若 supersede producer，舊代
-     只排空當前 response 至 framing boundary、停止交付其資料，新代再沿用同一 socket。
-     真正 reader close／cancel 才立即關閉連線，並保持可取消。
-   - origin refusal、body framing 錯誤或超過 byte ceiling 均明確終止；不得改用 HTTP/2、
-     另開連線重試、解析 query 內層 URL，或退回另一播放器 route。跨 origin redirect
-     仍沿用既有 header replay policy，並因 origin 已改變而建立目標連線。
-     普通 VOD ingest 完全保留既有 Foundation session、45 秒 resource timeout 與
-     adaptive prefetch。
-   - 不關閉 FFmpeg `extension_picky`／`allowed_segment_extensions`，不處理 live、
-     fMP4、H.264、加密、不可達或 carriage 不明來源，也不新增播放器 fallback。
-   - 上游若能在 generic URL open 前以相同正向證據完成此 admission，或 FFmpeg
-     提供不降低 extension 安全邊界的正式 query-wrapper 支援，即移除此 Patch。
-
-
-5. `0006-hls-http1-networking.patch`
-   - 經用戶明確要求，正式 per-load `LoadOptions.hlsUsesHTTP1` 預設 false，
-     Debug／Release 都可選用；HLS 的清單探測、relay、VOD／直播 ingest、金鑰、
-     音訊 tap 與字幕 rendition 使用 HTTP/1.1，TCP／TLS 自動繼承 host 的 DNS
-     privacy context，不協商 HTTP/2／3，也不切回 AVFoundation 原站直連。
-   - `HLSHTTP1Client` 對 host 暴露 bounded／prefix／streaming admission 介面。
-     0006 依賴既有 0005 的 HTTP/1.1 framing；0005 的窄 query-wrapped route 在
-     未啟用新選項時完全保留。啟用時仍以 reader lifetime 持有同源分段連線，並用
-     Network connection 取代無法回報 DNS protocol 的 stream task。
-   - 保留現有 credentials scope、redirect、Range、chunk decoding、streaming、
-     body ceilings、system TLS／host trust evaluator 與 teardown；已要求的 relay
-     建立失敗即失敗。不得以另一協議、另一 provider 或明文 DNS 掩蓋錯誤。
-   - opt-in observers 預設 nil，分別記錄真實 URLSession task metrics、Network
-     connection establishment DNS report 與 HLS owner／transfer。cache／unknown
-     保持未確認；不把 provider、App preference、launch args 或 App log output
-     放入 engine。
-   - 上游提供等價 per-load HTTP/1.1 HLS networking 與觀測介面後移除此 Patch。
+`0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
+`LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
+`0006-hls-http1-networking.patch` 亦已退出；使用者接受上游 held-source 路徑，
+將 DoH 責任收斂至 App 的 process privacy context，不再要求另外一套全 HLS
+HTTP/1.1 transport，也不保留只為觀測而修改上游的 Patch。
 
 FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責任，不得順便加入：
 
@@ -118,7 +83,7 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - 額外 route 或 recovery；
 - Syncnext 片頭判定；
 - AVKit proxy 行為；
-- 除 `0006` 明列的 host networking 觀測外，一般日誌、telemetry 或 diagnostics forwarding；
+- 一般日誌、telemetry 或 diagnostics forwarding；
 - 與獨立音訊 reader 無關的 access-level 擴張。
 
 原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已被上游正式能力取代並移除；
@@ -286,34 +251,32 @@ root commit 只允許包含：
 ## 8. 決策摘要
 
 
-### 已授權的正式 DoH 與 Aether HLS networking（2026-10-21）
+### 已接受的原生 held-source 與 App DoH（2026-10-22）
 
-分類：`Approved minimal Patch`。使用者先授權臨時 HLS／DoH 觀測並整理成 patch，
-再明確要求正式 App 提供預設關閉的 DoH，允許選擇阿里、DNSPod、360，並確認
-所有 HLS 都必須使用 HTTP/1.1 與 DoH。這次授權將 `0006` 提升為正式 per-load
-HTTP/1.1 HLS networking interface；不代表上游 PR、push、發布或 release 授權。
+使用者接受 AetherEngine 7.45.0 的原生 `heldSourceConnection` 播放路徑，並明確
+要求保留 Hybrid 字幕能力、讓 DoH 由 App 正常啟用；若 `0006` 只剩觀測則退出。
+這取代先前全 HLS 自訂 HTTP/1.1 networking 的要求。
 
-- **需求與缺口／邊界證據**：AVFoundation 遠端 HLS 取流沒有公開 DNS metrics，
-  也不能只由 App 的 admission metrics 證明分片解析。Debug 實機已證明 Aether
-  既有 relay 的真實上游請求能量到 DoH，但一般 URLSession 不能保證不協商 HTTP/2。
-  正式 HTTP/1.1 client 使用真正的 Network connection establishment report，
-  在同一條承載媒體的連線上分別確認 HTTP 與 DNS 協議。
-- **替代方案**：等待上游、保留原路徑 DNS unavailable，或另寫 host relay。
-  選擇最小 per-load flag 重用現有 engine relay，避免複製 HLS rewriting、headers 和 lifetime。
-- **侵入範圍**：`LoadOptions.hlsUsesHTTP1`、HLS HTTP/1.1 client／connection、既有
-  persistent framing、remote relay、carriage probe、VOD／live ingest、audio tap／
-  rendition networking，以及 opt-in observers、API 文件與測試。Hybrid admission、
-  獨立 HLS fingerprint／intro extraction 同步傳遞該選項。provider、UserDefaults、
-  設定 UI 與 DNS policy 留在 App。
-- **長期成本與退出條件**：上游 load lifecycle、delegate ownership 或 relay prepare
-  變更時重驗；有等價上游能力就移除。不得擴張成一般 routing 或 recovery。
-- **失敗行為**：選用 engine networking 而 relay 不能建立就明確失敗，不自動回到
-  AVFoundation 直連；provider 失敗不自動切另一家或降為明文。unknown DNS 保持未確認。
+- **責任邊界**：Hybrid 將 per-load `heldSourceConnection` 傳入上游 `LoadOptions`；
+  持續連線、framing、FIFO admission、背壓、seek／cancel／drain 均由官方
+  `PersistentHTTP1Transport` 與 `HLSVODIngestReader` 擁有，不以 Patch 重寫。
+- **DoH**：供應商、設定 UI、UserDefaults 與
+  `NWParameters.PrivacyContext.default.requireEncryptedNameResolution` 留在 App，
+  在 process 初始化套用。所選 HTTPS resolver 是 Apple API 的 fallback resolver；
+  系統既有加密 resolver／Private Relay 仍可優先使用，不能聲稱每次必定命中所選服務。
+- **觀測**：只保留 App／Hybrid 自己 URLSession 的既有 metrics。上游 stream task
+  的 DNS 協議未有直接證據時保持 unavailable，不為了補齊日誌而建立新 Patch 或
+  更換實際承載媒體的 socket。清單可以使用 HTTP/2；HTTP 版本與 DNS 加密分開判讀。
+- **字幕**：維持既有 overlay、source-clock cue 選取、掛載／移除與選單能力，
+  不因網絡整合移除。字幕回歸測試與 tvOS build 需驗證。
+- **驗收**：分開記錄編譯、測試、Simulator 與書房電視的實機證據。卡頓／恢復、
+  無 key 請求、分片 DNS 與實際供應商未確認均獨立保留，使用者接受採用版本
+  不等於將未覆蓋項目改記通過。
 
-有未保存的 submodule 工作時，不直接執行會 reset／clean 的套用腳本；使用獨立
-`GIT_INDEX_FILE` 從 pin 依序重播兩次，比對完整 tree 與 owning files，再執行實際
-checkout 的 build／tests。這不代表執行過整支 `apply-patches.sh`，也不取代正式整合
-所需的 Simulator／實機與完整 smoke acceptance。
+`0001`／`0002`／`0004` 只維持原已批准責任。Patch 重播可使用獨立
+`GIT_INDEX_FILE` 從官方 pin 依序重播兩次，比對完整 tree 與 owning files，保留
+現有 generated resolution 差異。這不等於執行過整支會 reset／clean 的
+`apply-patches.sh`，也不取代其他尚未執行的整合驗收。
 
 ### 已授權的有限 VOD 清單 fallback（2026-10-03）
 

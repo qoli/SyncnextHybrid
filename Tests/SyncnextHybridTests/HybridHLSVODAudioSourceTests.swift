@@ -590,6 +590,7 @@ private final class HybridHLSFixtureURLProtocol:
 #if os(macOS)
 private final class HLSExtractorTestServer {
     let process = Process()
+    private let termination = DispatchGroup()
     let directory: URL
     let url: URL
 
@@ -621,7 +622,18 @@ private final class HLSExtractorTestServer {
         server.serve_forever()
         """, fixtures.path, directory.appendingPathComponent("requests.txt").path]
         process.standardOutput = output
-        try process.run()
+        // Use the termination callback rather than blocking this async
+        // fixture's calling thread in Process.waitUntilExit().
+        termination.enter()
+        process.terminationHandler = { [termination] _ in
+            termination.leave()
+        }
+        do {
+            try process.run()
+        } catch {
+            termination.leave()
+            throw error
+        }
         var bytes = Data()
         while let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty {
             if byte == Data([10]) { break }
@@ -637,7 +649,8 @@ private final class HLSExtractorTestServer {
     }
 
     func stop() {
-        if process.isRunning { process.terminate(); process.waitUntilExit() }
+        if process.isRunning { process.terminate() }
+        termination.wait()
         try? FileManager.default.removeItem(at: directory)
     }
 }

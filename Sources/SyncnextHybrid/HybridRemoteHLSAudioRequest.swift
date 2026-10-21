@@ -24,17 +24,14 @@ public struct HybridRemoteHLSAudioRequest: Sendable, Equatable {
     public let url: URL
     public let httpHeaders: [String: String]
     public let selection: HybridRemoteHLSAudioSelection
-    public let hlsUsesHTTP1: Bool
 
     public init(
         url: URL,
         httpHeaders: [String: String],
-        selection: HybridRemoteHLSAudioSelection,
-        hlsUsesHTTP1: Bool = false
+        selection: HybridRemoteHLSAudioSelection
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
         self.selection = selection
-        self.hlsUsesHTTP1 = hlsUsesHTTP1
     }
 }

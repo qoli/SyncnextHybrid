@@ -1,18 +1,10 @@
 import Foundation
-import AetherEngine
 
-/// A host can opt into the same metrics for source admission and engine I/O.
+/// A host can opt into metrics for Hybrid-owned source admission requests.
 /// Ordinary playback installs no observer or additional admission delegate.
 public enum HybridNetworkDiagnostics {
-    public static var remoteHLSRouteObserver: (@Sendable (String) -> Void)? {
-        get { EngineLog.remoteHLSRouteObserver }
-        set { EngineLog.remoteHLSRouteObserver = newValue }
-    }
-
-    public static var transactionMetricsObserver: (@Sendable (URLSessionTaskMetrics, String) -> Void)? {
-        get { EngineLog.transactionMetricsObserver }
-        set { EngineLog.transactionMetricsObserver = newValue }
-    }
+    nonisolated(unsafe) public static var transactionMetricsObserver:
+        (@Sendable (URLSessionTaskMetrics, String) -> Void)?
 
     static var sessionDelegate: URLSessionTaskDelegate? {
         transactionMetricsObserver == nil ? nil : metricsDelegate
