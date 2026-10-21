@@ -27,6 +27,11 @@ Patch 的工作。正式變更放在 root repo，不能只保留 dirty upstream 
 [HybridPlaybackSession](Sources/SyncnextHybrid/HybridPlaybackSession.swift) 對 App
 提供 `AVPlayer`。native route 綁定 Aether 公開的 player；proxy route 由本地 HLS
 提供 AVKit transport UI，真實影片呈現仍交給 Aether。
+解碼後的內封／外掛字幕由
+[HybridSubtitleOverlayView](Sources/SyncnextHybrid/HybridSubtitleOverlayView.swift)
+依 source PTS 顯示，兩種 route 共用相同字幕層。
+字幕字形與描邊可用 [SubtitleStyleProbe](Examples/SubtitleStyleProbe/README.md)
+直接比較固定 cue，不需經過訂閱、片源與播放流程。
 時間軸權責與手工驗收見 [AVKit proxy 模型](Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md)。
 
 有限 HLS 的既有 target-duration 修正由

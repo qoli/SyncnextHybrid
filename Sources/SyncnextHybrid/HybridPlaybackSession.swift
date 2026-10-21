@@ -58,6 +58,7 @@ public final class HybridPlaybackSession:
 
     private let engine: AetherEngine
     private let surface: AetherPlayerView
+    private let subtitleOverlay = HybridSubtitleOverlayView()
     private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
     private let sourceAdmission: HybridRemoteSourceAdmission
@@ -341,6 +342,7 @@ public final class HybridPlaybackSession:
             return
         }
         surface.removeFromSuperview()
+        subtitleOverlay.removeFromSuperview()
         engine.unbind(view: surface)
         controller.transportBarCustomMenuItems = previousCustomMenuItems
         controller.delegate = previousControllerDelegate
@@ -972,6 +974,22 @@ public final class HybridPlaybackSession:
     }
 
     private func installObservers() {
+        engine.$subtitleCues
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateSubtitleOverlay(cuesChanged: true)
+                }
+            }
+            .store(in: &observations)
+
+        engine.clock.$sourceTime
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateSubtitleOverlay()
+                }
+            }
+            .store(in: &observations)
+
         engine.$currentAVPlayer
             .sink { [weak self] player in
                 Task { @MainActor in
@@ -1257,6 +1275,33 @@ public final class HybridPlaybackSession:
             }
             engine.bind(view: surface)
         }
+        guard let overlay = controller.contentOverlayView else {
+            throw HybridPlaybackError.avKitOverlayUnavailable
+        }
+        if subtitleOverlay.superview !== overlay {
+            subtitleOverlay.removeFromSuperview()
+            subtitleOverlay.translatesAutoresizingMaskIntoConstraints = false
+            overlay.addSubview(subtitleOverlay)
+            NSLayoutConstraint.activate([
+                subtitleOverlay.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+                subtitleOverlay.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+                subtitleOverlay.topAnchor.constraint(equalTo: overlay.topAnchor),
+                subtitleOverlay.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+            ])
+        }
+        updateSubtitleOverlay(cuesChanged: true)
+    }
+
+    private func updateSubtitleOverlay(cuesChanged: Bool = false) {
+        subtitleOverlay.update(
+            cues: engine.subtitleCues,
+            sourceTime: engine.sourceTime,
+            videoSize: CGSize(
+                width: Double(engine.sourceVideoWidth) * engine.sourceVideoPixelAspectRatio,
+                height: Double(engine.sourceVideoHeight)
+            ),
+            cuesChanged: cuesChanged
+        )
     }
 
     private func applyAetherMaterial() {
@@ -1902,6 +1947,7 @@ public final class HybridPlaybackSession:
             menus.append(
                 UIMenu(
                     title: "Subtitles",
+                    image: UIImage(systemName: "captions.bubble"),
                     identifier: UIMenu.Identifier(
                         "com.qoli.SyncnextHybrid.subtitles"
                     ),

@@ -31,6 +31,28 @@ UI Proxy 在 seek、pause、buffering、thumbnail 與實機驗收上的微調經
 黑色 Proxy 媒體只是建立 AVKit transport contract 的載體，不是畫面來源，也
 不是播放權威本身。
 
+### 2.1 字幕呈現
+
+`AetherPlayerView` 只承載影像；選取字幕後，AetherEngine 經 `subtitleCues`
+提供解碼內容，由 Hybrid 的透明 `HybridSubtitleOverlayView` 在
+`contentOverlayView` 上呈現。此字幕層同時適用 `nativeAVPlayer` 與
+`avKitProxy`，不依賴 video surface 是否掛載。文字、rich-text 的顏色與強調、
+ASS alignment／position 及 bitmap 的 canvas geometry 均由 decoded cue 交付。
+未指定顏色的文字採用 Probe 的 B 樣式：實心白字，不帶 stroke attributes。
+文字 layer 後方加黑色陰影，opacity 0.68、offset (0, 6)、radius 12，確保
+淺色背景可讀，同時避免 attributed stroke 讓中文字形呈現空心／浮雕。樣式迭代用
+`Examples/SubtitleStyleProbe`，直接編譯同一份正式 renderer 與固定 cue。
+
+字幕比對使用 `engine.clock.sourceTime` 的 source PTS；不得用 AVKit UI／Proxy
+timeline 取代。切軌、關閉字幕及 seek 清空的 cue 必須同步移除，暫停則保留當下
+有效字幕。detach 移除字幕層。字幕繼續由既有 Subtitles 選單切換，本次不改變
+既有語言選擇政策。此層只負責畫面內字幕，不代表已驗收 PiP／AirPlay 字幕。
+
+回歸入口為 `HybridSubtitlePresentationTests`（source PTS、重疊／過期 cue、
+letterbox 與 canvas placement）及 tvOS 的 `HybridSubtitleOverlayViewTests`
+（文字視圖、白字填色 raster、暫停／關閉、同 ID 切軌和圖像字幕）。兩者均屬
+`SyncnextHybridTests`；原生測試須選定可用的 tvOS Simulator 執行。
+
 ## 3. 三個時間軸的責任
 
 | 時間軸 | 速度與角色 | 責任 | 不應負責 |
