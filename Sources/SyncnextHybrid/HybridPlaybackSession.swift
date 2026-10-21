@@ -149,7 +149,8 @@ public final class HybridPlaybackSession:
         let admission = try await
             HybridRemoteSourceAdmission.classify(
                 url: request.url,
-                httpHeaders: request.httpHeaders
+                httpHeaders: request.httpHeaders,
+                hlsUsesHTTP1: request.hlsUsesHTTP1
             )
         sourceAdmission = admission
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
@@ -186,6 +187,7 @@ public final class HybridPlaybackSession:
                 + HybridPlaybackPlan.sourceID(request.url) + " "
                 + "\(plan.diagnosticFields) "
                 + "nativeRemoteHLS=\(plan.options.nativeRemoteHLS) "
+                + "hlsUsesHTTP1=\(plan.options.hlsUsesHTTP1) "
                 + "isLive=\(plan.options.isLive) "
                 + "forceAVKitProxy=\(forceAVKitProxy)"
         )
@@ -779,7 +781,8 @@ public final class HybridPlaybackSession:
                     HybridRemoteHLSAudioRequest(
                         url: request.url,
                         httpHeaders: request.httpHeaders,
-                        selection: selection
+                        selection: selection,
+                        hlsUsesHTTP1: request.hlsUsesHTTP1
                     )
                 )
                 batch = try await Task.detached(priority: .utility) {
@@ -873,7 +876,8 @@ public final class HybridPlaybackSession:
                 url: request.url, httpHeaders: request.httpHeaders,
                 sourceRange: fingerprintRequest.sourceRange,
                 outputURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aac"),
-                audioSelection: selection, selectedTrack: selectedTrack
+                audioSelection: selection, selectedTrack: selectedTrack,
+                hlsUsesHTTP1: request.hlsUsesHTTP1
             )
             HybridDiagnosticEmitter.emit("SYNCNEXT_HYBRID_FINGERPRINT_FALLBACK event=started primaryError=\(error)")
             do {

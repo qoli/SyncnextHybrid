@@ -62,6 +62,7 @@ public struct HybridIntroAudioExtractionRequest:
     public let outputURL: URL
     public let audioSelection: HybridRemoteHLSAudioSelection?
     public let selectedTrack: TrackInfo?
+    public let hlsUsesHTTP1: Bool
 
     public var maximumDuration: Double {
         sourceRange.upperBound - sourceRange.lowerBound
@@ -73,7 +74,8 @@ public struct HybridIntroAudioExtractionRequest:
         maximumDuration: Double = 180,
         outputURL: URL,
         audioSelection: HybridRemoteHLSAudioSelection? = nil,
-        selectedTrack: TrackInfo? = nil
+        selectedTrack: TrackInfo? = nil,
+        hlsUsesHTTP1: Bool = false
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
@@ -81,6 +83,7 @@ public struct HybridIntroAudioExtractionRequest:
         self.outputURL = outputURL
         self.audioSelection = audioSelection
         self.selectedTrack = selectedTrack
+        self.hlsUsesHTTP1 = hlsUsesHTTP1
     }
 
     public init(
@@ -89,7 +92,8 @@ public struct HybridIntroAudioExtractionRequest:
         sourceRange: Range<Double>,
         outputURL: URL,
         audioSelection: HybridRemoteHLSAudioSelection? = nil,
-        selectedTrack: TrackInfo? = nil
+        selectedTrack: TrackInfo? = nil,
+        hlsUsesHTTP1: Bool = false
     ) {
         self.url = url
         self.httpHeaders = httpHeaders
@@ -97,6 +101,7 @@ public struct HybridIntroAudioExtractionRequest:
         self.outputURL = outputURL
         self.audioSelection = audioSelection
         self.selectedTrack = selectedTrack
+        self.hlsUsesHTTP1 = hlsUsesHTTP1
     }
 }
 
@@ -172,7 +177,8 @@ public enum HybridIntroAudioExtractor {
             let admission = try await
                 HybridRemoteSourceAdmission.classify(
                     url: request.url,
-                    httpHeaders: request.httpHeaders
+                    httpHeaders: request.httpHeaders,
+                    hlsUsesHTTP1: request.hlsUsesHTTP1
                 )
             switch admission {
             case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster,
@@ -184,7 +190,8 @@ public enum HybridIntroAudioExtractor {
                         displayName: nil,
                         language: nil,
                         optionOrdinal: nil
-                    )
+                    ),
+                    hlsUsesHTTP1: request.hlsUsesHTTP1
                 )
                 let prepared = try await
                     HybridHLSVODAudioSource.prepare(
@@ -200,7 +207,10 @@ public enum HybridIntroAudioExtractor {
                 )
             case .hlsLive:
                 throw HybridIntroAudioExtractionError.sourceUnavailable
-            case .aetherDefault:
+            case .aetherDefault(let reason):
+                if request.hlsUsesHTTP1, reason != .confirmedNonHLS, reason != .nonHTTPSource {
+                    throw HybridIntroAudioExtractionError.sourceUnavailable
+                }
                 try demuxer.openIndependent(
                     url: request.url,
                     extraHeaders: request.httpHeaders

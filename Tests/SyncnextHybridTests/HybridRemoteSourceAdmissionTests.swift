@@ -4,6 +4,31 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridRemoteSourceAdmissionTests: XCTestCase {
+    func testHostHLSNetworkingChoiceSurvivesEveryAdmissionRoute() throws {
+        let url = try XCTUnwrap(URL(string: "https://admission-fixture.invalid/master.m3u8"))
+        let required = try HybridPlaybackRequest(url: url, hlsUsesHTTP1: true)
+        let ordinary = try HybridPlaybackRequest(url: url)
+        let admissions: [HybridRemoteSourceAdmission] = [
+            .hlsVOD, .hlsLive, .aetherDefault(.requestFailed),
+            .hlsVODHEVCMPEGTS(duration: 6, evidence: .standardStreamType(0x24)),
+        ]
+        for admission in admissions {
+            let requiredPlan = HybridPlaybackPlan.make(
+                request: required, externalSubtitles: [], admission: admission
+            )
+            let ordinaryPlan = HybridPlaybackPlan.make(
+                request: ordinary, externalSubtitles: [], admission: admission
+            )
+            XCTAssertTrue(requiredPlan.options.hlsUsesHTTP1)
+            XCTAssertFalse(ordinaryPlan.options.hlsUsesHTTP1)
+            XCTAssertEqual(requiredPlan.url, url)
+            XCTAssertEqual(requiredPlan.options.nativeRemoteHLS, ordinaryPlan.options.nativeRemoteHLS)
+            if admission.requiresAetherHLSVODRemux {
+                XCTAssertFalse(requiredPlan.options.nativeRemoteHLS)
+            }
+        }
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [

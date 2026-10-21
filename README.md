@@ -39,6 +39,14 @@ Fingerprint V2 的 bounded PCM、明確 source／coverage 失敗下的既有 AAC
 [RepeatedSegmentFingerprint.swift](Sources/SyncnextHybrid/RepeatedSegmentFingerprint.swift)
 定義。分析失敗不改變播放 route 或音軌；失敗分類與 coverage 以當前測試為準。
 
+DoH 等 process DNS policy 由 App 設定；播放 request 可明確指定
+`hlsUsesHTTP1: true`，讓清單探測、remote HLS relay、HEVC VOD／直播 ingest、
+金鑰、音訊 tap 與 HLS 字幕 rendition 使用 HTTP/1.1。預設 false，Debug／Release
+皆可用。Aether 保留媒體 carriage 的分流與 query-wrapped 同源分段持續連線；
+不協商 HTTP/2／3，也不以另一協議回退。DNS 以實際 Network connection
+establishment report 判讀，快取或 unknown 不當作本次已量到 DoH。
+DNS provider 與 preferences 不進入 engine，AVKit 仍負責播放呈現。
+
 ## 驗證
 
 ```sh

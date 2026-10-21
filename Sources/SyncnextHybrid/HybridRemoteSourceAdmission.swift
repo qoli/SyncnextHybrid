@@ -110,8 +110,11 @@ enum HybridRemoteSourceAdmission: Equatable {
     static func classify(
         url: URL,
         httpHeaders: [String: String],
-        session: URLSession = makeSession()
+        session: URLSession = makeSession(),
+        hlsUsesHTTP1: Bool = false
     ) async throws -> Self {
+        let http1 = hlsUsesHTTP1 ? HLSHTTP1Client() : nil
+        defer { http1?.cancel() }
         guard url.scheme == "http" || url.scheme == "https" else {
             return .aetherDefault(.nonHTTPSource)
         }
@@ -121,7 +124,7 @@ enum HybridRemoteSourceAdmission: Equatable {
             guard let candidate = try await fetchPlaylistCandidate(
                 url: url,
                 httpHeaders: httpHeaders,
-                session: session
+                session: session, http1: http1
             ) else {
                 return .aetherDefault(.confirmedNonHLS)
             }
@@ -153,7 +156,7 @@ enum HybridRemoteSourceAdmission: Equatable {
                 media,
                 responseURL: rootCandidate.responseURL,
                 httpHeaders: httpHeaders,
-                session: session
+                session: session, http1: http1
             )
             try Task.checkCancellation()
             // Repair only a direct finite native-HLS media playlist. A master
@@ -189,7 +192,7 @@ enum HybridRemoteSourceAdmission: Equatable {
                 guard let candidate = try await fetchPlaylistCandidate(
                     url: variantURL,
                     httpHeaders: httpHeaders,
-                    session: session
+                    session: session, http1: http1
                 ) else {
                     return .aetherDefault(.variantUnavailable)
                 }
@@ -215,7 +218,7 @@ enum HybridRemoteSourceAdmission: Equatable {
                     media,
                     responseURL: variantCandidate.responseURL,
                     httpHeaders: httpHeaders,
-                    session: session
+                    session: session, http1: http1
                 )
                 if case .hlsVOD = mediaAdmission,
                    master.singlePQVideoVariant?.uri == variant.uri {
@@ -245,7 +248,8 @@ enum HybridRemoteSourceAdmission: Equatable {
         _ media: HLSMediaDocument,
         responseURL: URL,
         httpHeaders: [String: String],
-        session: URLSession
+        session: URLSession,
+        http1: HLSHTTP1Client? = nil
     ) async -> Self {
         guard media.hasEndList else {
             return .hlsLive
@@ -274,7 +278,12 @@ enum HybridRemoteSourceAdmission: Equatable {
             forHTTPHeaderField: "Range"
         )
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response): (Data, URLResponse)
+            if let http1 {
+                (data, response) = try await http1.data(for: request, limit: codecProbeBytes, prefix: true)
+            } else {
+                (data, response) = try await session.data(for: request)
+            }
             guard let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else {
                 return .hlsVOD
@@ -299,13 +308,18 @@ enum HybridRemoteSourceAdmission: Equatable {
         configuration.requestCachePolicy =
             .reloadIgnoringLocalAndRemoteCacheData
         configuration.urlCache = nil
-        return URLSession(configuration: configuration)
+        return URLSession(
+            configuration: configuration,
+            delegate: HybridNetworkDiagnostics.sessionDelegate,
+            delegateQueue: nil
+        )
     }
 
     private static func fetchPlaylistCandidate(
         url: URL,
         httpHeaders: [String: String],
-        session: URLSession
+        session: URLSession,
+        http1: HLSHTTP1Client? = nil
     ) async throws -> PlaylistCandidate? {
         var request = URLRequest(url: url)
         for (name, value) in httpHeaders {
@@ -316,6 +330,23 @@ enum HybridRemoteSourceAdmission: Equatable {
             forHTTPHeaderField: "Range"
         )
 
+        if let http1 {
+            let body = HTTP1AdmissionBody()
+            do {
+                let response = try await http1.stream(for: request, limit: Int.max,
+                    receiveResponse: { (200...299).contains($0.statusCode) },
+                    receive: { try body.append($0) })
+                guard (200...299).contains(response.statusCode) else {
+                    throw AdmissionProbeError(reason: .httpStatus(response.statusCode))
+                }
+                guard playlistPrefixState(body.data) == .hls,
+                      let text = String(data: body.data, encoding: .utf8) else { return nil }
+                return PlaylistCandidate(text: text, responseURL: response.url ?? url)
+            } catch HTTP1AdmissionBody.NotHLS.value { return nil }
+            catch is CancellationError { throw CancellationError() }
+            catch let error as AdmissionProbeError { throw error }
+            catch { throw AdmissionProbeError(reason: .requestFailed) }
+        }
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
             (bytes, response) = try await session.bytes(for: request)
@@ -371,6 +402,26 @@ enum HybridRemoteSourceAdmission: Equatable {
             text: text,
             responseURL: http.url ?? url
         )
+    }
+
+    private final class HTTP1AdmissionBody: @unchecked Sendable {
+        enum NotHLS: Error { case value }
+        private(set) var data = Data()
+        private var prefixState = PlaylistPrefixState.incomplete
+        func append(_ bytes: Data) throws {
+            // A non-HLS URL must still stop at its prefix, rather than buffering
+            // the maximum playlist size just because HTTP/1.1 is requested.
+            for byte in bytes {
+                guard data.count < maximumPlaylistBytes else {
+                    throw AdmissionProbeError(reason: .responseTooLarge)
+                }
+                data.append(byte)
+                if prefixState == .incomplete {
+                    prefixState = playlistPrefixState(data)
+                    if prefixState == .notHLS { throw NotHLS.value }
+                }
+            }
+        }
     }
 
     private enum PlaylistPrefixState {
@@ -519,7 +570,10 @@ struct HybridPlaybackPlan {
             preferredSubtitleLanguages:
                 request.preferredSubtitleLanguages,
             externalSubtitles: externalSubtitles,
-            autoplay: false
+            autoplay: false,
+            hlsUsesHTTP1: request.hlsUsesHTTP1
+                && admission != .aetherDefault(.confirmedNonHLS)
+                && admission != .aetherDefault(.nonHTTPSource)
         )
         return Self(
             url: url,
