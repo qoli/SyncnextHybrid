@@ -1,8 +1,19 @@
 import Foundation
+import AetherEngine
 
 /// A host can opt into metrics for Hybrid-owned source admission requests.
 /// Ordinary playback installs no observer or additional admission delegate.
 public enum HybridNetworkDiagnostics {
+    private static let mediaRequestLogBridge: Void = {
+        MediaRequestDiagnostics.handler = { line in
+            HybridDiagnosticEmitter.emit(line)
+        }
+    }()
+
+    static func installMediaRequestLogging() {
+        _ = mediaRequestLogBridge
+    }
+
     nonisolated(unsafe) public static var transactionMetricsObserver:
         (@Sendable (URLSessionTaskMetrics, String) -> Void)?
 

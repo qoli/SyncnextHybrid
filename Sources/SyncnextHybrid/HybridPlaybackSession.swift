@@ -158,6 +158,7 @@ public final class HybridPlaybackSession:
     }
 
     public init(request: HybridPlaybackRequest) async throws {
+        HybridNetworkDiagnostics.installMediaRequestLogging()
         self.request = request
 
         let eventPair = AsyncStream<HybridPlaybackEvent>.makeStream()
@@ -227,6 +228,7 @@ public final class HybridPlaybackSession:
                 + "progressiveSegmentDelivery=\(plan.options.progressiveSegmentDelivery) "
                 + "isLive=\(plan.options.isLive) "
                 + "forceAVKitProxy=\(forceAVKitProxy)"
+                + " mediaRequestCoverage=engine-avio-and-hls-ingest"
         )
         do {
             try await engine.load(
@@ -992,6 +994,7 @@ public final class HybridPlaybackSession:
             return
         }
         stopped = true
+        logMediaSessionStop(event: "stop.begin")
         vodBufferPolicy = nil
         nativeSeekGeneration &+= 1
         replayTask?.cancel()
@@ -1008,6 +1011,16 @@ public final class HybridPlaybackSession:
         proxyContext?.player.pause()
         proxyContext?.timeline.stop()
         eventContinuation.finish()
+        logMediaSessionStop(event: "stop.accepted")
+    }
+
+    private func logMediaSessionStop(event: String) {
+        HybridDiagnosticEmitter.emit(
+            "MEDIA_SESSION event=\(event) session=\(diagnosticsID)"
+                + " sourceID=\(HybridPlaybackPlan.sourceID(request.url))"
+                + " uptimeMs=\(Int64(ProcessInfo.processInfo.systemUptime * 1_000))"
+                + " route=\(snapshot.route)"
+        )
     }
 
     deinit {

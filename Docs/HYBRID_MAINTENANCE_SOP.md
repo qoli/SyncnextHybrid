@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-22
+更新日期：2026-10-23
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -71,11 +71,17 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
    - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
      不回退至獨立來源下載。
+4. `0007-media-request-diagnostics.patch`
+   - 依使用者本次要求，提供 opt-in 的實際媒體請求生命週期與 body 位元組摘要，
+     讓停止播放後的晚到資料仍可追蹤；不記錄原始 URL、headers 或媒體內容。
+   - App 日誌轉送與 session 停止事件留在 Hybrid；不改變 transport、route、
+     取消、背壓、重試或既有 drain 行為。範圍與退出條件見第 8 節。
+
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
 `0006-hls-http1-networking.patch` 亦已退出；使用者接受上游 held-source 路徑，
 將 DoH 責任收斂至 App 的 process privacy context，不再要求另外一套全 HLS
-HTTP/1.1 transport，也不保留只為觀測而修改上游的 Patch。
+HTTP/1.1 transport。當時退出的觀測 Patch 不恢復；本次媒體取消觀測例外另見第 8 節。
 
 FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責任，不得順便加入：
 
@@ -83,7 +89,7 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - 額外 route 或 recovery；
 - Syncnext 片頭判定；
 - AVKit proxy 行為；
-- 一般日誌、telemetry 或 diagnostics forwarding；
+- 超出 `0007` 位元組摘要範圍的一般日誌、telemetry 或 diagnostics forwarding；
 - 與獨立音訊 reader 無關的 access-level 擴張。
 
 原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已被上游正式能力取代並移除；
@@ -250,6 +256,31 @@ root commit 只允許包含：
 
 ## 8. 決策摘要
 
+### 使用者要求的媒體取消觀測（2026-10-23）
+
+使用者要求「先修復這三個已確認的問題，並補上底層媒體請求的日誌，方便確認
+關閉播放器後是否還在下載影片」，並要求 `git commit` 保存本次結果。
+本次決策為 `Approved minimal Patch`，僅涵蓋 `0007-media-request-diagnostics.patch`。
+
+- **需求與邊界**：既有 public API 沒有引擎原始來源請求的 body 位元組與實際
+  結束回呼；`stop()` 返回、App 封面請求或 loopback AVPlayer access log 均不能
+  單獨證明上游來源已停止。系統網絡追蹤仍可另行驗證，等待上游 API 則無法提供
+  本次要求的 App 日誌觀測。
+- **範圍**：只在 AVIO 與 HLS ingest transport 的開始、回應、body 交付、取消及
+  完成處插入可選 observer，新增 `MediaRequestDiagnostics` 與 focused tests。
+  source／resource URL 只輸出 SHA-256；錯誤只輸出數字碼。Hybrid 擁有 sink
+  安裝、App 轉送與 `MEDIA_SESSION` 停止事件，不將產品日誌 policy 下沉至上游。
+- **成本與退出條件**：上游 transport 的 delegate、initializer 或 body completion
+  語意變動時須重驗 hook；不接管 framing、排程、socket、背壓或 recovery。
+  上游提供同等 per-request 位元組及實際完成觀測後，改用公開 API 並移除 `0007`。
+- **失敗與限制**：未安裝 sink 時不建立 trace；Patch／API 不匹配明確失敗，不加
+  替代 transport。AVPlayer 直接讀取遠端 HLS 不在此覆蓋；取消後單筆 body 回呼
+  可能是在途資料，必須對齊 `sourceID`、時間與後續增量，不能把 stop 返回當成
+  網絡完成。既有 `0001`／`0002`／`0004` 的責任及正式 pins 不變。
+- **驗證**：以隔離 index 從官方 pin 重播兩次，比對完整 tree 與實作檔案，保留
+  現有工作。focused transport cancellation／keep-alive／drain 測試、Hybrid
+  tests、App lifecycle harness 與 generic tvOS Simulator build 分開驗證；
+  這些結果不代表已完成書房電視的實機播放驗收。
 
 ### 已接受的原生 held-source 與 App DoH（2026-10-22）
 
