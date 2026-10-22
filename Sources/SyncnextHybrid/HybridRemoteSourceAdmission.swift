@@ -513,7 +513,7 @@ struct HybridPlaybackPlan {
             url = request.url
             sourceResolution = .original
         }
-        let options = LoadOptions(
+        var options = LoadOptions(
             httpHeaders: request.httpHeaders,
             isLive: admission.isLiveHLS,
             nativeRemoteHLS:
@@ -526,6 +526,10 @@ struct HybridPlaybackPlan {
             externalSubtitles: externalSubtitles,
             autoplay: false
         )
+        options.progressiveSegmentDelivery = !options.isLive && !options.nativeRemoteHLS
+        #if DEBUG
+        request.vodNetworkTestVariant?.configure(&options, isLive: admission.isLiveHLS)
+        #endif
         return Self(
             url: url,
             options: options,

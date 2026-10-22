@@ -33,6 +33,10 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
     public let preferredAudioLanguages: [String]
     public let preferredSubtitleLanguages: [String]
 
+    #if DEBUG
+    public var vodNetworkTestVariant: HybridVODNetworkTestVariant?
+    #endif
+
     public init(
         url: URL,
         httpHeaders: [String: String] = [:],

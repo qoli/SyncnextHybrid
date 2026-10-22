@@ -128,6 +128,34 @@ public final class HybridPlaybackSession:
     private var audioSelectionRevision: UInt64 = 0
     private var lastNativePlayerIdentity: ObjectIdentifier?
 
+    private var vodBufferPolicy: HybridVODBufferPolicy?
+
+    #if DEBUG
+    public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool) {
+        (engine.videoRoute.rawValue, engine.isLive)
+    }
+    #endif
+
+    private func configureVODBufferPolicy() {
+        guard vodBufferPolicy?.player !== avPlayer else { return }
+        let preference: TimeInterval
+        #if DEBUG
+        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == false ? 4 : 0
+        #else
+        preference = 0
+        #endif
+        vodBufferPolicy = HybridVODBufferPolicy(
+            player: avPlayer,
+            preferredForwardBufferDuration: preference,
+            isEligible: { [weak self] player in
+                guard let self else { return false }
+                return !self.stopped && !self.engine.isLive
+                    && self.engine.videoRoute == .loopback
+                    && self.engine.currentAVPlayer === player
+            }
+        )
+    }
+
     public init(request: HybridPlaybackRequest) async throws {
         self.request = request
 
@@ -271,6 +299,7 @@ public final class HybridPlaybackSession:
         proxyContext?.timeline.setEventHandler { [weak self] event in
             self?.handleProxyServerEvent(event)
         }
+        configureVODBufferPolicy()
         installObservers()
         applyAetherMaterial()
         if snapshot.route == .avKitProxy,
@@ -961,6 +990,7 @@ public final class HybridPlaybackSession:
             return
         }
         stopped = true
+        vodBufferPolicy = nil
         nativeSeekGeneration &+= 1
         replayTask?.cancel()
         replayTask = nil
@@ -1231,6 +1261,7 @@ public final class HybridPlaybackSession:
         if attachedController?.player !== avPlayer {
             attachedController?.player = avPlayer
         }
+        configureVODBufferPolicy()
         do {
             try updateSurfaceAttachment(for: newRoute)
         } catch {
