@@ -26,21 +26,26 @@ public enum HybridVODNetworkTestVariant: String, CaseIterable, Sendable {
 #endif
 
 /// Follows eligible VOD item replacements while leaving playback and recovery
-/// decisions with the existing session. Zero lets AVPlayer choose its buffer.
+/// decisions with the existing session. The four-second preference preserves
+/// the host's small-buffer startup and recovery intent; zero is experimental.
 @MainActor
 final class HybridVODBufferPolicy {
     private(set) weak var player: AVPlayer?
     private let preferredForwardBufferDuration: TimeInterval
+    private let diagnosticSessionID: String?
+    private var itemRevision: UInt64 = 0
     private let isEligible: @MainActor (AVPlayer) -> Bool
     private var observation: NSKeyValueObservation?
 
     init(
         player: AVPlayer,
-        preferredForwardBufferDuration: TimeInterval = 0,
+        preferredForwardBufferDuration: TimeInterval = 4,
+        diagnosticSessionID: String? = nil,
         isEligible: @escaping @MainActor (AVPlayer) -> Bool
     ) {
         self.player = player
         self.preferredForwardBufferDuration = preferredForwardBufferDuration
+        self.diagnosticSessionID = diagnosticSessionID
         self.isEligible = isEligible
         apply()
         observation = player.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
@@ -52,6 +57,16 @@ final class HybridVODBufferPolicy {
 
     private func apply() {
         guard let player, isEligible(player), let item = player.currentItem else { return }
+        let previous = item.preferredForwardBufferDuration
         item.preferredForwardBufferDuration = preferredForwardBufferDuration
+        itemRevision &+= 1
+        if let diagnosticSessionID {
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_VOD_BUFFER session=\(diagnosticSessionID) event=applied"
+                    + " itemRevision=\(itemRevision) previousPreference=\(previous)"
+                    + " preferredForwardBufferDuration=\(item.preferredForwardBufferDuration)"
+                    + " automaticallyWaits=\(player.automaticallyWaitsToMinimizeStalling)"
+            )
+        }
     }
 }

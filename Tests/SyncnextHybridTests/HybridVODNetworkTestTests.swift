@@ -46,7 +46,9 @@ final class HybridVODNetworkTestTests: XCTestCase {
         let first = AVPlayerItem(asset: AVMutableComposition())
         first.preferredForwardBufferDuration = 4
         let player = AVPlayer(playerItem: first)
-        let policy = HybridVODBufferPolicy(player: player, isEligible: { _ in true })
+        let policy = HybridVODBufferPolicy(
+            player: player, preferredForwardBufferDuration: 0, isEligible: { _ in true }
+        )
         XCTAssertEqual(first.preferredForwardBufferDuration, 0)
         let second = AVPlayerItem(asset: AVMutableComposition())
         second.preferredForwardBufferDuration = 4
@@ -58,6 +60,24 @@ final class HybridVODNetworkTestTests: XCTestCase {
         XCTAssertEqual(second.preferredForwardBufferDuration, 0)
         XCTAssertTrue(player.automaticallyWaitsToMinimizeStalling)
         XCTAssertEqual(player.rate, 0, "Applying a preference must not start playback")
+        withExtendedLifetime(policy) {}
+    }
+
+    @MainActor
+    func testOrdinaryVODKeepsFourSecondsAfterItemReplacement() async throws {
+        let first = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: first)
+        let policy = HybridVODBufferPolicy(player: player, isEligible: { _ in true })
+        XCTAssertEqual(first.preferredForwardBufferDuration, 4)
+        let replacement = AVPlayerItem(asset: AVMutableComposition())
+        player.replaceCurrentItem(with: replacement)
+        let deadline = Date().addingTimeInterval(2)
+        while replacement.preferredForwardBufferDuration != 4, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(replacement.preferredForwardBufferDuration, 4)
+        XCTAssertTrue(player.automaticallyWaitsToMinimizeStalling)
+        XCTAssertEqual(player.rate, 0)
         withExtendedLifetime(policy) {}
     }
 

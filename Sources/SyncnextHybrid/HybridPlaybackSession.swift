@@ -140,13 +140,14 @@ public final class HybridPlaybackSession:
         guard vodBufferPolicy?.player !== avPlayer else { return }
         let preference: TimeInterval
         #if DEBUG
-        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == false ? 4 : 0
+        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == true ? 0 : 4
         #else
-        preference = 0
+        preference = 4
         #endif
         vodBufferPolicy = HybridVODBufferPolicy(
             player: avPlayer,
             preferredForwardBufferDuration: preference,
+            diagnosticSessionID: diagnosticsID,
             isEligible: { [weak self] player in
                 guard let self else { return false }
                 return !self.stopped && !self.engine.isLive
@@ -223,6 +224,7 @@ public final class HybridPlaybackSession:
                 + "\(plan.diagnosticFields) "
                 + "nativeRemoteHLS=\(plan.options.nativeRemoteHLS) "
                 + "heldSourceConnection=\(plan.options.heldSourceConnection) "
+                + "progressiveSegmentDelivery=\(plan.options.progressiveSegmentDelivery) "
                 + "isLive=\(plan.options.isLive) "
                 + "forceAVKitProxy=\(forceAVKitProxy)"
         )
