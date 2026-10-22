@@ -1,6 +1,6 @@
 # AVKit UI Proxy 時間軸模型與微調指南
 
-更新日期：2026-10-17
+更新日期：2026-10-22
 狀態：Active
 Owner：SyncnextHybrid
 
@@ -54,6 +54,20 @@ letterbox 與 canvas placement）及 tvOS 的 `HybridSubtitleOverlayViewTests`
 `SyncnextHybridTests`；原生測試須選定可用的 tvOS Simulator 執行。
 
 ## 3. 三個時間軸的責任
+
+進階資訊由 `HybridPlaybackSnapshot.diagnostics` 傳遞實際媒體讀數：影片尺寸
+來自 Aether 的 source video dimensions，平均碼率來自
+`liveTelemetry.averageBitrateMbps`，宣告影片碼率獨立來自
+`sourceVideoBitrate`（bits/s 轉為 Mbps），緩衝秒數為同一 source 軸上的
+`max(0, bufferedPosition - sourceTime)`。尺寸、telemetry 與 buffer 更新會重新
+發布 snapshot；這些讀數不改寫 Proxy 的 playhead、rate 或 seek generation。
+App 的 proxy 面板不得讀黑色 Proxy item 的尺寸、access log 或 loaded ranges。
+未量到／非有限讀數保留 unavailable；下載速度仍由 App 的網絡監視器獨立量測。
+依使用者指定，面板碼率共用同一欄，`diagnostics.bitrateMbps` 優先選擇量測
+平均碼率，平均值不可用時才顯示影片宣告碼率；兩者皆不可用才顯示「—」。
+UI 只保留既有 SF Symbol 與數值，不增加文字標題。當前上游在部分 software
+播放中仍可能發布 nil 平均碼率，以及與 sourceTime 相同的 buffer frontier，
+緩衝欄應如實顯示 0，而非使用 Proxy item 的讀數。
 
 | 時間軸 | 速度與角色 | 責任 | 不應負責 |
 |---|---|---|---|

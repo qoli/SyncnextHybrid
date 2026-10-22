@@ -135,6 +135,61 @@ public enum HybridPlaybackPhase: Sendable, Equatable {
     case failed(String)
 }
 
+/// Measurements of the actual media, independent of the AVKit proxy item.
+public struct HybridPlaybackDiagnostics: Sendable, Equatable {
+    public let videoSize: CGSize?
+    public let averageBitrateMbps: Double?
+    /// Container-declared video rate; separate from the measured playback mean.
+    public let declaredVideoBitrateMbps: Double?
+    public let bufferSeconds: Double?
+
+    /// The panel prefers the playback mean, then the container declaration.
+    public var bitrateMbps: Double? {
+        averageBitrateMbps ?? declaredVideoBitrateMbps
+    }
+
+    public init(
+        videoSize: CGSize? = nil,
+        averageBitrateMbps: Double? = nil,
+        declaredVideoBitrateMbps: Double? = nil,
+        bufferSeconds: Double? = nil
+    ) {
+        self.videoSize = videoSize.flatMap {
+            $0.width.isFinite && $0.height.isFinite
+                && $0.width > 0 && $0.height > 0 ? $0 : nil
+        }
+        self.averageBitrateMbps = averageBitrateMbps.flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        }
+        self.declaredVideoBitrateMbps = declaredVideoBitrateMbps.flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        }
+        self.bufferSeconds = bufferSeconds.flatMap {
+            $0.isFinite && $0 >= 0 ? $0 : nil
+        }
+    }
+
+    init(
+        sourceVideoWidth: Int32,
+        sourceVideoHeight: Int32,
+        averageBitrateMbps: Double?,
+        sourceVideoBitrate: Int64 = 0,
+        bufferedPosition: Double,
+        sourceTime: Double
+    ) {
+        self.init(
+            videoSize: CGSize(
+                width: Int(sourceVideoWidth),
+                height: Int(sourceVideoHeight)
+            ),
+            averageBitrateMbps: averageBitrateMbps,
+            declaredVideoBitrateMbps: Double(sourceVideoBitrate) / 1_000_000,
+            bufferSeconds: bufferedPosition.isFinite && sourceTime.isFinite
+                ? max(0, bufferedPosition - sourceTime) : nil
+        )
+    }
+}
+
 public struct HybridPlaybackSnapshot: Sendable, Equatable {
     public let phase: HybridPlaybackPhase
     public let route: HybridPlaybackRoute
@@ -148,6 +203,7 @@ public struct HybridPlaybackSnapshot: Sendable, Equatable {
     public let selectedSubtitleTrackID: Int?
     public let audioTracks: [HybridMediaTrack]
     public let subtitleTracks: [HybridMediaTrack]
+    public let diagnostics: HybridPlaybackDiagnostics
 
     public init(
         phase: HybridPlaybackPhase,
@@ -159,7 +215,8 @@ public struct HybridPlaybackSnapshot: Sendable, Equatable {
         selectedAudioTrackID: Int?,
         selectedSubtitleTrackID: Int?,
         audioTracks: [HybridMediaTrack],
-        subtitleTracks: [HybridMediaTrack]
+        subtitleTracks: [HybridMediaTrack],
+        diagnostics: HybridPlaybackDiagnostics = .init()
     ) {
         self.phase = phase
         self.route = route
@@ -171,6 +228,7 @@ public struct HybridPlaybackSnapshot: Sendable, Equatable {
         self.selectedSubtitleTrackID = selectedSubtitleTrackID
         self.audioTracks = audioTracks
         self.subtitleTracks = subtitleTracks
+        self.diagnostics = diagnostics
     }
 }
 

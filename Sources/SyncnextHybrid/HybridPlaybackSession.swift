@@ -1054,6 +1054,25 @@ public final class HybridPlaybackSession:
             .sink { [weak self] _ in
                 Task { @MainActor in
                     self?.applyAetherMaterial()
+                    self?.publishSnapshot()
+                }
+            }
+            .store(in: &observations)
+
+        engine.$sourceVideoWidth
+            .combineLatest(engine.$sourceVideoHeight)
+            .combineLatest(engine.$sourceVideoBitrate)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.publishSnapshot()
+                }
+            }
+            .store(in: &observations)
+
+        engine.diagnostics.$liveTelemetry
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.publishSnapshot()
                 }
             }
             .store(in: &observations)
@@ -1237,7 +1256,8 @@ public final class HybridPlaybackSession:
                             Self.mapTracks(
                                 engine.subtitleTracks,
                                 kind: .subtitle
-                            )
+                            ),
+                        diagnostics: Self.makeDiagnostics(engine: engine)
                     )
                 )
             )
@@ -1786,7 +1806,8 @@ public final class HybridPlaybackSession:
             selectedAudioTrackID: snapshot.selectedAudioTrackID,
             selectedSubtitleTrackID: snapshot.selectedSubtitleTrackID,
             audioTracks: snapshot.audioTracks,
-            subtitleTracks: snapshot.subtitleTracks
+            subtitleTracks: snapshot.subtitleTracks,
+            diagnostics: snapshot.diagnostics
         )
         snapshot = failed
         eventContinuation.yield(.snapshot(failed))
@@ -2061,7 +2082,21 @@ public final class HybridPlaybackSession:
             subtitleTracks: mapTracks(
                 engine.subtitleTracks,
                 kind: .subtitle
-            )
+            ),
+            diagnostics: makeDiagnostics(engine: engine)
+        )
+    }
+
+    private static func makeDiagnostics(
+        engine: AetherEngine
+    ) -> HybridPlaybackDiagnostics {
+        HybridPlaybackDiagnostics(
+            sourceVideoWidth: engine.sourceVideoWidth,
+            sourceVideoHeight: engine.sourceVideoHeight,
+            averageBitrateMbps: engine.liveTelemetry?.averageBitrateMbps,
+            sourceVideoBitrate: engine.sourceVideoBitrate,
+            bufferedPosition: engine.bufferedPosition,
+            sourceTime: engine.sourceTime
         )
     }
 
