@@ -15,6 +15,13 @@ public final class HybridPlaybackSession:
     public let request: HybridPlaybackRequest
     public let events: AsyncStream<HybridPlaybackEvent>
 
+    private let userSubtitleSelectionSubject = PassthroughSubject<HybridMediaTrack?, Never>()
+
+    /// Explicit UI actions only, including selecting Off when already off.
+    public var userSubtitleSelections: AnyPublisher<HybridMediaTrack?, Never> {
+        userSubtitleSelectionSubject.eraseToAnyPublisher()
+    }
+
     @Published public private(set) var avPlayer: AVPlayer
     @Published public private(set) var snapshot: HybridPlaybackSnapshot
 
@@ -923,16 +930,26 @@ public final class HybridPlaybackSession:
         }.value
     }
 
-    public func selectSubtitleTrack(id: Int?) {
+    public func selectSubtitleTrack(id: Int?, origin: HybridSubtitleSelectionOrigin = .programmatic) {
         guard !stopped else {
             return
         }
+        let selected: HybridMediaTrack?
         if let id {
-            guard engine.subtitleTracks.contains(
-                where: { $0.id == id }
-            ) else {
+            guard let track = Self.mapTracks(engine.subtitleTracks, kind: .subtitle)
+                .first(where: { $0.id == id }) else {
                 return
             }
+            selected = track
+        } else {
+            selected = nil
+        }
+        // Revoke the host's automatic-selection authority before the engine
+        // publishes any synchronous selection or catalog updates.
+        if case .user = origin {
+            userSubtitleSelectionSubject.send(selected)
+        }
+        if let id {
             engine.selectSubtitleTrack(index: id)
         } else {
             engine.clearSubtitle()
@@ -1921,8 +1938,8 @@ public final class HybridPlaybackSession:
                         ? .on
                         : .off
                 ) { [weak self] _ in
-                    Task { @MainActor in
-                        self?.selectSubtitleTrack(id: nil)
+                    DispatchQueue.main.async {
+                        self?.selectSubtitleTrack(id: nil, origin: .user)
                     }
                 },
             ]
@@ -1935,8 +1952,8 @@ public final class HybridPlaybackSession:
                             ? .on
                             : .off
                     ) { [weak self] _ in
-                        Task { @MainActor in
-                            self?.selectSubtitleTrack(id: track.id)
+                        DispatchQueue.main.async {
+                            self?.selectSubtitleTrack(id: track.id, origin: .user)
                         }
                     }
                 }
@@ -2088,7 +2105,8 @@ public final class HybridPlaybackSession:
                 isDefault: $0.isDefault,
                 isForced: $0.isForced,
                 isHearingImpaired: $0.isHearingImpaired,
-                isCommentary: $0.isCommentary
+                isCommentary: $0.isCommentary,
+                isExternal: $0.isExternal
             )
         }
     }
