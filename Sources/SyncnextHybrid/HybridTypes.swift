@@ -35,6 +35,11 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
 
     #if DEBUG
     public var vodNetworkTestVariant: HybridVODNetworkTestVariant?
+    public var vodRangeTestMode: HybridVODRangeTestMode?
+
+    var vodTestBufferPreference: TimeInterval {
+        vodRangeTestMode == nil && vodNetworkTestVariant?.usesAdaptiveBuffer == true ? 0 : 4
+    }
     #endif
 
     public init(

@@ -131,8 +131,18 @@ public final class HybridPlaybackSession:
     private var vodBufferPolicy: HybridVODBufferPolicy?
 
     #if DEBUG
+    private var rangeTestReader: HybridRangeTestReader?
+
     public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool) {
         (engine.videoRoute.rawValue, engine.isLive)
+    }
+
+    public var vodRangeTestObservation: HybridVODRangeTestObservation? {
+        rangeTestReader?.observation
+    }
+
+    public func drainVODRangeTestTrace() -> [HybridVODRangeTraceBatch] {
+        rangeTestReader?.drainTrace() ?? []
     }
     #endif
 
@@ -140,7 +150,7 @@ public final class HybridPlaybackSession:
         guard vodBufferPolicy?.player !== avPlayer else { return }
         let preference: TimeInterval
         #if DEBUG
-        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == true ? 0 : 4
+        preference = request.vodTestBufferPreference
         #else
         preference = 4
         #endif
@@ -213,6 +223,10 @@ public final class HybridPlaybackSession:
         let plan = prepared.plan
         manifestFallbackServer = prepared.server
         var initialized = false
+        #if DEBUG
+        var preparedRangeReader: HybridRangeTestReader?
+        defer { if !initialized { preparedRangeReader?.close() } }
+        #endif
         defer {
             if !initialized { prepared.server?.stop() }
         }
@@ -231,13 +245,40 @@ public final class HybridPlaybackSession:
                 + " mediaRequestCoverage=engine-avio-and-hls-ingest"
         )
         do {
+            var source: MediaSource = .url(plan.url)
+            #if DEBUG
+            if let mode = request.vodRangeTestMode {
+                try mode.validate(admission: admission, url: plan.url)
+                let reader = try await HybridRangeTestReader.open(
+                    url: plan.url, headers: request.httpHeaders, mode: mode
+                )
+                preparedRangeReader = reader
+                rangeTestReader = reader
+                source = .custom(reader)
+                HybridDiagnosticEmitter.emit(
+                    "SYNCNEXT_HYBRID_RANGE_TEST session=\(diagnosticsID) mode=\(mode.rawValue)"
+                        + " workers=\(mode.requestCount) rangeBytes=\(HybridRangeTestReader.rangeBytes)"
+                )
+            }
+            #endif
             try await engine.load(
-                url: plan.url,
+                source: source,
                 startPosition: request.initialPosition,
                 options: plan.options
             )
         } catch {
             let nsError = error as NSError
+            #if DEBUG
+            if let mode = request.vodRangeTestMode {
+                let reason = preparedRangeReader?.observation.failure
+                    ?? (error as? HybridRangeTestReader.Failure).map { String(describing: $0) }
+                    ?? String(describing: type(of: error))
+                HybridDiagnosticEmitter.emit(
+                    "SYNCNEXT_HYBRID_RANGE_TEST session=\(diagnosticsID) mode=\(mode.rawValue)"
+                        + " event=failed reason=\(reason)"
+                )
+            }
+            #endif
             HybridDiagnosticEmitter.emit(
                 "SYNCNEXT_HYBRID_LOAD "
                     + "session=\(diagnosticsID) event=failed "

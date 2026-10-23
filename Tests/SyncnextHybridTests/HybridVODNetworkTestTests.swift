@@ -4,6 +4,27 @@ import XCTest
 
 final class HybridVODNetworkTestTests: XCTestCase {
     #if DEBUG
+    func testRangeExperimentsFixFourSecondsAndRejectLiveOrHLSWithoutChangingTheirOptions() throws {
+        for mode in HybridVODRangeTestMode.allCases {
+            var request = try HybridPlaybackRequest(url: URL(string: "https://fixture.invalid/media")!)
+            request.vodNetworkTestVariant = .combined
+            request.vodRangeTestMode = mode
+            XCTAssertEqual(request.vodTestBufferPreference, 4)
+            XCTAssertNoThrow(try mode.validate(admission: .aetherDefault(.confirmedNonHLS), url: request.url))
+            let vod = HybridPlaybackPlan.make(request: request, externalSubtitles: [], admission: .aetherDefault(.confirmedNonHLS))
+            XCTAssertTrue(vod.options.progressiveSegmentDelivery)
+            var nativeRequest = request
+            nativeRequest.vodNetworkTestVariant = nil
+            for admission: HybridRemoteSourceAdmission in [.hlsLive, .hlsVOD] {
+                XCTAssertThrowsError(try mode.validate(admission: admission, url: request.url))
+                let live = HybridPlaybackPlan.make(request: nativeRequest, externalSubtitles: [], admission: admission)
+                XCTAssertTrue(live.options.nativeRemoteHLS)
+                XCTAssertFalse(live.options.progressiveSegmentDelivery)
+                XCTAssertFalse(live.options.autoplay)
+            }
+        }
+    }
+
     func testFourVariantsReachVODLoadOptionsAndLeaveLiveUnchanged() throws {
         for variant in HybridVODNetworkTestVariant.allCases {
             var request = try HybridPlaybackRequest(url: URL(string: "https://fixture.invalid/media")!)

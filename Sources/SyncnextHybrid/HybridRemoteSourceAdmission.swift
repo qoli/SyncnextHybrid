@@ -327,6 +327,13 @@ enum HybridRemoteSourceAdmission: Equatable {
             if Task.isCancelled {
                 throw CancellationError()
             }
+            #if DEBUG
+            let failure = error as NSError
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_ADMISSION_FAILURE stage=headers domain=\(failure.domain)"
+                    + " code=\(failure.code) sourceID=\(HybridPlaybackPlan.sourceID(url))"
+            )
+            #endif
             throw AdmissionProbeError(reason: .requestFailed)
         }
         defer { bytes.task.cancel() }
@@ -364,6 +371,13 @@ enum HybridRemoteSourceAdmission: Equatable {
             if Task.isCancelled {
                 throw CancellationError()
             }
+            #if DEBUG
+            let failure = error as NSError
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_ADMISSION_FAILURE stage=body domain=\(failure.domain)"
+                    + " code=\(failure.code) sourceID=\(HybridPlaybackPlan.sourceID(url))"
+            )
+            #endif
             throw AdmissionProbeError(reason: .requestFailed)
         }
 
@@ -529,6 +543,9 @@ struct HybridPlaybackPlan {
         options.progressiveSegmentDelivery = !options.isLive && !options.nativeRemoteHLS
         #if DEBUG
         request.vodNetworkTestVariant?.configure(&options, isLive: admission.isLiveHLS)
+        if request.vodRangeTestMode != nil, !options.isLive, !options.nativeRemoteHLS {
+            options.progressiveSegmentDelivery = true
+        }
         #endif
         return Self(
             url: url,
