@@ -2,3 +2,4 @@
 0002-independent-audio-source.patch
 0004-cache-backed-fingerprint-audio.patch
 0007-media-request-diagnostics.patch
+0008-http-disc-mime-recognition.patch

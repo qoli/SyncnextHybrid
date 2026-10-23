@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-23
+更新日期：2026-10-24
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -81,6 +81,13 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      讓停止播放後的晚到資料仍可追蹤；不記錄原始 URL、headers 或媒體內容。
    - App 日誌轉送與 session 停止事件留在 Hybrid；不改變 transport、route、
      取消、背壓、重試或既有 drain 行為。範圍與退出條件見第 8 節。
+5. `0008-http-disc-mime-recognition.patch`
+   - 依使用者 2026-10-24 明確要求，修復無副檔名 HTTP ISO 被當成一般媒體的缺陷；
+     上游 issue：[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
+   - 從既有取流回應或相容的 prewarm 保存／取得 `Content-Type`，以 ISO MIME
+     啟動既有 DiscReader 結構辨識；一般媒體不新增 HEAD／Range 探測。
+   - MIME 不作為有效光碟的證明；不改變 live、宣告 sequential origin、其他
+     媒體格式或 Hybrid presentation。範圍與退出條件見第 8 節。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
@@ -260,6 +267,34 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 無副檔名 HTTP ISO 辨識（2026-10-24）
+
+決定：`Approved minimal Patch`。使用者在確認副檔名判斷缺口後要求先向 Aether
+上游提交 issue，再編寫 Patch 修復。上游已建立
+[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
+
+- 缺口：`Demuxer.openHTTP` 以副檔名作光碟路徑入口，忽略回應已宣告的
+  `application/x-iso9660-image`。T4 opaque URL 因此把 ISO filesystem 直接交給
+  libavformat，回報 `AVERROR_INVALIDDATA`。
+- 邊界：HTTP transport、光碟 reader 與有效內容路由由 Aether 擁有。此修復留在
+  該 owner，不在 Hybrid 複製 DiscReader，也不以改寫代理 URL 作產品依賴。
+- 侵入：`0008` 只觸及 Aether 的 Demuxer、AVIO response metadata、prewarm
+  metadata 與相應測試；不新增 public API，不變更官方 pin、remote 或 FFmpegBuild。
+- 行為：以現有成功 HTTP 回應的 MIME 或相容 prewarm metadata 作探測線索，再由
+  既有 ISO9660／UDF／DVD／BDMV 結構確認。誤標 MIME 沿用既有 non-disc 行為，
+  不新增 provider、重試或另一套播放路徑；光碟結構／Range 錯誤照常向上拋出。
+- 替代方案：只保留副檔名會留下上游辨識缺陷；等待上游暫不修復當前失敗。
+  使用者已選擇上游 issue 加最小本地 Patch。
+- 成本與退出：之後每次更新需重新檢查 Demuxer open、response 與 prewarm metadata
+  邊界。當正式 release 原生支援此辨識、且同組回歸通過時，移除 `0008` 並同步
+  更新 `series`／manifest，不保留重複路由判斷。
+
+focused 回歸入口：`swift test --package-path AetherEngine --filter HTTPDiscMIMERecognitionTests`。
+使用本機 Range origin 與可開啟 MPEG-2 影片的 DVD
+ISO fixture，覆蓋兩種 HTTP transport、MIME 大小寫／參數、prewarm、一般與誤標
+媒體、既有副檔名、seekable extraction、取消交接及 sequential origin。
+原始遠端 ISO 與 tvOS 實際播放仍是獨立驗收，不以 fixture 開啟或編譯成功代替。
 
 ### 使用者要求的媒體取消觀測（2026-10-23）
 
