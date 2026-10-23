@@ -4,6 +4,28 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridRemoteSourceAdmissionTests: XCTestCase {
+    #if DEBUG
+    func testStartupProbeQualificationLeavesHLSAndLiveBudgetsUnchanged() throws {
+        var request = try HybridPlaybackRequest(url: URL(string: "https://probe.fixture.invalid/media")!)
+        request.startupProbeBytes = 8 * 1024 * 1024
+        let file = HybridPlaybackPlan.make(request: request, externalSubtitles: [],
+                                           admission: .aetherDefault(.confirmedNonHLS))
+        XCTAssertEqual(file.options.probesize, 8 * 1024 * 1024)
+        XCTAssertNil(file.options.maxAnalyzeDuration)
+        XCTAssertFalse(file.options.autoplay)
+        for admission in [HybridRemoteSourceAdmission.hlsVOD, .hlsLive,
+                          .hlsVODHEVCMPEGTS(duration: 6, evidence: .standardStreamType(0x24))] {
+            let plan = HybridPlaybackPlan.make(request: request, externalSubtitles: [], admission: admission)
+            XCTAssertNil(plan.options.probesize)
+            XCTAssertNil(plan.options.maxAnalyzeDuration)
+        }
+        request.startupProbeBytes = nil
+        let unchanged = HybridPlaybackPlan.make(request: request, externalSubtitles: [],
+                                                admission: .aetherDefault(.confirmedNonHLS))
+        XCTAssertNil(unchanged.options.probesize)
+    }
+    #endif
+
     func testPersistentHTTP1PolicySurvivesEveryAdmissionRoute() throws {
         let url = try XCTUnwrap(URL(string: "https://admission-fixture.invalid/master.m3u8"))
         let required = try HybridPlaybackRequest(url: url, heldSourceConnection: true)
@@ -35,6 +57,43 @@ final class HybridRemoteSourceAdmissionTests: XCTestCase {
             HybridAdmissionFixtureURLProtocol.self,
         ]
         return URLSession(configuration: configuration)
+    }
+
+    func testFiniteEBMLEvidenceUsesBodyAndCompleteHTTPFileLength() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        for name in ["ebml-file", "ebml-file.m3u8", "ebml-range"] {
+            let admission = try await HybridRemoteSourceAdmission.classify(
+                url: URL(string: "https://admission-fixture.invalid/\(name)")!,
+                httpHeaders: ["X-Admission-Fixture": "allowed"], session: session
+            )
+            XCTAssertEqual(admission, .aetherDefault(.confirmedFiniteEBML), name)
+            XCTAssertFalse(admission.isConfirmedHLS)
+            XCTAssertFalse(admission.isLiveHLS)
+        }
+    }
+
+    func testUnboundedInvalidAndTruncatedEBMLRetainOrdinaryAdmission() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        for name in ["ebml-live", "ebml-range-unknown", "ebml-invalid-range",
+                     "ebml-partial", "ebml-false"] {
+            let admission = try await HybridRemoteSourceAdmission.classify(
+                url: URL(string: "https://admission-fixture.invalid/\(name)")!,
+                httpHeaders: ["X-Admission-Fixture": "allowed"], session: session
+            )
+            XCTAssertEqual(admission, .aetherDefault(.confirmedNonHLS), name)
+        }
+    }
+
+    func testBinaryFileAdvertisedAsHLSVariantRemainsUnavailable() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let admission = try await HybridRemoteSourceAdmission.classify(
+            url: URL(string: "https://admission-fixture.invalid/ebml-master")!,
+            httpHeaders: ["X-Admission-Fixture": "allowed"], session: session
+        )
+        XCTAssertEqual(admission, .aetherDefault(.variantUnavailable))
     }
 
     func testExtensionlessMasterAndMediaPlaylistAdmitHLSVOD()
@@ -557,13 +616,31 @@ private final class HybridAdmissionFixtureURLProtocol:
             return
         }
 
-        let statusCode =
+        var statusCode =
             url.lastPathComponent == "unavailable" ? 503 : 200
+        let data = fixtureData(for: url.lastPathComponent)
+        var headers = ["Content-Type": "application/octet-stream"]
+        switch url.lastPathComponent {
+        case "ebml-file", "ebml-file.m3u8", "ebml-partial", "ebml-false":
+            headers["Content-Length"] = String(data.count)
+            // A misleading extension/MIME must not override body evidence.
+            headers["Content-Type"] = "application/vnd.apple.mpegurl"
+        case "ebml-range", "ebml-range-unknown", "ebml-invalid-range":
+            statusCode = 206
+            headers["Content-Length"] = String(data.count)
+            headers["Content-Range"] = switch url.lastPathComponent {
+            case "ebml-range-unknown": "bytes 0-7/*"
+            case "ebml-invalid-range": "bytes 1-8/69153946290"
+            default: "bytes 0-7/69153946290"
+            }
+        default:
+            break
+        }
         guard let response = HTTPURLResponse(
             url: url,
             statusCode: statusCode,
             httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/octet-stream"]
+            headerFields: headers
         ) else {
             client?.urlProtocol(
                 self,
@@ -576,10 +653,10 @@ private final class HybridAdmissionFixtureURLProtocol:
             didReceive: response,
             cacheStoragePolicy: .notAllowed
         )
-        if statusCode == 200 {
+        if (200...299).contains(statusCode) {
             client?.urlProtocol(
                 self,
-                didLoad: fixtureData(for: url.lastPathComponent)
+                didLoad: data
             )
         }
         client?.urlProtocolDidFinishLoading(self)
@@ -589,6 +666,15 @@ private final class HybridAdmissionFixtureURLProtocol:
 
     private func fixtureData(for name: String) -> Data {
         switch name {
+        case "ebml-file", "ebml-file.m3u8", "ebml-range", "ebml-live",
+             "ebml-range-unknown", "ebml-invalid-range":
+            Data([0x1A, 0x45, 0xDF, 0xA3, 0x80, 0x18, 0x53, 0x80])
+        case "ebml-partial":
+            Data([0x1A, 0x45, 0xDF])
+        case "ebml-false":
+            Data([0x1A, 0x45, 0xDF, 0xA4])
+        case "ebml-master":
+            Data("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nebml-range\n".utf8)
         case "pq-only-master":
             Data(
                 """

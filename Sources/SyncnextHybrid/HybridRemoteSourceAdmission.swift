@@ -12,6 +12,7 @@ enum HybridRemoteSourceAdmission: Equatable {
     enum AetherDefaultReason: Equatable {
         case nonHTTPSource
         case confirmedNonHLS
+        case confirmedFiniteEBML
         case requestFailed
         case invalidHTTPResponse
         case httpStatus(Int)
@@ -118,14 +119,19 @@ enum HybridRemoteSourceAdmission: Equatable {
 
         let rootCandidate: PlaylistCandidate
         do {
-            guard let candidate = try await fetchPlaylistCandidate(
+            guard let candidate = try await fetchSourceCandidate(
                 url: url,
                 httpHeaders: httpHeaders,
                 session: session
             ) else {
                 return .aetherDefault(.confirmedNonHLS)
             }
-            rootCandidate = candidate
+            switch candidate {
+            case .finiteEBML:
+                return .aetherDefault(.confirmedFiniteEBML)
+            case .playlist(let playlist):
+                rootCandidate = playlist
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as AdmissionProbeError {
@@ -186,7 +192,7 @@ enum HybridRemoteSourceAdmission: Equatable {
 
             let variantCandidate: PlaylistCandidate
             do {
-                guard let candidate = try await fetchPlaylistCandidate(
+                guard case .playlist(let candidate)? = try await fetchSourceCandidate(
                     url: variantURL,
                     httpHeaders: httpHeaders,
                     session: session
@@ -306,11 +312,11 @@ enum HybridRemoteSourceAdmission: Equatable {
         )
     }
 
-    private static func fetchPlaylistCandidate(
+    private static func fetchSourceCandidate(
         url: URL,
         httpHeaders: [String: String],
         session: URLSession
-    ) async throws -> PlaylistCandidate? {
+    ) async throws -> SourceCandidate? {
         var request = URLRequest(url: url)
         for (name, value) in httpHeaders {
             request.setValue(value, forHTTPHeaderField: name)
@@ -347,7 +353,7 @@ enum HybridRemoteSourceAdmission: Equatable {
         }
 
         var data = Data()
-        var prefixState = PlaylistPrefixState.incomplete
+        var prefixState = SourcePrefixState.incomplete
         do {
             for try await byte in bytes {
                 guard data.count < maximumPlaylistBytes else {
@@ -357,7 +363,11 @@ enum HybridRemoteSourceAdmission: Equatable {
                 }
                 data.append(byte)
                 if prefixState == .incomplete {
-                    prefixState = playlistPrefixState(data)
+                    prefixState = sourcePrefixState(data)
+                    if prefixState == .ebml {
+                        guard hasFiniteFileLength(http) else { return nil }
+                        return .finiteEBML
+                    }
                     if prefixState == .notHLS {
                         return nil
                     }
@@ -385,23 +395,36 @@ enum HybridRemoteSourceAdmission: Equatable {
               let text = String(data: data, encoding: .utf8) else {
             return nil
         }
-        return PlaylistCandidate(
+        return .playlist(PlaylistCandidate(
             text: text,
             responseURL: http.url ?? url
-        )
+        ))
     }
 
-    private enum PlaylistPrefixState {
+    private enum SourcePrefixState {
         case incomplete
         case hls
+        case ebml
         case notHLS
     }
 
-    private static func playlistPrefixState(
+    private static func sourcePrefixState(
         _ data: Data
-    ) -> PlaylistPrefixState {
+    ) -> SourcePrefixState {
         let bytes = [UInt8](data)
         var index = 0
+
+        // Reuse the existing admission response. A suffix or MIME cannot
+        // identify a file behind a cloud-drive proxy, and an EBML stream
+        // without a finite HTTP length must keep the ordinary engine budget.
+        if bytes.first == 0x1A {
+            let signature: [UInt8] = [0x1A, 0x45, 0xDF, 0xA3]
+            let compared = min(bytes.count, signature.count)
+            guard bytes.prefix(compared) == signature.prefix(compared) else {
+                return .notHLS
+            }
+            return compared == signature.count ? .ebml : .incomplete
+        }
 
         if bytes.first == 0xEF {
             guard bytes.count >= 3 else {
@@ -441,6 +464,32 @@ enum HybridRemoteSourceAdmission: Equatable {
         let text: String
         let responseURL: URL
     }
+
+    private enum SourceCandidate {
+        case playlist(PlaylistCandidate)
+        case finiteEBML
+    }
+
+    private static func hasFiniteFileLength(_ response: HTTPURLResponse) -> Bool {
+        if response.statusCode == 200 {
+            return response.expectedContentLength > 0
+        }
+        guard response.statusCode == 206,
+              let value = response.value(forHTTPHeaderField: "Content-Range") else {
+            return false
+        }
+        let parts = value.split(separator: " ")
+        guard parts.count == 2, parts[0].lowercased() == "bytes" else {
+            return false
+        }
+        let bounds = parts[1].split(separator: "/")
+        guard bounds.count == 2, let total = Int64(bounds[1]), total > 0 else {
+            return false
+        }
+        let range = bounds[0].split(separator: "-")
+        return range.count == 2 && Int64(range[0]) == 0
+            && Int64(range[1]).map { $0 >= 0 && $0 < total } == true
+    }
 }
 
 private extension HybridRemoteSourceAdmission.AetherDefaultReason {
@@ -450,6 +499,8 @@ private extension HybridRemoteSourceAdmission.AetherDefaultReason {
             return "reason=non-http-source"
         case .confirmedNonHLS:
             return "reason=confirmed-non-hls"
+        case .confirmedFiniteEBML:
+            return "reason=confirmed-finite-ebml"
         case .requestFailed:
             return "reason=request-failed"
         case .invalidHTTPResponse:
@@ -543,6 +594,10 @@ struct HybridPlaybackPlan {
         options.progressiveSegmentDelivery = !options.isLive && !options.nativeRemoteHLS
         #if DEBUG
         request.vodNetworkTestVariant?.configure(&options, isLive: admission.isLiveHLS)
+        if !admission.isConfirmedHLS, !options.isLive,
+           let probeBytes = request.startupProbeBytes {
+            options.probesize = probeBytes
+        }
         #endif
         return Self(
             url: url,

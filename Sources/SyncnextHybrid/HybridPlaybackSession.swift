@@ -64,6 +64,7 @@ public final class HybridPlaybackSession:
     }
 
     private let engine: AetherEngine
+    private let startupDiagnostics: HybridStartupDiagnostics
     private let surface: AetherPlayerView
     private let subtitleOverlay = HybridSubtitleOverlayView()
     private let proxyContext: ProxyContext?
@@ -131,8 +132,8 @@ public final class HybridPlaybackSession:
     private var vodBufferPolicy: HybridVODBufferPolicy?
 
     #if DEBUG
-    public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool) {
-        (engine.videoRoute.rawValue, engine.isLive)
+    public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool, videoWidth: Int, videoHeight: Int) {
+        (engine.videoRoute.rawValue, engine.isLive, Int(engine.sourceVideoWidth), Int(engine.sourceVideoHeight))
     }
     #endif
 
@@ -160,6 +161,8 @@ public final class HybridPlaybackSession:
     public init(request: HybridPlaybackRequest) async throws {
         HybridNetworkDiagnostics.installMediaRequestLogging()
         self.request = request
+        startupDiagnostics = HybridStartupDiagnostics(sessionID: diagnosticsID)
+        startupDiagnostics.mark("request")
 
         let eventPair = AsyncStream<HybridPlaybackEvent>.makeStream()
         events = eventPair.stream
@@ -174,6 +177,7 @@ public final class HybridPlaybackSession:
         }
         surface = AetherPlayerView()
         engine.bind(view: surface)
+        startupDiagnostics.observe(engine)
 
         let externalSubtitles = request.externalSubtitles.map {
             ExternalSubtitleTrack(
@@ -190,6 +194,7 @@ public final class HybridPlaybackSession:
                 httpHeaders: request.httpHeaders
             )
         sourceAdmission = admission
+        startupDiagnostics.mark("admission-completed")
         forceAVKitProxy = admission.requiresAetherHLSVODRemux
         let originalPlan = HybridPlaybackPlan.make(
             request: request,
@@ -231,11 +236,13 @@ public final class HybridPlaybackSession:
                 + " mediaRequestCoverage=engine-avio-and-hls-ingest"
         )
         do {
+            startupDiagnostics.mark("renderer-load-begin", probeBytes: plan.options.probesize)
             try await engine.load(
                 url: plan.url,
                 startPosition: request.initialPosition,
                 options: plan.options
             )
+            startupDiagnostics.mark("renderer-load-completed")
         } catch {
             let nsError = error as NSError
             HybridDiagnosticEmitter.emit(
@@ -312,6 +319,7 @@ public final class HybridPlaybackSession:
             try await seek(to: initialPosition)
         }
         publishSnapshot()
+        startupDiagnostics.mark("session-created")
         initialized = true
     }
 
@@ -325,6 +333,7 @@ public final class HybridPlaybackSession:
     ) {
         self.request = request
         engine = preparedEngine
+        startupDiagnostics = HybridStartupDiagnostics(sessionID: diagnosticsID, recordsStartup: false)
         surface = AetherPlayerView()
         forceAVKitProxy = true
         sourceAdmission = .aetherDefault(.nonHTTPSource)
@@ -994,6 +1003,7 @@ public final class HybridPlaybackSession:
             return
         }
         stopped = true
+        startupDiagnostics.stop()
         logMediaSessionStop(event: "stop.begin")
         vodBufferPolicy = nil
         nativeSeekGeneration &+= 1

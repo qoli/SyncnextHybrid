@@ -35,6 +35,9 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
 
     #if DEBUG
     public var vodNetworkTestVariant: HybridVODNetworkTestVariant?
+    /// Launch-scoped qualification of Aether's public demux probe budget.
+    /// nil keeps production admission policy; never applies to HLS or live.
+    public var startupProbeBytes: Int64?
     #endif
 
     public init(
