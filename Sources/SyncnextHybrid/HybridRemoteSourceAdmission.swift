@@ -543,9 +543,6 @@ struct HybridPlaybackPlan {
         options.progressiveSegmentDelivery = !options.isLive && !options.nativeRemoteHLS
         #if DEBUG
         request.vodNetworkTestVariant?.configure(&options, isLive: admission.isLiveHLS)
-        if request.vodRangeTestMode != nil, !options.isLive, !options.nativeRemoteHLS {
-            options.progressiveSegmentDelivery = true
-        }
         #endif
         return Self(
             url: url,
