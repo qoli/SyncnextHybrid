@@ -159,6 +159,6 @@ enum ProbeSeekMeasurement {
     private static func requireHealth(_ sample: PlayerReadContext.Sample, engine: AetherEngine) throws {
         guard !sample.failed else { throw Failure.playbackFailed }
         if case .error = engine.playbackPhase { throw Failure.playbackFailed }
-        guard sample.preference == 4 else { throw Failure.changedBufferPreference }
+        guard sample.preference == 12 else { throw Failure.changedBufferPreference }
     }
 }

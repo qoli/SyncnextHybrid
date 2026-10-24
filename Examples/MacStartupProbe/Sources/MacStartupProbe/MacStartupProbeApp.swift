@@ -111,7 +111,7 @@ final class StartupModel: ObservableObject {
                 ), freopen(log.path, "a", stream) != nil else { throw Failure.invalidFixture }
             }
             emit("started", ["probe_bytes": fixture.probeBytes.map { $0 as Any } ?? NSNull(),
-                             "forward_buffer_preference": 4, "muted": true,
+                             "forward_buffer_preference": 12, "muted": true,
                              "pid": ProcessInfo.processInfo.processIdentifier,
                              "capture_probe_details": fixture.captureProbeDetails ?? false])
             let log = try ProbeEngineLog(directory: directory)
@@ -145,7 +145,7 @@ final class StartupModel: ObservableObject {
             guard let player = active.currentAVPlayer else { throw Failure.unsupportedRoute }
             player.isMuted = true
             if !active.isLive, active.videoRoute == .loopback {
-                player.currentItem?.preferredForwardBufferDuration = 4
+                player.currentItem?.preferredForwardBufferDuration = 12
             }
             let context = PlayerReadContext(player: player)
             await Task.detached { context.installFrameOutput() }.value

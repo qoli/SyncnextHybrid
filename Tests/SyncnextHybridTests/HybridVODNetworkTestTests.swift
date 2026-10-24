@@ -44,14 +44,14 @@ final class HybridVODNetworkTestTests: XCTestCase {
     @MainActor
     func testAdaptivePolicyFollowsActualItemReplacement() async throws {
         let first = AVPlayerItem(asset: AVMutableComposition())
-        first.preferredForwardBufferDuration = 4
+        first.preferredForwardBufferDuration = 12
         let player = AVPlayer(playerItem: first)
         let policy = HybridVODBufferPolicy(
             player: player, preferredForwardBufferDuration: 0, isEligible: { _ in true }
         )
         XCTAssertEqual(first.preferredForwardBufferDuration, 0)
         let second = AVPlayerItem(asset: AVMutableComposition())
-        second.preferredForwardBufferDuration = 4
+        second.preferredForwardBufferDuration = 12
         player.replaceCurrentItem(with: second)
         let deadline = Date().addingTimeInterval(2)
         while second.preferredForwardBufferDuration != 0, Date() < deadline {
@@ -64,18 +64,18 @@ final class HybridVODNetworkTestTests: XCTestCase {
     }
 
     @MainActor
-    func testOrdinaryVODKeepsFourSecondsAfterItemReplacement() async throws {
+    func testOrdinaryVODKeepsTwelveSecondsAfterItemReplacement() async throws {
         let first = AVPlayerItem(asset: AVMutableComposition())
         let player = AVPlayer(playerItem: first)
         let policy = HybridVODBufferPolicy(player: player, isEligible: { _ in true })
-        XCTAssertEqual(first.preferredForwardBufferDuration, 4)
+        XCTAssertEqual(first.preferredForwardBufferDuration, 12)
         let replacement = AVPlayerItem(asset: AVMutableComposition())
         player.replaceCurrentItem(with: replacement)
         let deadline = Date().addingTimeInterval(2)
-        while replacement.preferredForwardBufferDuration != 4, Date() < deadline {
+        while replacement.preferredForwardBufferDuration != 12, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(replacement.preferredForwardBufferDuration, 4)
+        XCTAssertEqual(replacement.preferredForwardBufferDuration, 12)
         XCTAssertTrue(player.automaticallyWaitsToMinimizeStalling)
         XCTAssertEqual(player.rate, 0)
         withExtendedLifetime(policy) {}

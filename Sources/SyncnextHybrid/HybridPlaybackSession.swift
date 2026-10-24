@@ -141,9 +141,9 @@ public final class HybridPlaybackSession:
         guard vodBufferPolicy?.player !== avPlayer else { return }
         let preference: TimeInterval
         #if DEBUG
-        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == true ? 0 : 4
+        preference = request.vodNetworkTestVariant?.usesAdaptiveBuffer == true ? 0 : 12
         #else
-        preference = 4
+        preference = 12
         #endif
         vodBufferPolicy = HybridVODBufferPolicy(
             player: avPlayer,

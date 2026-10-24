@@ -1,7 +1,7 @@
 # macOS 原生起播基線
 
 在 Mac 以同 pin 的 AetherEngine 播放實際 URL，使用持續來源連線、漸進分片及
-4 秒前向緩衝偏好。此獨立 App 不等同 tvOS Hybrid／一般 App 完整生命週期；
+12 秒前向緩衝偏好。此獨立 App 不等同 tvOS Hybrid／一般 App 完整生命週期；
 來源服務的準備時間由呼叫端另記。測試靜音，保留原音訊解碼／封裝路徑。
 
 使用 `script/build_and_run.sh --build-only` 建立完整原生 `.app`，再以
@@ -51,7 +51,7 @@ Hybrid native route 的 AVKit 交付邊界，不宣稱測過 tvOS 遙控器或�
 每次 seek 分別記錄 request、API dispatch／return、目標位置的新 pixel buffer、
 首次已驗證進度及連續進度恢復；API return 不能當成畫面或持續播放完成。
 frame witness 每次重設，並檢查 pixel buffer 的 display timestamp 在目標附近，
-排除 seek 前的舊畫面。所有 sample 必須維持 `preferredForwardBufferDuration=4`；
+排除 seek 前的舊畫面。所有 sample 必須維持 `preferredForwardBufferDuration=12`；
 變更、失敗、取消或超時直接結束該輪，不補 play、不換源、不新增 recovery。
 seek 跨越的時間跳變不計入媒體前進；起播統計須截在第一個 seek request 之前。
 公開媒體 request sink 也寫入帶單調時間戳的私人 engine log，可對齊來源 Range、
