@@ -160,13 +160,35 @@ public enum HybridIntroAudioExtractor {
         maximumDuration: Double,
         outputURL: URL
     ) async throws -> HybridIntroAudioArtifact {
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        let demuxer = Demuxer()
-        var preparedHLSCursor: HybridHLSPreparedAudioCursor?
-        defer {
-            demuxer.close()
-            preparedHLSCursor?.close()
+        let input = HybridAudioSourceCancellation()
+        return try await withTaskCancellationHandler {
+            defer { input.close() }
+            do {
+                try Task.checkCancellation()
+                let artifact = try await extractExclusively(
+                    request: request, maximumDuration: maximumDuration,
+                    outputURL: outputURL, input: input
+                )
+                try Task.checkCancellation()
+                return artifact
+            } catch {
+                try Task.checkCancellation()
+                throw error
+            }
+        } onCancel: {
+            input.cancel()
         }
+    }
+
+    private static func extractExclusively(
+        request: HybridIntroAudioExtractionRequest,
+        maximumDuration: Double,
+        outputURL: URL,
+        input: HybridAudioSourceCancellation
+    ) async throws -> HybridIntroAudioArtifact {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let demuxer = input.demuxer
+        var preparedHLSCursor: HybridHLSPreparedAudioCursor?
 
         do {
             let admission = try await
@@ -193,6 +215,7 @@ public enum HybridIntroAudioExtractor {
                         scope: .boundedRange
                     )
                 preparedHLSCursor = prepared
+                input.register(reader: prepared.reader)
                 try Task.checkCancellation()
                 try demuxer.openIndependent(
                     reader: prepared.reader,
@@ -206,6 +229,8 @@ public enum HybridIntroAudioExtractor {
                     extraHeaders: request.httpHeaders
                 )
             }
+            input.didOpen()
+            try Task.checkCancellation()
         } catch is CancellationError {
             throw HybridIntroAudioExtractionError.cancelled
         } catch {

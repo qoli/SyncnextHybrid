@@ -22,12 +22,46 @@ public struct HybridFingerprintAudioRequest: Sendable, Equatable {
         self.deadlineSeconds = deadlineSeconds
         self.region = region
     }
+
+    func validate() throws {
+        let duration = sourceRange.upperBound - sourceRange.lowerBound
+        guard sourceRange.lowerBound.isFinite, sourceRange.upperBound.isFinite,
+              sourceRange.lowerBound >= 0, duration > 0, duration <= 180 else {
+            throw HybridFingerprintAudioError.invalidRange
+        }
+        guard deadlineSeconds.isFinite, deadlineSeconds > 0 else {
+            throw HybridFingerprintAudioError.invalidDeadline
+        }
+    }
 }
 
 public enum HybridFingerprintAudioProvider: String, Sendable, Equatable {
     case segmentCache
     case independentRemoteHLS
     case independentDemuxer
+}
+
+public enum HybridFingerprintAudioTiming: String, Sendable, Equatable {
+    case immediate
+    case afterPlaybackSeek
+    case whenPlaybackReachesRange
+}
+
+/// Derived from the admitted media, without changing the playback route.
+public struct HybridFingerprintAudioPlan: Sendable, Equatable {
+    public let provider: HybridFingerprintAudioProvider
+    public let timing: HybridFingerprintAudioTiming
+
+    func isReady(for range: Range<Double>, playbackTime: Double, isSeeking: Bool) -> Bool {
+        switch timing {
+        case .immediate:
+            return true
+        case .afterPlaybackSeek:
+            return !isSeeking
+        case .whenPlaybackReachesRange:
+            return !isSeeking && playbackTime >= range.lowerBound
+        }
+    }
 }
 
 public struct HybridFingerprintAudioBuffer: @unchecked Sendable {
@@ -48,6 +82,7 @@ public struct HybridFingerprintAudioBatch: @unchecked Sendable {
 
 public struct HybridFingerprintAudioProgress: Sendable, Equatable {
     public enum Phase: String, Sendable, Equatable {
+        case waitingForPlayback
         case preparing
         case decoding
     }
@@ -87,19 +122,33 @@ public enum HybridFingerprintAudioError: Error, Sendable, Equatable {
 }
 
 enum HybridFingerprintAudioProviderResolver {
+    /// EBML playback already owns the source cursor and remux cache. A second
+    /// ranged cursor can invalidate a cloud-source proxy's active transfer.
+    static func requiresPlaybackCache(admission: HybridRemoteSourceAdmission) -> Bool {
+        admission == .aetherDefault(.confirmedFiniteEBML)
+    }
+
     static func resolve(
         admission: HybridRemoteSourceAdmission,
         region: HybridFingerprintAudioRegion = .front
-    ) throws -> HybridFingerprintAudioProvider {
+    ) throws -> HybridFingerprintAudioPlan {
         switch admission {
         case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster:
-            return .independentRemoteHLS
+            return HybridFingerprintAudioPlan(provider: .independentRemoteHLS, timing: .immediate)
         case .hlsVODHEVCMPEGTS:
-            return region == .front ? .segmentCache : .independentRemoteHLS
+            return HybridFingerprintAudioPlan(
+                provider: region == .front ? .segmentCache : .independentRemoteHLS,
+                timing: region == .front ? .afterPlaybackSeek : .immediate
+            )
         case .hlsLive:
             throw HybridFingerprintAudioError.liveOrDVRUnsupported
+        case .aetherDefault(.confirmedFiniteEBML):
+            return HybridFingerprintAudioPlan(
+                provider: .segmentCache,
+                timing: region == .front ? .afterPlaybackSeek : .whenPlaybackReachesRange
+            )
         case .aetherDefault:
-            return .independentDemuxer
+            return HybridFingerprintAudioPlan(provider: .independentDemuxer, timing: .immediate)
         }
     }
 }

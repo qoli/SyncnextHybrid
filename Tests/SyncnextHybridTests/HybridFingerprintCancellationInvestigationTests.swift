@@ -3,41 +3,50 @@ import Foundation
 import XCTest
 @testable import SyncnextHybrid
 
-/// 5ML-92 diagnostic probe, not full tvOS session acceptance.
-/// The nested call is the independentRemoteHLS branch of fingerprintAudio;
-/// the downloader and decoder below it are the real production implementations.
+/// Runs the session's production utility-task boundary, downloader and decoder
+/// against a held local origin. Native session lifetime is checked on the TV.
 final class HybridFingerprintCancellationInvestigationTests: XCTestCase {
     func testOuterCancellationWhileFirstResourceBatchIsBlocked() async throws {
         let origin = try CancellationProbeOrigin()
         defer { origin.stop() }
         let source = origin.source
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
         let fingerprintRequest = HybridFingerprintAudioRequest(sourceRange: 0..<6)
         let outer = Task.detached(priority: .utility) {
-            let batch: HybridFingerprintAudioBatch
-            // Source-extracted tvOS session boundary; progress callback omitted.
-            batch = try await Task.detached(priority: .utility) {
+            try await HybridFingerprintWork.run {
                 try await HybridIndependentFingerprintAudio.decode(
                     source: source,
                     range: fingerprintRequest.sourceRange,
+                    hlsSession: session,
                     deadlineSeconds: fingerprintRequest.deadlineSeconds,
                     onProgress: nil
                 )
-            }.value
-            return batch
+            }
         }
         defer { outer.cancel(); origin.releaseFirstBatch() }
         try await origin.waitForFirstBatch()
         origin.markCancellation()
         outer.cancel()
         XCTAssertTrue(outer.isCancelled)
+        // The server gate stays held: cancellation must close the owned HTTP
+        // tasks rather than wait for their responses to finish.
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        var pending = await session.allTasks
+        while !pending.isEmpty, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            pending = await session.allTasks
+        }
+        XCTAssertTrue(pending.isEmpty, "Outer cancellation must cancel the decoder's HTTP producer")
         origin.releaseFirstBatch()
-        let batch = try await outer.value
+        do {
+            _ = try await outer.value
+            XCTFail("Cancelled analysis must not return a fingerprint batch")
+        } catch is CancellationError {}
         let postCancel = origin.requestsAfterCancellation
-        XCTAssertFalse(batch.buffers.isEmpty)
-        XCTAssertEqual(batch.provider, .independentRemoteHLS)
-        XCTAssertTrue(postCancel.contains("hevc-04.ts"))
-        XCTAssertTrue(postCancel.contains("hevc-05.ts"))
-        print("CANCEL_PROBE outer cancelled=true outcome=pcm-ready segments=\(batch.segmentCount) postCancel=\(postCancel.joined(separator: ","))")
+        XCTAssertFalse(postCancel.contains("hevc-04.ts"))
+        XCTAssertFalse(postCancel.contains("hevc-05.ts"))
+        print("CANCEL_PROBE outer cancelled=true outcome=CancellationError pending=\(pending.count) postCancel=\(postCancel.joined(separator: ","))")
     }
 
     func testDirectDecodeCancellationControl() async throws {

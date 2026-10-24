@@ -43,6 +43,18 @@ Fingerprint V2 的 bounded PCM、明確 source／coverage 失敗下的既有 AAC
 與 matcher 入口，由 session 與
 [RepeatedSegmentFingerprint.swift](Sources/SyncnextHybrid/RepeatedSegmentFingerprint.swift)
 定義。分析失敗不改變播放 route 或音軌；失敗分類與 coverage 以當前測試為準。
+Session 的 `fingerprintAudioPlan(for:)` 依已確認的媒體能力提供 provider 與取樣時機：
+一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
+保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。
+已確認的有限 EBML 來源使用主播放的 SegmentCache 取得片頭與片尾音訊，
+不另外開啟原來源。片尾等播放進入其來源時間範圍且 seek 完成後才開始 cache material demand；
+片頭的後續 batch 同樣等已觸發的 seek 完成，避免前綴比對跳過改變正在取樣的時間軸。
+等待時間不消耗素材取得的 deadline。這條路徑的 cache 失敗明確回報，
+不觸發重新讀源的 AAC extractor。
+progress 以 `waitingForPlayback` 區分等待素材，實際取樣時才進入 `preparing`／`decoding`；
+App 等待時收起分析進度並保留片頭結果，取樣與比對完成後才標記完成。
+Session stop、呼叫方取消與音軌變更會撤銷
+分析；獨立 reader 的取消會關閉自己擁有的 HTTP producer。
 
 DoH 等 process DNS policy 由 App 設定；播放 request 可明確指定
 `heldSourceConnection: true`，將上游的持續 HTTP/1.1 選項傳入 Aether 7.45.0。

@@ -36,6 +36,34 @@ enum HybridIndependentFingerprintAudio {
             .defaultDeadlineSeconds,
         onProgress: HybridFingerprintAudioProgressHandler? = nil
     ) async throws -> HybridFingerprintAudioBatch {
+        let input = HybridAudioSourceCancellation()
+        return try await withTaskCancellationHandler {
+            defer { input.close() }
+            do {
+                try Task.checkCancellation()
+                let batch = try await decode(
+                    source: source, range: range, hlsSession: hlsSession,
+                    deadlineSeconds: deadlineSeconds, onProgress: onProgress, input: input
+                )
+                try Task.checkCancellation()
+                return batch
+            } catch {
+                try Task.checkCancellation()
+                throw error
+            }
+        } onCancel: {
+            input.cancel()
+        }
+    }
+
+    private static func decode(
+        source: HybridIndependentFingerprintAudioSource,
+        range: Range<Double>,
+        hlsSession: URLSession?,
+        deadlineSeconds: Double,
+        onProgress: HybridFingerprintAudioProgressHandler?,
+        input: HybridAudioSourceCancellation
+    ) async throws -> HybridFingerprintAudioBatch {
         let duration = range.upperBound - range.lowerBound
         guard range.lowerBound.isFinite,
               range.upperBound.isFinite,
@@ -55,12 +83,8 @@ enum HybridIndependentFingerprintAudio {
                 throw HybridFingerprintAudioError.deadlineExceeded
             }
         }
-        let demuxer = Demuxer()
+        let demuxer = input.demuxer
         var preparedHLSCursor: HybridHLSPreparedAudioCursor?
-        defer {
-            demuxer.close()
-            preparedHLSCursor?.close()
-        }
 
         let selected: TrackInfo
         do {
@@ -82,6 +106,7 @@ enum HybridIndependentFingerprintAudio {
                     )
                 }
                 preparedHLSCursor = prepared
+                input.register(reader: prepared.reader)
                 try Task.checkCancellation()
                 try demuxer.openIndependent(
                     reader: prepared.reader,
@@ -101,6 +126,8 @@ enum HybridIndependentFingerprintAudio {
                     expected: expectedTrack
                 )
             }
+            input.didOpen()
+            try Task.checkCancellation()
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as HybridAudioAnalysisError {

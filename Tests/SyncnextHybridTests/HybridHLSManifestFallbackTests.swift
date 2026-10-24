@@ -109,7 +109,7 @@ final class HybridHLSManifestFallbackTests: XCTestCase {
         XCTAssertTrue(prepared.plan.options.nativeRemoteHLS)
         XCTAssertFalse(prepared.plan.options.isLive)
         XCTAssertEqual(prepared.plan.options.httpHeaders, request.httpHeaders)
-        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission), .independentRemoteHLS)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission).provider, .independentRemoteHLS)
 
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }

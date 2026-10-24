@@ -64,7 +64,7 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         XCTAssertEqual(
             try HybridFingerprintAudioProviderResolver.resolve(
                 admission: .hlsVOD
-            ),
+            ).provider,
             .independentRemoteHLS
         )
         XCTAssertEqual(
@@ -75,7 +75,7 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
                     )!,
                     duration: 120
                 )
-            ),
+            ).provider,
             .independentRemoteHLS
         )
         XCTAssertEqual(
@@ -84,19 +84,19 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
                     duration: 120,
                     evidence: .standardStreamType(0x24)
                 )
-            ),
+            ).provider,
             .segmentCache
         )
         XCTAssertEqual(
             try HybridFingerprintAudioProviderResolver.resolve(
                 admission: .aetherDefault(.confirmedNonHLS)
-            ),
+            ).provider,
             .independentDemuxer
         )
         XCTAssertThrowsError(
             try HybridFingerprintAudioProviderResolver.resolve(
                 admission: .hlsLive
-            )
+            ).provider
         ) { error in
             XCTAssertEqual(
                 error as? HybridFingerprintAudioError,
@@ -109,9 +109,52 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         let admission = HybridRemoteSourceAdmission.hlsVODHEVCMPEGTS(
             duration: 2_700, evidence: .standardStreamType(0x24)
         )
-        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .front), .segmentCache)
-        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .back), .independentRemoteHLS)
-        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: .hlsVOD, region: .back), .independentRemoteHLS)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .front).provider, .segmentCache)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .front).timing, .afterPlaybackSeek)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .back).provider, .independentRemoteHLS)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: .hlsVOD, region: .back).provider, .independentRemoteHLS)
+    }
+
+    func testFiniteEBMLUsesPlaybackCacheForBothRegions() throws {
+        let admission = HybridRemoteSourceAdmission.aetherDefault(.confirmedFiniteEBML)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .front).provider, .segmentCache)
+        XCTAssertEqual(try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .back).provider, .segmentCache)
+        XCTAssertTrue(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: admission))
+        XCTAssertFalse(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: .aetherDefault(.confirmedNonHLS)))
+    }
+
+    func testPlaybackCacheTailWaitsForSeekCompletion() throws {
+        let range = 3_641.375..<3_821.375
+        let plan = try HybridFingerprintAudioProviderResolver.resolve(
+            admission: .aetherDefault(.confirmedFiniteEBML), region: .back
+        )
+        XCTAssertEqual(plan.timing, .whenPlaybackReachesRange)
+        XCTAssertFalse(plan.isReady(for: range, playbackTime: 180, isSeeking: false))
+        // The renderer publishes the requested position before replacing its
+        // cache/timeline. That position alone is not material readiness.
+        XCTAssertFalse(plan.isReady(for: range, playbackTime: range.lowerBound, isSeeking: true))
+        XCTAssertTrue(plan.isReady(for: range, playbackTime: range.lowerBound, isSeeking: false))
+    }
+
+    func testHLSCanAcquireTailBeforePlaybackReachesIt() throws {
+        for admission: HybridRemoteSourceAdmission in [
+            .hlsVOD,
+            .hlsVODHEVCMPEGTS(duration: 2_700, evidence: .standardStreamType(0x24)),
+        ] {
+            let plan = try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: .back)
+            XCTAssertEqual(plan.provider, .independentRemoteHLS)
+            XCTAssertEqual(plan.timing, .immediate)
+            XCTAssertTrue(plan.isReady(for: 2_520..<2_700, playbackTime: 10, isSeeking: true))
+        }
+    }
+
+    func testFiniteEBMLFrontWaitsForAutomaticSkipToSettle() throws {
+        let plan = try HybridFingerprintAudioProviderResolver.resolve(
+            admission: .aetherDefault(.confirmedFiniteEBML), region: .front
+        )
+        XCTAssertEqual(plan.timing, .afterPlaybackSeek)
+        XCTAssertFalse(plan.isReady(for: 0..<180, playbackTime: 51.1, isSeeking: true))
+        XCTAssertTrue(plan.isReady(for: 0..<180, playbackTime: 51.1, isSeeking: false))
     }
 
     func testOnlyMaterialFailuresPermitExtractorFallback() {
