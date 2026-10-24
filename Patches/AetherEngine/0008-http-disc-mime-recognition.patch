@@ -1,17 +1,17 @@
-Subject: [PATCH] Recognize extensionless HTTP ISO sources from response MIME
+Subject: [PATCH] Recognize extensionless HTTP ISO sources from response MIME and bytes
 
 Upstream: https://github.com/superuser404notfound/AetherEngine/issues/860
 Base: AetherEngine 7.45.0 (52802afaaf035a7f729bba1043b640ad4d9ebb3e)
 Apply after the existing SyncnextHybrid AetherEngine patch series.
 
 diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngine/Demuxer/AVIOReader.swift
+index 930f9c7643815fd5b28b726f73add0e4fe66f00d..691840211da9b35c6407d08286aa6fa960b6b796 100644
 --- a/Sources/AetherEngine/Demuxer/AVIOReader.swift
 +++ b/Sources/AetherEngine/Demuxer/AVIOReader.swift
-@@ -148,6 +148,22 @@
-     }
+@@ -149,6 +149,22 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
      private var position: Int64 = 0
      private var fileSize: Int64 = -1
-+
+ 
 +    // AE#860: metadata from an accepted response, shared by URLSession and held HTTP/1.1.
 +    // The demuxer reads it after open() returns; delegate writes remain under winCond.
 +    private var receivedContentType: String?
@@ -27,10 +27,19 @@ diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngin
 +        receivedContentType = http.value(forHTTPHeaderField: "Content-Type")
 +        winCond.unlock()
 +    }
- 
++
      /// Typed source-fetch network phase, pushed on every stall/reconnect/recovery transition (#85).
      /// Mirrors `HLSVideoEngine.onSeekStateChanged`. `@Sendable`: invoked from the demux thread, the
-@@ -3942,6 +3958,11 @@
+     /// consumer hops to the main actor. Set only on the MAIN playback reader, never the subtitle side reader.
+@@ -3090,6 +3106,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+         }
+         winCond.lock()
+         headSpan = warm.head.data
++        receivedContentType = warm.contentType
+         if let tail = warm.tail { tailSpan = tail }
+         fileSize = warm.contentLength
+         adoptedWarmSize = warm.contentLength
+@@ -3942,6 +3959,11 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
          }
  
          if isOK {
@@ -42,7 +51,7 @@ diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngin
              recordResolvedURL(respondedBy)
              return true
          }
-@@ -4039,6 +4060,7 @@
+@@ -4039,6 +4061,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
                  // Advisory length for the EOF/EIO distinction; -1 (chunked / unknown) leaves the
                  // clean-end path as the only EOF source.
                  guard let self else { return }
@@ -50,7 +59,7 @@ diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngin
                  let expected = response.expectedContentLength
                  guard expected > 0 else { return }
                  self.streamLock.lock()
-@@ -4663,6 +4685,7 @@
+@@ -4663,6 +4686,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
                          return nil
                      }
                  }
@@ -59,17 +68,43 @@ diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngin
                  return data
              } catch {
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
+index 1f93d111407ef13cc4259c8e79deb02968dd711a..8dd004616f0baf95cdf820142984d983710d7721 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -766,45 +766,83 @@
+@@ -766,45 +766,109 @@ public final class Demuxer: @unchecked Sendable {
          ["iso", "img", "udf"].contains(url.pathExtension.lowercased())
      }
  
 +    /// A response type is a probe hint; DiscReader still validates the actual filesystem.
 +    static func isDiscImageContentType(_ value: String?) -> Bool {
++        normalizedContentType(value) == "application/x-iso9660-image"
++    }
++
++    private static func normalizedContentType(_ value: String?) -> String? {
 +        value?.split(separator: ";", maxSplits: 1).first?
 +            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-+            == "application/x-iso9660-image"
++    }
++
++    private func hasHTTPDiscHint(_ reader: AVIOReader) throws -> Bool {
++        if Self.isDiscImageContentType(reader.responseContentType) { return true }
++        guard Self.normalizedContentType(reader.responseContentType) == "application/octet-stream",
++              let context = reader.context, context.pointee.seekable != 0 else { return false }
++
++        // A generic MIME carries no format evidence. Read the first volume descriptor from the
++        // existing response, then rewind inside AVIO's opening buffer so ordinary media keeps
++        // its original bytes and incurs no separate HEAD or Range request. ISO9660 and UDF's
++        // volume-recognition sequence begin after the 16-sector system area.
++        let descriptorOffset = 16 * 2048
++        var prefix = [UInt8](repeating: 0, count: descriptorOffset + 7)
++        let count = prefix.withUnsafeMutableBufferPointer {
++            avio_read(context, $0.baseAddress, Int32($0.count))
++        }
++        guard count >= 0 else { throw DemuxerError.openFailed(code: count) }
++        let rewound = avio_seek(context, 0, SEEK_SET)
++        guard rewound == 0 else { throw DemuxerError.openFailed(code: Int32(rewound)) }
++        guard count == prefix.count, prefix[descriptorOffset + 6] == 1 else { return false }
++        let identifier = String(decoding: prefix[(descriptorOffset + 1)..<(descriptorOffset + 6)], as: UTF8.self)
++        return ["CD001", "BEA01", "NSR02", "NSR03"].contains(identifier)
 +    }
 +
      private func openHTTP(url: URL, extraHeaders: [String: String], isLive: Bool = false, selectTitleID: Int? = nil) throws {
@@ -100,11 +135,12 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
 +        let reader = makeHTTPReader(url: url, extraHeaders: extraHeaders, isLive: isLive)
 +        try connectProvider(reader)
 +        // AE#860: opaque proxy URLs carry no suffix. Inspect the response already received by
-+        // either HTTP transport, before libavformat sees the raw ISO as a media container.
++        // either HTTP transport, and ISO/UDF bytes when that response has a generic MIME,
++        // before libavformat sees the raw disc image as a media container.
 +        // A declared sequential origin must never acquire a random-access disc reader.
 +        if !discHint, !isLive, !openProfile.avioSequentialOnly,
-+           Self.isDiscImageContentType(reader.responseContentType) {
-+            EngineLog.emit("[Demuxer] AE#860: HTTP Content-Type requests disc recognition", category: .demux)
++           try hasHTTPDiscHint(reader) {
++            EngineLog.emit("[Demuxer] AE#860: HTTP representation requests disc recognition", category: .demux)
 +            abandonProvider(reader)
 +            if try openHTTPDisc(url: url, extraHeaders: extraHeaders,
 +                                selectTitleID: selectTitleID, warm: nil) {
@@ -166,9 +202,8 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
              }
 -            // Not a disc: hand the warm back so the streaming reader below adopts it (#647).
 -            if let warm { SourcePrewarmStore.shared.store(warm, for: url) }
--        }
 +            releaseOwnedSourceReader()
-+        }
+         }
 +        return false
 +    }
 +
@@ -176,7 +211,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          let reader = AVIOReader(
              url: url,
              extraHeaders: extraHeaders,
-@@ -822,7 +860,7 @@
+@@ -822,7 +886,7 @@ public final class Demuxer: @unchecked Sendable {
          )
          reader.onNetworkPhaseChanged = onNetworkPhaseChanged
          reader.playIntentProvider = playIntentProvider
@@ -185,7 +220,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
      }
  
      /// A provider that connected (or tried to) for an open that is not going to finish.
-@@ -840,6 +878,11 @@
+@@ -840,6 +904,11 @@ public final class Demuxer: @unchecked Sendable {
          inputFormat: UnsafePointer<AVInputFormat>? = nil,
          isLive: Bool = false
      ) throws {
@@ -197,13 +232,12 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          // Audit DMX-102: the provider is published BEFORE it connects, under the same lock that
          // decides "already closed", so a `markClosed()` that lands during the connect (up to 15 s on
          // a live source, longer for a remote disc probe) reaches the provider instead of finding
-@@ -860,7 +903,17 @@
+@@ -860,7 +929,17 @@ public final class Demuxer: @unchecked Sendable {
              throw DemuxerError.openFailed(code: -1)
          }
          reportOpenStage(.sourceOpened)   // #361
--
 +    }
-+
+ 
 +    private func openConnectedProvider(
 +        _ provider: AVIOProvider,
 +        inputFormat: UnsafePointer<AVInputFormat>? = nil,
@@ -217,9 +251,10 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          // is, not at the host's base. A fresh AVIOContext starts its byte axis at 0 regardless, so
          // without this the rebuild reads the spool from the beginning: the playhead jumps back to
 diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
+index 4f3bd41f9c6426b7a2d3628fdfefe2e1b767d8f8..148bd5bc1f035fd94638256b3ba1d2ad028ee3c1 100644
 --- a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
 +++ b/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
-@@ -106,7 +106,8 @@
+@@ -106,7 +106,8 @@ enum SourcePrewarmFetcher {
                                       tail: tail,
                                       contentLength: head.total,
                                       requestHeaders: extraHeaders,
@@ -229,7 +264,7 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/A
          guard store.store(warmed, for: url) else {
              return decline(url, "\(warmed.byteCount) bytes exceed the prewarm store's cap")
          }
-@@ -166,6 +167,7 @@
+@@ -166,6 +167,7 @@ enum RangeFetch {
          /// The URL that actually answered, redirects followed. A warm that resolved a 302 knows the
          /// target the session would otherwise resolve again (#551 round 2).
          let respondedURL: URL?
@@ -237,7 +272,7 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/A
      }
  
      static func run(url: URL,
-@@ -223,6 +225,7 @@
+@@ -223,6 +225,7 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
      private var contentRange: (start: Int64, end: Int64, total: Int64)?
      private var rejection: String?
      private var respondedURL: URL?
@@ -245,7 +280,7 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/A
  
      /// Guards the handoff between the caller's thread, which installs the handler, and the
      /// session's delegate queue, which produces the outcome. Either can be first.
-@@ -330,6 +333,7 @@
+@@ -330,6 +333,7 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
          // `http.url` is the URL that answered, redirects followed, which is the one a later load
          // should start at instead of resolving the chain again (#551 round 2).
          respondedURL = http.url
@@ -253,7 +288,7 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/A
          completionHandler(.allow)
      }
  
-@@ -360,7 +364,8 @@
+@@ -360,7 +364,8 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
          return .body(RangeFetch.Result(body: buffer,
                                         range: (start: range.start, end: range.end),
                                         total: range.total,
@@ -264,9 +299,10 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/A
  
      /// `bytes <start>-<end>/<total>`. A `*` total is a range the origin will not size, which is
 diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift b/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
+index 9866487411d747f29eca4821513d2c18126bc959..5cd9403f2674fff41f9ca854c585dd5bafef69ea 100644
 --- a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
 +++ b/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
-@@ -28,6 +28,18 @@
+@@ -28,6 +28,18 @@ struct PrewarmedSource: Sendable {
      /// paid. The session adopts it as its pinned target (#12), so the existing expiry ladder is
      /// what handles a lease that has since run out.
      let resolvedURL: URL?
@@ -285,7 +321,7 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift b/Sources/Aet
  
      var byteCount: Int { head.data.count + (tail?.data.count ?? 0) }
  }
-@@ -92,6 +104,13 @@
+@@ -92,6 +104,13 @@ final class SourcePrewarmStore: @unchecked Sendable {
          return _retainedBytes
      }
  
@@ -301,9 +337,10 @@ diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift b/Sources/Aet
      /// the store to hold nothing.
 diff --git a/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift b/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift
 new file mode 100644
+index 0000000000000000000000000000000000000000..1af330a8c2ebf5aad6df4bb1e2e605d5f562dbaf
 --- /dev/null
 +++ b/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,203 @@
 +import Foundation
 +import Testing
 +@testable import AetherEngine
@@ -346,11 +383,61 @@ new file mode 100644
 +            try expectDisc(demuxer, url: url(origin), profile: .playback.withHeldSourceConnection(held))
 +        }
 +
-+        @Test("A prewarmed extensionless ISO retains its representation type")
-+        func prewarmedISO() async throws {
++        @Test("Extensionless ISO with generic MIME reaches the real disc title",
++              arguments: [false, true],
++              ["application/octet-stream", "Application/Octet-Stream; charset=binary"])
++        func genericMIMEISO(held: Bool, contentType: String) throws {
++            let vob = PrewarmStoreSuites.RemoteDiscSessionReleaseTests.vob
++            let sector = ISO9660Fixture.sectorSize
++            // A real image need not carry a media signature in libavformat's initial probe.
++            // Keep the title at 4 MiB so raw-container scanning cannot make this pass.
++            var bytes = ISO9660Fixture.make(files: [
++                .init(name: "VTS_01_1.VOB", length: vob.count, content: [UInt8](vob.prefix(sector))),
++            ], firstFileLBA: 2048)
++            bytes.append(vob.dropFirst(sector))
++            let origin = try #require(KeepAliveRangeOrigin(data: bytes, contentType: contentType))
++            defer { origin.stop() }
++            let demuxer = Demuxer()
++            defer { demuxer.close() }
++            try expectDisc(demuxer, url: url(origin), profile: .playback.withHeldSourceConnection(held))
++        }
++
++        @Test("A UDF Blu-ray with generic MIME is validated by the existing disc reader",
++              arguments: [false, true])
++        func genericMIMEBluRay(held: Bool) throws {
++            var item = Array("00001M2TS".utf8)
++            item += ISO9660Fixture.be16(0); item.append(0)
++            item += ISO9660Fixture.be32(0); item += ISO9660Fixture.be32(90_000)
++            item += [UInt8](repeating: 0, count: 8)
++            var playlist = ISO9660Fixture.be32(0)
++            playlist += ISO9660Fixture.be16(0); playlist += ISO9660Fixture.be16(1)
++            playlist += ISO9660Fixture.be16(0); playlist += ISO9660Fixture.be16(item.count)
++            playlist += item
++            var mpls = Array("MPLS0200".utf8)
++            mpls += ISO9660Fixture.be32(40); mpls += ISO9660Fixture.be32(0)
++            mpls += [UInt8](repeating: 0, count: 40 - mpls.count)
++            mpls += playlist
++            // Keep the complete transport stream in both extents. The empty CLPI is optional.
++            var bytes = UDFFixture.make(mplsBytes: mpls,
++                                       m2tsBytes: Array(TinyTransportStreamFixture.data), clpiBytes: [])
++            for (index, identifier) in ["BEA01", "NSR03", "TEA01"].enumerated() {
++                let offset = (16 + index) * UDFFixture.ss
++                bytes.replaceSubrange(offset..<(offset + 7), with: [0] + Array(identifier.utf8) + [1])
++            }
++            let origin = try #require(KeepAliveRangeOrigin(data: bytes,
++                                                         contentType: "application/octet-stream"))
++            defer { origin.stop() }
++            let demuxer = Demuxer()
++            defer { demuxer.close() }
++            try expectDisc(demuxer, url: url(origin), profile: .playback.withHeldSourceConnection(held))
++        }
++
++        @Test("A prewarmed extensionless ISO retains its representation type",
++              arguments: ["application/x-iso9660-image", "application/octet-stream"])
++        func prewarmedISO(contentType: String) async throws {
 +            let bytes = image
 +            let origin = try #require(KeepAliveRangeOrigin(data: bytes,
-+                                                         contentType: "application/x-iso9660-image"))
++                                                         contentType: contentType))
 +            defer { origin.stop() }
 +            let source = url(origin)
 +            let report = await SourcePrewarmFetcher.warm(url: source, extraHeaders: [:],
@@ -361,14 +448,15 @@ new file mode 100644
 +            try expectDisc(demuxer, url: source)
 +        }
 +
-+        @Test("An ordinary extensionless source adds no disc or HEAD probe")
-+        func ordinaryMedia() throws {
++        @Test("An ordinary extensionless source adds no disc or HEAD probe",
++              arguments: [false, true], ["video/mp2t", "application/octet-stream"])
++        func ordinaryMedia(held: Bool, contentType: String) throws {
 +            let origin = try #require(KeepAliveRangeOrigin(data: TinyTransportStreamFixture.data,
-+                                                         contentType: "video/mp2t"))
++                                                         contentType: contentType))
 +            defer { origin.stop() }
 +            let demuxer = Demuxer()
 +            defer { demuxer.close() }
-+            try demuxer.open(url: url(origin))
++            try demuxer.open(url: url(origin), profile: .playback.withHeldSourceConnection(held))
 +            #expect(!demuxer.isDiscSource)
 +            #expect(demuxer.videoStreamIndex >= 0)
 +            #expect(!origin.requests.contains { $0.hasPrefix("HEAD ") })
@@ -387,6 +475,23 @@ new file mode 100644
 +            #expect(demuxer.videoStreamIndex >= 0)
 +        }
 +
++        @Test("A generic response with only an ISO signature is not a playable disc",
++              arguments: [false, true])
++        func genericMIMESignatureWithoutFilesystem(held: Bool) throws {
++            var bytes = Data(repeating: 0, count: 257 * ISO9660Fixture.sectorSize)
++            let offset = 16 * ISO9660Fixture.sectorSize
++            bytes.replaceSubrange(offset..<(offset + 7), with: [1] + Array("CD001".utf8) + [1])
++            let origin = try #require(KeepAliveRangeOrigin(data: bytes,
++                                                         contentType: "application/octet-stream"))
++            defer { origin.stop() }
++            let demuxer = Demuxer()
++            defer { demuxer.close() }
++            #expect(throws: (any Error).self) {
++                try demuxer.open(url: url(origin), profile: .playback.withHeldSourceConnection(held))
++            }
++            #expect(!demuxer.isDiscSource)
++        }
++
 +        @Test("The existing ISO suffix still works with generic MIME")
 +        func suffixISO() throws {
 +            let origin = try #require(KeepAliveRangeOrigin(data: image,
@@ -397,20 +502,22 @@ new file mode 100644
 +            try expectDisc(demuxer, url: url(origin, path: "disc.iso"))
 +        }
 +
-+        @Test("A seekable extraction open also reads the actual response MIME")
-+        func seekableISO() throws {
++        @Test("A seekable extraction open also reads the actual response MIME",
++              arguments: ["application/x-iso9660-image", "application/octet-stream"])
++        func seekableISO(contentType: String) throws {
 +            let origin = try #require(KeepAliveRangeOrigin(data: image,
-+                                                         contentType: "application/x-iso9660-image"))
++                                                         contentType: contentType))
 +            defer { origin.stop() }
 +            let demuxer = Demuxer()
 +            defer { demuxer.close() }
 +            try expectDisc(demuxer, url: url(origin), profile: .stillExtraction)
 +        }
 +
-+        @Test("Cancellation at source-open prevents the subsequent disc probe")
-+        func cancelledOpen() throws {
++        @Test("Cancellation at source-open prevents the subsequent disc probe",
++              arguments: ["application/x-iso9660-image", "application/octet-stream"])
++        func cancelledOpen(contentType: String) throws {
 +            let origin = try #require(KeepAliveRangeOrigin(data: image,
-+                                                         contentType: "application/x-iso9660-image"))
++                                                         contentType: contentType))
 +            defer { origin.stop() }
 +            let demuxer = Demuxer()
 +            defer { demuxer.close() }
@@ -422,10 +529,11 @@ new file mode 100644
 +            #expect(!origin.requests.contains { $0.contains("bytes=0-0\r\n") })
 +        }
 +
-+        @Test("Declared sequential origins retain their forward-only request contract")
-+        func sequentialMedia() throws {
++        @Test("Declared sequential origins retain their forward-only request contract",
++              arguments: ["application/x-iso9660-image", "application/octet-stream"])
++        func sequentialMedia(contentType: String) throws {
 +            let origin = try #require(KeepAliveRangeOrigin(data: TinyTransportStreamFixture.data,
-+                                                         contentType: "application/x-iso9660-image"))
++                                                         contentType: contentType))
 +            defer { origin.stop() }
 +            let demuxer = Demuxer()
 +            defer { demuxer.close() }
@@ -436,10 +544,28 @@ new file mode 100644
 +        }
 +    }
 +}
+diff --git a/Tests/AetherEngineTests/ISO9660Fixture.swift b/Tests/AetherEngineTests/ISO9660Fixture.swift
+index 7dfed2d02102bda858923dc58356f869b1370f08..4c9396f46f240b52ea3164b32755fe1bf954dfb2 100644
+--- a/Tests/AetherEngineTests/ISO9660Fixture.swift
++++ b/Tests/AetherEngineTests/ISO9660Fixture.swift
+@@ -49,10 +49,10 @@ enum ISO9660Fixture {
+     }
+ 
+     /// Build a complete fixture image. Returns the bytes; wrap in DataIOReader.
+-    static func make(files: [FileSpec]) -> Data {
++    static func make(files: [FileSpec], firstFileLBA: Int = 19) -> Data {
+         // Reserve fixed sectors; declares real `length` in the record but fills only 1 sector per file (all tests read).
+         let rootLBA = 17, videoTsLBA = 18
+-        var fileLBA = 19
++        var fileLBA = firstFileLBA
+         var fileExtents: [(spec: FileSpec, lba: Int)] = []
+         for f in files { fileExtents.append((f, fileLBA)); fileLBA += 1 }
+ 
 diff --git a/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift b/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
+index 78067e021ffbd28f430b64d07e17ba9bbadc513b..f5591a7c1c839c786d080d41ea93a78f96114a47 100644
 --- a/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
 +++ b/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
-@@ -16,7 +16,7 @@
+@@ -16,7 +16,7 @@ extension PrewarmStoreSuites {
  
          /// 0.5 s of 64x64 MPEG-2 video in an MPEG-PS pack stream (ffmpeg `-f vob`), 4096 bytes: the
          /// smallest title the DVD adapter can hand to `mpegps` and have it open.
@@ -449,9 +575,10 @@ diff --git a/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift b/Tests
              AAIAAAG4AAgAQAAAAQAAD//4AAABtY//80GAAAABARv4ffSQDMAzAoAPgKJAqBVIxGVtiSWkxCMangd7bXiwAvAC8AeABAAP
              CaAPwB6TQMEwMCEIQ3JoFSb9xhCIRX+JYaW3bPttulPQhH+vvoBmAZgVAH4FUgVAqkanq2xIKQYhGMRgO9/4SANQQQEyYWMK
 diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
+index c6d8c32690f93d7fe1bb8b71d5550f9d7e7e1dd0..bd860b1ec759fa2b6eb51fae39f409a0ca4877a6 100644
 --- a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
 +++ b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
-@@ -9,13 +9,16 @@
+@@ -9,13 +9,16 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
      let port: UInt16
      private let listener: LoopbackListener
      private let data: Data
@@ -469,7 +596,7 @@ diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/
          guard let listener = LoopbackListener(backlog: 16) else { return nil }
          self.listener = listener
          port = listener.port
-@@ -24,6 +27,7 @@
+@@ -24,6 +27,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
  
      var openConnectionCount: Int { lock.withLock { connections.count } }
      var acceptedConnectionCount: Int { lock.withLock { accepted } }
@@ -477,7 +604,7 @@ diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/
  
      func stop() {
          lock.lock()
-@@ -58,6 +62,7 @@
+@@ -58,6 +62,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
              lock.unlock()
          }
          while let head = readRequestHead(fd) {
@@ -485,7 +612,7 @@ diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/
              var start = 0
              var end = data.count - 1
              if let range = Self.range(in: head) {
-@@ -70,6 +75,7 @@
+@@ -70,6 +75,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
                  continue
              }
              let header = "HTTP/1.1 206 Partial Content\r\n"

@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-24
+更新日期：2026-10-25
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -85,7 +85,10 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 依使用者 2026-10-24 明確要求，修復無副檔名 HTTP ISO 被當成一般媒體的缺陷；
      上游 issue：[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
    - 從既有取流回應或相容的 prewarm 保存／取得 `Content-Type`，以 ISO MIME
-     啟動既有 DiscReader 結構辨識；一般媒體不新增 HEAD／Range 探測。
+     啟動既有 DiscReader 結構辨識。依使用者 2026-10-25 要求，無副檔名加
+     `application/octet-stream` 時，從同一回應的 AVIO buffer 檢查 sector 16
+     的 ISO9660／UDF volume descriptor，再由 DiscReader 確認結構；一般媒體
+     讀後回到原始位置，不新增 HEAD／Range 探測。
    - MIME 不作為有效光碟的證明；不改變 live、宣告 sequential origin、其他
      媒體格式或 Hybrid presentation。範圍與退出條件見第 8 節。
 
@@ -282,7 +285,12 @@ root commit 只允許包含：
 - 侵入：`0008` 只觸及 Aether 的 Demuxer、AVIO response metadata、prewarm
   metadata 與相應測試；不新增 public API，不變更官方 pin、remote 或 FFmpegBuild。
 - 行為：以現有成功 HTTP 回應的 MIME 或相容 prewarm metadata 作探測線索，再由
-  既有 ISO9660／UDF／DVD／BDMV 結構確認。誤標 MIME 沿用既有 non-disc 行為，
+  既有 ISO9660／UDF／DVD／BDMV 結構確認。2026-10-25 使用者在確認「無副檔名
+  加通用 MIME」仍失敗後，明確要求修補及補上回歸，決定延伸同一最小 Patch。
+  對 `application/octet-stream` 的 seekable VOD，從既有 AVIO 回應讀到 sector 16
+  的 7-byte descriptor（`CD001`／`BEA01`／`NSR02`／`NSR03` 及 version），
+  rewind 原 buffer 後才決定是否啟用 DiscReader；通用 MIME 本身不是光碟證據。
+  live、forward-only 及宣告 sequential origin 不進入此探測。誤標 MIME 沿用既有 non-disc 行為，
   不新增 provider、重試或另一套播放路徑；光碟結構／Range 錯誤照常向上拋出。
 - 替代方案：只保留副檔名會留下上游辨識缺陷；等待上游暫不修復當前失敗。
   使用者已選擇上游 issue 加最小本地 Patch。
@@ -293,7 +301,10 @@ root commit 只允許包含：
 focused 回歸入口：`swift test --package-path AetherEngine --filter HTTPDiscMIMERecognitionTests`。
 使用本機 Range origin 與可開啟 MPEG-2 影片的 DVD
 ISO fixture，覆蓋兩種 HTTP transport、MIME 大小寫／參數、prewarm、一般與誤標
-媒體、既有副檔名、seekable extraction、取消交接及 sequential origin。
+媒體、既有副檔名、seekable extraction、取消交接及 sequential origin。通用 MIME
+回歸使用 title 位於 4 MiB 的有效 DVD ISO，以及含 volume-recognition sequence
+的 UDF Blu-ray 與有效 H.264 transport stream，必須辨識實際 title 及 video stream；
+一般通用 MIME 媒體仍須正常開啟，且不得新增 HEAD／disc Range 探測。
 原始遠端 ISO 與 tvOS 實際播放仍是獨立驗收，不以 fixture 開啟或編譯成功代替。
 
 ### 使用者要求的媒體取消觀測（2026-10-23）
