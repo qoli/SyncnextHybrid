@@ -769,6 +769,49 @@ public final class HybridPlaybackSession:
         engine.selectAudioTrack(index: id)
     }
 
+    /// Changes on the engine's actual session teardown, including subtitle reloads.
+    public var audioTapSourceGeneration: UUID { engine.scrubPreviewSourceGeneration }
+    public var audioTapSourceTime: Double { engine.sourceTime }
+
+    /// One consumer, explicitly bound to the currently audible selection. The
+    /// remote-HLS engine tap currently resolves the default rendition only.
+    public func installAudioTap() async throws -> AsyncStream<HybridPlaybackAudioBuffer> {
+        guard !stopped else { throw HybridPlaybackAudioTapError.sessionStopped }
+        // The remote-HLS tap follows the live edge on a cumulative reader clock,
+        // not the user's delayed/live-DVR audible cursor. Do not identify other audio.
+        guard !sourceAdmission.isLiveHLS else {
+            throw HybridPlaybackAudioTapError.liveTimelineUnsupported
+        }
+        let generation = audioTapSourceGeneration
+        if sourceAdmission.isConfirmedHLS, !sourceAdmission.requiresAetherHLSVODRemux {
+            guard let item = engine.currentAVPlayer?.currentItem else {
+                throw HybridPlaybackAudioTapError.sourceUnavailable
+            }
+            let group = try await item.asset.loadMediaSelectionGroup(for: .audible)
+            guard !stopped, generation == audioTapSourceGeneration,
+                  engine.currentAVPlayer?.currentItem === item else {
+                throw HybridPlaybackAudioTapError.sourceChanged
+            }
+            if let group {
+                guard let selected = item.currentMediaSelection.selectedMediaOption(in: group) else {
+                    throw HybridPlaybackAudioTapError.selectedAudioUnsupported
+                }
+                if group.options.count > 1, selected !== group.defaultOption {
+                    throw HybridPlaybackAudioTapError.selectedAudioUnsupported
+                }
+            }
+        }
+        try Task.checkCancellation()
+        let stream = engine.installAudioTap()
+        guard engine.audioTapHasDeliverySource else {
+            engine.removeAudioTap()
+            throw HybridPlaybackAudioTapError.noDeliverySource
+        }
+        return stream
+    }
+
+    public func removeAudioTap() { engine.removeAudioTap() }
+
     /// One-shot PCM for fingerprint v2. Provider resolution is explicit:
     /// loopback VOD reuses Aether's SegmentCache, while native HLS and normal
     /// seekable sources use an independent bounded cursor bound to the same
