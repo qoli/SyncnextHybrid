@@ -183,6 +183,8 @@ Supported environment values:
 | `HYBRID_SMOKE_SEEK_SECONDS` | Optional; fixed contract default is `10` |
 | `HYBRID_SMOKE_PRESEEK_SECONDS` | Optional first seek target; when present, the configured final seek can prove a real backward seek |
 | `HYBRID_SMOKE_RATE` | Optional playback rate in `(0, 4]`; fixed contract default is `1` |
+| `HYBRID_SMOKE_HELD_SOURCE_CONNECTION` | Optional explicit `true` or `false` (default); forwards the source-scoped persistent HTTP/1.1 policy to both modes |
+| `HYBRID_SMOKE_OBSERVATION_SECONDS` | Optional positive finite media progress required after seek recovery, before terminal PASS; emits 15-second checkpoints, fails on player error, early EOS, or failure to reach that progress within the requested duration at the selected rate plus the existing 60.5-second progress allowance |
 | `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion; valid only in `hybridAVKit` mode |
 | `HYBRID_SMOKE_FINGERPRINT_START_SECONDS` | Optional fingerprint PCM range start; requires the end and expected provider values |
 | `HYBRID_SMOKE_FINGERPRINT_END_SECONDS` | Optional fingerprint PCM range end; the range must be no longer than 180 seconds |

@@ -2,6 +2,34 @@ import XCTest
 @testable import HybridSmokePlayer
 
 final class SmokeConfigurationTests: XCTestCase {
+    func testPersistentHTTP1AndSustainedPlaybackAreExplicitOptIns() throws {
+        let environment = [
+            SmokeConfiguration.modeEnvironmentKey: "hybridAVKit",
+            SmokeConfiguration.urlEnvironmentKey: "https://example.test/video.m3u8",
+        ]
+        let defaults = try XCTUnwrap(SmokeConfiguration.fromEnvironment(environment))
+        XCTAssertFalse(defaults.heldSourceConnection)
+        XCTAssertEqual(defaults.observationSeconds, 0)
+        let explicit = try XCTUnwrap(SmokeConfiguration.fromEnvironment(
+            environment.merging([
+                SmokeConfiguration.heldSourceConnectionEnvironmentKey: "true",
+                SmokeConfiguration.observationSecondsEnvironmentKey: "120",
+            ], uniquingKeysWith: { _, value in value })
+        ))
+        XCTAssertTrue(explicit.heldSourceConnection)
+        XCTAssertEqual(explicit.observationSeconds, 120)
+        for invalid in ["yes", "1", ""] {
+            XCTAssertThrowsError(try SmokeConfiguration.fromEnvironment(
+                environment.merging([SmokeConfiguration.heldSourceConnectionEnvironmentKey: invalid], uniquingKeysWith: { _, value in value })
+            ))
+        }
+        for invalid in ["nan", "inf", "-1", "0"] {
+            XCTAssertThrowsError(try SmokeConfiguration.fromEnvironment(
+                environment.merging([SmokeConfiguration.observationSecondsEnvironmentKey: invalid], uniquingKeysWith: { _, value in value })
+            ))
+        }
+    }
+
     func testNoSmokeEnvironmentSelectsInteractiveMode() throws {
         XCTAssertNil(
             try SmokeConfiguration.fromEnvironment([

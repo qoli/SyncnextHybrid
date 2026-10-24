@@ -286,6 +286,8 @@ final class SmokeViewModel: ObservableObject {
             metrics: [
                 "mode": configuration.mode.rawValue,
                 "scenario": configuration.scenario.rawValue,
+                "held_source_connection": String(configuration.heldSourceConnection),
+                "observation_seconds": SmokeEventEmitter.number(configuration.observationSeconds),
                 "header_names":
                     configuration.httpHeaders.keys.sorted()
                     .joined(separator: ","),
@@ -356,6 +358,7 @@ final class SmokeViewModel: ObservableObject {
 
         let options = LoadOptions(
             httpHeaders: configuration.httpHeaders,
+            heldSourceConnection: configuration.heldSourceConnection,
             autoplay: false
         )
         do {
@@ -557,6 +560,17 @@ final class SmokeViewModel: ObservableObject {
             emitter: emitter
         )
 
+        try await observeSustainedPlayback(configuration, emitter: emitter) {
+            let current = try self.validatedAetherSnapshot(for: engine)
+            self.updateSnapshot(current)
+            if case .error(let message) = current.phase {
+                throw SmokeFailure.playerFailed(message)
+            }
+            if current.phase == .ended {
+                throw SmokeFailure.endedBeforeProgress(stage: "sustained_playback")
+            }
+            return (current.currentTime, emitter.metrics(for: current))
+        }
         snapshot = try validatedAetherSnapshot(for: engine)
         runState = .passed
         statusMessage =
@@ -582,7 +596,8 @@ final class SmokeViewModel: ObservableObject {
     ) async throws {
         let request = try HybridPlaybackRequest(
             url: configuration.sourceURL,
-            httpHeaders: configuration.httpHeaders
+            httpHeaders: configuration.httpHeaders,
+            heldSourceConnection: configuration.heldSourceConnection
         )
         let playbackSession = try await HybridPlaybackSession(
             request: request
@@ -858,6 +873,19 @@ final class SmokeViewModel: ObservableObject {
             emitter: emitter
         )
 
+        try await observeSustainedPlayback(configuration, emitter: emitter) {
+            try self.requireBinding(playbackSession)
+            let current = playbackSession.snapshot
+            try self.requireRoute(current.route, expected: fixedRoute)
+            self.updateSnapshot(current)
+            if case .failed(let message) = current.phase {
+                throw SmokeFailure.playerFailed(message)
+            }
+            if current.phase == .ended {
+                throw SmokeFailure.endedBeforeProgress(stage: "sustained_playback")
+            }
+            return (current.currentTime, emitter.metrics(for: current))
+        }
         runState = .passed
         statusMessage =
             "Playback and seek smoke passed; playback remains active"
@@ -879,6 +907,42 @@ final class SmokeViewModel: ObservableObject {
                 extra: passMetrics
             )
         )
+    }
+
+    private func observeSustainedPlayback(
+        _ configuration: SmokeConfiguration,
+        emitter: SmokeEventEmitter,
+        snapshot: () throws -> (Double, [String: String])
+    ) async throws {
+        guard configuration.observationSeconds > 0 else { return }
+        statusMessage = "Observing sustained playback"
+        let baseline = try snapshot().0
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = configuration.observationSeconds / Double(configuration.playbackRate)
+            + SmokePolicy.maximumZeroProgressSeconds
+        var nextCheckpoint = 0.0
+        while true {
+            try Task.checkCancellation()
+            let (time, values) = try snapshot()
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            let advance = try SmokePolicy.progress(from: baseline, to: time)
+            let finished = advance >= configuration.observationSeconds
+            if elapsed >= nextCheckpoint || finished {
+                var metrics = values
+                metrics["elapsed_seconds"] = SmokeEventEmitter.number(elapsed)
+                metrics["progress_seconds"] = SmokeEventEmitter.number(advance)
+                emitter.emit(finished ? "sustained_playback_passed" : "sustained_playback_checkpoint", metrics: metrics)
+                nextCheckpoint = elapsed + 15
+            }
+            if finished { return }
+            if elapsed >= deadline {
+                throw SmokeFailure.noMediaProgress(
+                    stage: "sustained_playback", baseline: baseline,
+                    currentTime: time, timeout: deadline
+                )
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     private func runTailSeekReplay(

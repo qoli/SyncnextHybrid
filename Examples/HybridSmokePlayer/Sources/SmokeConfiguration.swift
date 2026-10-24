@@ -52,6 +52,8 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let expectedFingerprintProviderEnvironmentKey =
         "HYBRID_SMOKE_EXPECTED_FINGERPRINT_PROVIDER"
     static let environmentPrefix = "HYBRID_SMOKE_"
+    static let heldSourceConnectionEnvironmentKey = "HYBRID_SMOKE_HELD_SOURCE_CONNECTION"
+    static let observationSecondsEnvironmentKey = "HYBRID_SMOKE_OBSERVATION_SECONDS"
     static let defaultSeekSeconds = 10.0
     static let defaultPlaybackRate: Float = 1
 
@@ -64,6 +66,8 @@ struct SmokeConfiguration: Sendable, Equatable {
     let playbackRate: Float
     let expectedRoute: SmokeExpectedRoute?
     let fingerprint: SmokeFingerprintConfiguration?
+    private(set) var heldSourceConnection = false
+    private(set) var observationSeconds = 0.0
 
     var displaySource: String {
         if sourceURL.isFileURL {
@@ -94,7 +98,7 @@ struct SmokeConfiguration: Sendable, Equatable {
             throw SmokeConfigurationError.missingMode
         }
 
-        return try make(
+        var configuration = try make(
             rawMode: rawMode,
             rawScenario: environment[scenarioEnvironmentKey]
                 ?? SmokeScenario.playbackSeek.rawValue,
@@ -116,6 +120,19 @@ struct SmokeConfiguration: Sendable, Equatable {
             rawExpectedFingerprintProvider:
                 environment[expectedFingerprintProviderEnvironmentKey]
         )
+        if let value = environment[heldSourceConnectionEnvironmentKey] {
+            guard value == "true" || value == "false" else {
+                throw SmokeConfigurationError.invalidHeldSourceConnection
+            }
+            configuration.heldSourceConnection = value == "true"
+        }
+        if let value = environment[observationSecondsEnvironmentKey] {
+            guard let seconds = Double(value), seconds.isFinite, seconds > 0 else {
+                throw SmokeConfigurationError.invalidObservationSeconds
+            }
+            configuration.observationSeconds = seconds
+        }
+        return configuration
     }
 
     static func interactive(
@@ -345,6 +362,8 @@ enum SmokeConfigurationError:
     case invalidHeadersJSON
     case invalidSeekSeconds
     case invalidPlaybackRate
+    case invalidHeldSourceConnection
+    case invalidObservationSeconds
     case invalidExpectedRoute(String)
     case expectedRouteRequiresHybrid
     case incompleteFingerprintConfiguration
@@ -372,6 +391,10 @@ enum SmokeConfigurationError:
             "Seek seconds must be finite and greater than zero"
         case .invalidPlaybackRate:
             "Playback rate must be finite, greater than zero, and at most 4"
+        case .invalidHeldSourceConnection:
+            "HYBRID_SMOKE_HELD_SOURCE_CONNECTION must be true or false"
+        case .invalidObservationSeconds:
+            "Observation seconds must be finite and greater than zero"
         case .invalidExpectedRoute(let value):
             "Expected route must be nativeAVPlayer or avKitProxy, not \(value)"
         case .expectedRouteRequiresHybrid:
