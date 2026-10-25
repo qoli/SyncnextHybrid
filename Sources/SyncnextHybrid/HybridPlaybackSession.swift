@@ -1214,6 +1214,42 @@ public final class HybridPlaybackSession:
         )
     }
 
+    #if DEBUG
+    /// Counts retained decoded subtitle storage without copying image pixels.
+    /// Pixel bytes are an estimate from CGImage layout, not a footprint claim.
+    /// Past source time alone is not an eviction rule: offsets and seeks still
+    /// require the subtitle's authored presentation window.
+    public var memoryObservation: (counters: [String: Int], selectedSubtitleCodec: String?) {
+        var images: [ObjectIdentifier: (bytes: Int, pastOnly: Bool)] = [:]
+        var bitmaps = 0, texts = 0, richTexts = 0, textBytes = 0
+        let playhead = engine.sourceTime
+        for cue in engine.subtitleCues {
+            switch cue.body {
+            case .image(let image):
+                bitmaps += 1
+                let key = ObjectIdentifier(image.cgImage)
+                let previous = images[key]
+                images[key] = (image.cgImage.bytesPerRow * image.cgImage.height,
+                               (previous?.pastOnly ?? true) && cue.endTime < playhead)
+            case .text(let text):
+                texts += 1; textBytes += text.utf8.count
+            case .richText(let runs):
+                richTexts += 1; textBytes += runs.reduce(0) { $0 + $1.text.utf8.count }
+            }
+        }
+        let counters = [
+            "subtitleCueCount": engine.subtitleCues.count,
+            "subtitleBitmapCueCount": bitmaps, "subtitleUniqueBitmapCount": images.count,
+            "subtitleBitmapBytesEstimate": images.values.reduce(0) { $0 + $1.bytes },
+            "subtitlePastBitmapBytesEstimate": images.values.filter(\.pastOnly).reduce(0) { $0 + $1.bytes },
+            "subtitleTextCueCount": texts, "subtitleRichTextCueCount": richTexts,
+            "subtitleTextUTF8Bytes": textBytes,
+        ]
+        let codec = snapshot.subtitleTracks.first { $0.id == snapshot.selectedSubtitleTrackID }?.codec
+        return (counters, codec)
+    }
+    #endif
+
     deinit {
         fingerprintCancellations.values.forEach { $0() }
         manifestFallbackServer?.stop()
