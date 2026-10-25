@@ -41,6 +41,44 @@ final class HybridVODNetworkTestTests: XCTestCase {
         }
     }
 
+    func testPlaybackRequestCarriesBufferPreference() throws {
+        let url = URL(string: "https://fixture.invalid/media")!
+        XCTAssertEqual(try HybridPlaybackRequest(url: url).preferredForwardBufferDuration, 12)
+        let custom = try HybridPlaybackRequest(url: url, preferredForwardBufferDuration: 123.5)
+        XCTAssertEqual(custom.preferredForwardBufferDuration, 123.5)
+        let automatic = try HybridPlaybackRequest(url: url, preferredForwardBufferDuration: 0)
+        XCTAssertEqual(automatic.preferredForwardBufferDuration, 0)
+    }
+
+    @MainActor
+    func testChosenBufferPreferenceFollowsActualItemReplacement() async throws {
+        for seconds: TimeInterval in [0, 6, 12, 30, 60, 90, 123.5] {
+            let request = try HybridPlaybackRequest(
+                url: URL(string: "https://fixture.invalid/media")!,
+                preferredForwardBufferDuration: seconds
+            )
+            let first = AVPlayerItem(asset: AVMutableComposition())
+            let player = AVPlayer(playerItem: first)
+            let policy = HybridVODBufferPolicy(
+                player: player,
+                preferredForwardBufferDuration: request.preferredForwardBufferDuration,
+                isEligible: { _ in true }
+            )
+            XCTAssertEqual(first.preferredForwardBufferDuration, seconds)
+            let replacement = AVPlayerItem(asset: AVMutableComposition())
+            replacement.preferredForwardBufferDuration = 7
+            player.replaceCurrentItem(with: replacement)
+            let deadline = Date().addingTimeInterval(2)
+            while replacement.preferredForwardBufferDuration != seconds, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(replacement.preferredForwardBufferDuration, seconds)
+            XCTAssertTrue(player.automaticallyWaitsToMinimizeStalling)
+            XCTAssertEqual(player.rate, 0)
+            withExtendedLifetime(policy) {}
+        }
+    }
+
     @MainActor
     func testAdaptivePolicyFollowsActualItemReplacement() async throws {
         let first = AVPlayerItem(asset: AVMutableComposition())

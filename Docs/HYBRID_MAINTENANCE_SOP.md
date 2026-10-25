@@ -54,8 +54,10 @@ AetherEngine 仍擁有 host options 之後基於 codec、carriage、能力與媒
 effective media-pipeline routing。Hybrid 不得複製該判斷；以上限制只禁止把
 Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上游。
 
-點播由既有 URL 路徑交給 AetherEngine 取流，採用 12 秒前向緩衝偏好與漸進分片
-交付。Hybrid 的單路／雙路 Range 實驗 reader、專用 telemetry 與公開測試介面已
+點播由既有 URL 路徑交給 AetherEngine 取流，採用 App 透過
+`HybridPlaybackRequest.preferredForwardBufferDuration` 指定的前向緩衝偏好
+（預設 12 秒）與漸進分片交付。偏好沿用既有 native loopback VOD 範圍，
+並在 AVPlayerItem 替換後重新套用。Hybrid 的單路／雙路 Range 實驗 reader、專用 telemetry 與公開測試介面已
 移除；較早的 Debug 緩衝四組實驗仍保留。來源供應商的分塊併發由貓源實作負責，
 來源純讀與 upstream／記憶體觀測留在 App／SyncnextCatSource 的測試路徑。
 

@@ -26,8 +26,8 @@ public enum HybridVODNetworkTestVariant: String, CaseIterable, Sendable {
 #endif
 
 /// Follows eligible VOD item replacements while leaving playback and recovery
-/// decisions with the existing session. The twelve-second preference is
-/// the production forward-buffer setting; zero is experimental.
+/// decisions with the existing session. The caller supplies the forward-buffer
+/// preference (twelve seconds by default); zero lets AVPlayer decide automatically.
 @MainActor
 final class HybridVODBufferPolicy {
     private(set) weak var player: AVPlayer?

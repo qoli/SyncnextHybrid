@@ -32,6 +32,9 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
     public let externalSubtitles: [HybridExternalSubtitle]
     public let preferredAudioLanguages: [String]
     public let preferredSubtitleLanguages: [String]
+    /// Forward-buffer preference for native loopback VOD; not a startup threshold.
+    /// Zero lets AVPlayer choose an appropriate buffer duration automatically.
+    public let preferredForwardBufferDuration: TimeInterval
 
     #if DEBUG
     public var vodNetworkTestVariant: HybridVODNetworkTestVariant?
@@ -47,7 +50,8 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         initialPosition: Double? = nil,
         externalSubtitles: [HybridExternalSubtitle] = [],
         preferredAudioLanguages: [String] = [],
-        preferredSubtitleLanguages: [String] = []
+        preferredSubtitleLanguages: [String] = [],
+        preferredForwardBufferDuration: TimeInterval = 12
     ) throws {
         if let initialPosition,
            (!initialPosition.isFinite || initialPosition < 0) {
@@ -60,6 +64,7 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         self.externalSubtitles = externalSubtitles
         self.preferredAudioLanguages = preferredAudioLanguages
         self.preferredSubtitleLanguages = preferredSubtitleLanguages
+        self.preferredForwardBufferDuration = preferredForwardBufferDuration
     }
 }
 
