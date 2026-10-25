@@ -776,7 +776,7 @@ public final class HybridPlaybackSession:
 
     /// One consumer, explicitly bound to the currently audible selection. The
     /// remote-HLS engine tap currently resolves the default rendition only.
-    public func installAudioTap() async throws -> AsyncStream<HybridPlaybackAudioBuffer> {
+    public func installAudioTap(lossless: Bool = false) async throws -> AsyncStream<HybridPlaybackAudioBuffer> {
         guard !stopped else { throw HybridPlaybackAudioTapError.sessionStopped }
         // The remote-HLS tap follows the live edge on a cumulative reader clock,
         // not the user's delayed/live-DVR audible cursor. Do not identify other audio.
@@ -803,7 +803,7 @@ public final class HybridPlaybackSession:
             }
         }
         try Task.checkCancellation()
-        let stream = engine.installAudioTap()
+        let stream = engine.installAudioTap(lossless: lossless)
         guard engine.audioTapHasDeliverySource else {
             engine.removeAudioTap()
             throw HybridPlaybackAudioTapError.noDeliverySource

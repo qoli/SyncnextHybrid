@@ -3,3 +3,4 @@
 0004-cache-backed-fingerprint-audio.patch
 0007-media-request-diagnostics.patch
 0008-http-disc-mime-recognition.patch
+0009-audio-tap-segment-pacing.patch

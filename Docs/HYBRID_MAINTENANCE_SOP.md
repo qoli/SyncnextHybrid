@@ -91,6 +91,14 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      讀後回到原始位置，不新增 HEAD／Range 探測。
    - MIME 不作為有效光碟的證明；不改變 live、宣告 sequential origin、其他
      媒體格式或 Hybrid presentation。範圍與退出條件見第 8 節。
+6. `0009-audio-tap-segment-pacing.patch`
+   - 依使用者 2026-10-25 明確授權，修復長分片的正常預解碼被誤判為向後 seek，
+     導致 tap 重複解碼、丟樣與辨識確認重置的缺陷。
+   - 只以實際 playhead 倒退及既有 tolerance 判斷向後重新定位；完整分片超出
+     preferred lead 時等待播放時鐘。保留前向 seek 重新定位及 discontinuity。
+   - 同日再次獲明確授權，增加 `installAudioTap(lossless: Bool = false)`，僅音樂
+     辨識啟用無損佇列；其他使用者維持預設 64-buffer 有損入口。不改版本、
+     取樣來源或音樂辨識門檻。範圍與退出條件見第 8 節。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
@@ -270,6 +278,40 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 長分片音訊 tap pacing（2026-10-25）
+
+使用者在《愛樂之城》開場曲漏識別後，明確選擇「允許最小 Patch，修復後實測」。
+本次決策為 `Approved minimal Patch`，僅涵蓋 `0009-audio-tap-segment-pacing.patch`。
+後續實測發現背景接收仍丟失 16 秒 PCM，使用者再次明確選擇「允許無損交付，
+修復後再實測」，批准將可選無損入口納入同一 Patch。
+上游已回報 [AetherEngine #864](https://github.com/superuser404notfound/AetherEngine/issues/864)，
+包含固定 playhead 的最小重現、pacing 根因、可選無損交付需求及實機驗證結果。
+
+- **證據與缺口**：書房電視播放 90 秒區間收到約 2,702 秒 PCM，來源時間反覆
+  倒退，候選確認因 discontinuity／丟樣被重置。以原 `LoopbackAudioReader`
+  與 15 秒分片重現：playhead 固定 95.1 秒，12 次 step 重複解碼 `[6,7]` 四輪。
+  原 pacing 以 decoded end 超過 lead＋tolerance 推斷向後 seek；完整分片本身就
+  可超過此差距，並未證明播放時鐘倒退。
+- **邊界與替代方案**：public tap API 不暴露 pacing／分片游標控制。App 去重無法
+  避免重複解碼及 lossy tap 已丟掉的音訊；更換輸入或 reader 會擴張產品路徑。
+  等待上游則保留目前長分片識別不可靠的狀態。
+- **範圍**：`AudioTapTypes` 的純 pacing 判斷、loopback 與 remote-HLS VOD reader
+  各保存上一次 playhead，並補對應回歸。長分片超前只等待；playhead 真正倒退
+  超過既有 tolerance 或解碼落後時重新定位。`AudioTapController` 與安裝入口
+  增加預設 false 的 `lossless` 參數，true 時不淘汰排隊 PCM；Hybrid 只轉交此
+  選項，App 音樂辨識啟用並依媒體時鐘直接讀取，不另建轉交 task／佇列。
+  live reader 的取樣、PCM 格式、播放 transport、route、gate 與三次命中確認均不改。
+  無損不修補來源本身的缺口，也不讓 producer 等待 consumer；呼叫方負責排空
+  或取消串流。本地 loopback 的排隊量由 preferred lead 加完整分片決定。
+- **成本與退出**：之後更新需重驗兩種 reader 的 step 語意及前後 seek。當官方
+  release 原生區分完整分片 overshoot 與實際播放跳轉，並提供等價無損交付，
+  且同組回歸通過，移除 `0009`，同步更新 `series`／manifest。不擴充為通用 reader 改寫。
+- **失敗與驗證**：Patch 不匹配或測試失敗明確回報，不換源、不降低確認門檻。
+  focused 入口為 `swift test --package-path AetherEngine --filter
+  'AudioTap(Pacing|HLSReader|MonotonicGate|DeliverySource|Controller)|LoopbackAudioReader'`；
+  burst 測試須確認延後消費的 200 筆全部保留，預設模式仍只保留最新 64 筆；
+  Patch 重播、App 編譯及書房電視的正／負樣本各自驗證，任何一項不代替其他項。
 
 ### 無副檔名 HTTP ISO 辨識（2026-10-24）
 
