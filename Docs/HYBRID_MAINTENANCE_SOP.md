@@ -101,6 +101,12 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 同日再次獲明確授權，增加 `installAudioTap(lossless: Bool = false)`，僅音樂
      辨識啟用無損佇列；其他使用者維持預設 64-buffer 有損入口。不改版本、
      取樣來源或音樂辨識門檻。範圍與退出條件見第 8 節。
+7. `0010-subtitle-bitmap-storage.patch`
+   - 依使用者 2026-10-25 明確批准的最小 Patch，將 bitmap 字幕的歷史圖像以
+     無損 PNG provider 保留，按繪製需求展開像素；不縮短 cue 保留時間、不刪字幕。
+   - 保留原 crop、位置、時間、forced 標記及 interpolation。公開圖像只承諾
+     CGImage 的繪製內容，不假設 provider 固定為 premultiplied RGBA；增加已知
+     encoded backing bytes 觀測值。範圍與退出條件見第 8 節。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
@@ -280,6 +286,29 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 盤迷 REMUX 的字幕圖像記憶體（2026-10-25）
+
+決定：`Approved minimal Patch`。使用者在確認 public API 邊界、原型配置量、
+維護與退出成本後明確回覆「批准最小 Patch 並驗證」。
+
+- **需求與證據**：書房電視同一部 REMUX 的十分鐘觀察保留 2,185 張 PGS 圖像，
+  展開 layout 約 289MB，其中約 258MB 的來源時間已過。Hybrid 可取得已解碼
+  cue，但不能置換 SDK 持有的 provider；只改畫面不會釋放 SDK 的歷史像素。
+- **替代與邊界**：等待上游會留下此配置；停用字幕、縮短歷史或刪除過去 cue
+  會改變字幕、offset 或回退播放。最小修改留在既有 bitmap factory，使用
+  ImageIO 無損編碼與 `kCGImageSourceShouldCache=false`，既有解碼 worker 執行，
+  不另建 transport、播放路徑或 cache policy；官方 pin、remote 及 FFmpegBuild 不變。
+- **範圍與正確性**：`EmbeddedSubtitleDecoder` 儲存已裁切的同一張圖，
+  `SubtitleImage` 增加可選 backing byte count；既有 CGImage 使用者直接繪製。
+  回歸比較透明度全範圍、隨機 palette 的實際 premultiplied RGBA、geometry、
+  forced 標記、provider 生命週期及 PGS seek／clear／多物件生命週期。
+- **成本與退出**：每次解碼增加 PNG 編碼，顯示時重新展開當前圖像；須以實機
+  的字幕、播放進度及程序 footprint 驗證。升級需檢查 ImageIO metadata 與
+  字幕回歸；上游提供等價緊湊儲存且同組測試通過後，移除 `0010`。
+- **失敗與驗證**：編碼或 provider 建立失敗明確記錄並沿用既有 nil 圖像失敗
+  介面，不靜默改用另一個儲存策略。配置 layout、encoded bytes 與程序
+  footprint 分別記錄，不能把 encoded bytes 當成整個程序 RAM。
 
 ### 長分片音訊 tap pacing（2026-10-25）
 

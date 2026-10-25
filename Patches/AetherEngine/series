@@ -4,3 +4,4 @@
 0007-media-request-diagnostics.patch
 0008-http-disc-mime-recognition.patch
 0009-audio-tap-segment-pacing.patch
+0010-subtitle-bitmap-storage.patch
