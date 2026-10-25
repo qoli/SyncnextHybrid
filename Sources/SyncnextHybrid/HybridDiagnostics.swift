@@ -34,6 +34,35 @@ public enum HybridNetworkDiagnostics {
     }
 }
 
+#if DEBUG
+public enum HybridMemoryDiagnostics {
+    /// Opt-in for the memory acceptance case. Uses the SDK's existing pipeline
+    /// probes and allocation census without owning a playback session.
+    @MainActor
+    public final class Observation {
+        private let previous: ((String) -> Void)?
+
+        public init(receive: @escaping @Sendable (String) -> Void) {
+            previous = EngineLog.handler
+            let previous = previous
+            EngineLog.handler = { message in
+                previous?(message)
+                guard !message.contains("http://"), !message.contains("https://") else { return }
+                if message.contains("memprobe") || message.contains("census") || message.contains("Census") {
+                    receive(message)
+                }
+            }
+            AetherEngine.setLargeAllocationCensusEnabled(true, triggerCaptureCap: 0)
+        }
+
+        public func stop() {
+            AetherEngine.setLargeAllocationCensusEnabled(false)
+            EngineLog.handler = previous
+        }
+    }
+}
+#endif
+
 public extension Notification.Name {
     static let syncnextHybridDiagnostic = Notification.Name(
         "com.qoli.SyncnextHybrid.diagnostic"
