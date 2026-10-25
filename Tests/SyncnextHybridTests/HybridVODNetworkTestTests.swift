@@ -44,15 +44,29 @@ final class HybridVODNetworkTestTests: XCTestCase {
     func testPlaybackRequestCarriesBufferPreference() throws {
         let url = URL(string: "https://fixture.invalid/media")!
         XCTAssertEqual(try HybridPlaybackRequest(url: url).preferredForwardBufferDuration, 12)
-        let custom = try HybridPlaybackRequest(url: url, preferredForwardBufferDuration: 123.5)
-        XCTAssertEqual(custom.preferredForwardBufferDuration, 123.5)
+        let selected = try HybridPlaybackRequest(url: url, preferredForwardBufferDuration: 45)
+        XCTAssertEqual(selected.preferredForwardBufferDuration, 45)
         let automatic = try HybridPlaybackRequest(url: url, preferredForwardBufferDuration: 0)
         XCTAssertEqual(automatic.preferredForwardBufferDuration, 0)
     }
 
+    func testUnsafeBufferPreferencesAreRejectedBeforeSourceLoading() {
+        let invalid: [Double] = [-1, .nan, .infinity, -.infinity,
+                                 HybridVODBufferDuration.maximumSeconds.nextUp, 0.5, 6, 9.5, 60, 90, 600, 3600,
+                                 .greatestFiniteMagnitude]
+        for seconds in invalid {
+            XCTAssertThrowsError(try HybridPlaybackRequest(
+                url: URL(string: "https://fixture.invalid/media")!,
+                preferredForwardBufferDuration: seconds
+            )) { error in
+                XCTAssertEqual(error as? HybridPlaybackError, .invalidForwardBufferDuration)
+            }
+        }
+    }
+
     @MainActor
     func testChosenBufferPreferenceFollowsActualItemReplacement() async throws {
-        for seconds: TimeInterval in [0, 6, 12, 30, 60, 90, 123.5] {
+        for seconds: TimeInterval in [0, 4, 12, 30, 45] {
             let request = try HybridPlaybackRequest(
                 url: URL(string: "https://fixture.invalid/media")!,
                 preferredForwardBufferDuration: seconds

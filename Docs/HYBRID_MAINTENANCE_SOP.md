@@ -56,7 +56,9 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
 
 點播由既有 URL 路徑交給 AetherEngine 取流，採用 App 透過
 `HybridPlaybackRequest.preferredForwardBufferDuration` 指定的前向緩衝偏好
-（預設 12 秒）與漸進分片交付。偏好沿用既有 native loopback VOD 範圍，
+（預設 12 秒，0 代表自動）與漸進分片交付。使用者緩衝偏好只接受 0／4／12／30／45 秒五個選項，
+由 `HybridVODBufferDuration` 與 request initializer 統一驗證。已保存的非法值
+明確拒絕，不在播放時靜默改成其他秒數。偏好沿用既有 native loopback VOD 範圍，
 並在 AVPlayerItem 替換後重新套用。Hybrid 的單路／雙路 Range 實驗 reader、專用 telemetry 與公開測試介面已
 移除；較早的 Debug 緩衝四組實驗仍保留。來源供應商的分塊併發由貓源實作負責，
 來源純讀與 upstream／記憶體觀測留在 App／SyncnextCatSource 的測試路徑。

@@ -51,8 +51,11 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         externalSubtitles: [HybridExternalSubtitle] = [],
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
-        preferredForwardBufferDuration: TimeInterval = 12
+        preferredForwardBufferDuration: TimeInterval = HybridVODBufferDuration.defaultSeconds
     ) throws {
+        guard HybridVODBufferDuration.isSupported(preferredForwardBufferDuration) else {
+            throw HybridPlaybackError.invalidForwardBufferDuration
+        }
         if let initialPosition,
            (!initialPosition.isFinite || initialPosition < 0) {
             throw HybridPlaybackError.invalidInitialPosition
@@ -266,6 +269,7 @@ public enum HybridPlaybackEvent: Sendable, Equatable {
 }
 
 public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
+    case invalidForwardBufferDuration
     case invalidInitialPosition
     case invalidSeekPosition
     case sourceLoadFailed(String)
@@ -280,6 +284,8 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .invalidForwardBufferDuration:
+            "Forward buffer duration must be 0, 4, 12, 30, or 45 seconds; 0 enables automatic buffering"
         case .invalidInitialPosition:
             "Initial playback position must be finite and non-negative"
         case .invalidSeekPosition:
