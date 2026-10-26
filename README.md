@@ -84,6 +84,9 @@ let request = try HybridPlaybackRequest(
 )
 ```
 
+Syncnext 正式播放入口採用上述 `.apac(.l714)`／`true` 選項；這是 App
+的播放政策，Hybrid request 的預設值與獨立 probe 保持不變。
+
 APAC 需要 OS 26 以上；喇叭配置必須對應接收器實際配置，音訊會經過有損重新編碼。
 來源、解碼能力與有效路由仍由 Aether 決定；傳入選項不代表該來源已使用該能力。
 `session.supportsCacheBackedStills` 與 `session.scrubThumbnail(atSeconds:)` 暴露
