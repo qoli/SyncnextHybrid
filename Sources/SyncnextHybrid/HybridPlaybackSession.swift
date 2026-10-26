@@ -5,6 +5,7 @@ import AVKit
 import Combine
 import CoreGraphics
 import Foundation
+import MediaPlayer
 import UIKit
 
 @MainActor
@@ -71,6 +72,15 @@ public final class HybridPlaybackSession:
     private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
     private let sourceAdmission: HybridRemoteSourceAdmission
+    /// Aether publishes its native audio player through the active Now Playing
+    /// session; currentAVPlayer is reserved for its native video host.
+    private static func presentationPlayer(for engine: AetherEngine) -> AVPlayer? {
+        if let player = engine.currentAVPlayer { return player }
+        return engine.audioNowPlayingSession?.players.first
+    }
+    private var engineAVPlayer: AVPlayer? {
+        Self.presentationPlayer(for: engine)
+    }
     private var manifestFallbackServer: HybridHLSManifestServer?
     private var proxyTimeline: HybridHLSTimelineProxy {
         guard let proxyContext else {
@@ -260,7 +270,8 @@ public final class HybridPlaybackSession:
             )
         }
 
-        guard engine.currentAVPlayer != nil
+        let nativePlayer = Self.presentationPlayer(for: engine)
+        guard nativePlayer != nil
                 || engine.sourceVideoWidth > 0
                 || engine.sourceVideoHeight > 0 else {
             engine.stop()
@@ -269,7 +280,7 @@ public final class HybridPlaybackSession:
         }
 
         let initialRoute: HybridPlaybackRoute
-        if let nativePlayer = engine.currentAVPlayer,
+        if let nativePlayer,
            !forceAVKitProxy {
             proxyContext = nil
             avPlayer = nativePlayer
@@ -1295,9 +1306,10 @@ public final class HybridPlaybackSession:
             .store(in: &observations)
 
         engine.$currentAVPlayer
-            .sink { [weak self] player in
+            .sink { [weak self] _ in
                 Task { @MainActor in
-                    self?.applyAetherPlayer(player)
+                    guard let self else { return }
+                    self.applyAetherPlayer(self.engineAVPlayer)
                 }
             }
             .store(in: &observations)
@@ -1993,12 +2005,12 @@ public final class HybridPlaybackSession:
                 throw HybridPlaybackError.sessionStopped
             }
             if snapshot.route == .nativeAVPlayer,
-               engine.currentAVPlayer == nil {
+               engineAVPlayer == nil {
                 throw HybridPlaybackError.foregroundRecoveryFailed(
                     "AetherEngine did not publish a native AVPlayer"
                 )
             }
-            applyAetherPlayer(engine.currentAVPlayer)
+            applyAetherPlayer(engineAVPlayer)
             applyAetherMaterial()
             restoreTransport(after: recovery)
             publishSnapshot()

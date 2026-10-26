@@ -27,6 +27,10 @@ Patch 的工作。正式變更放在 root repo，不能只保留 dirty upstream 
 [HybridPlaybackSession](Sources/SyncnextHybrid/HybridPlaybackSession.swift) 對 App
 提供 `AVPlayer`。native route 綁定 Aether 公開的 player；proxy route 由本地 HLS
 提供 AVKit transport UI，真實影片呈現仍交給 Aether。
+原生純音訊綁定 Aether `audioNowPlayingSession.players` 中既有的 AVPlayer；
+播放、暫停、seek、媒體時鐘與 stop 仍由同一 Aether session 擁有。播放器綁定
+與前景恢復共用這個選取邊界。沒有 engine-owned AVPlayer 的純音訊解碼路徑
+維持明確不支援，不另建播放器或重開來源。
 解碼後的內封／外掛字幕由
 [HybridSubtitleOverlayView](Sources/SyncnextHybrid/HybridSubtitleOverlayView.swift)
 依 source PTS 顯示，兩種 route 共用相同字幕層。

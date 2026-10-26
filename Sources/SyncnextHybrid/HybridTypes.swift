@@ -302,7 +302,7 @@ public enum HybridPlaybackError: Error, Sendable, Equatable, LocalizedError {
         case .sourceLoadFailed(let message):
             "AetherEngine could not load the source: \(message)"
         case .pureAudioUnsupported:
-            "SyncnextHybrid V1 does not support pure-audio sessions"
+            "SyncnextHybrid requires an engine-owned AVPlayer for pure-audio sessions"
         case .proxyAssetUnavailable:
             "The AVKit proxy asset is missing"
         case .proxyAssetInvalid:
