@@ -102,6 +102,14 @@ struct ContentView: View {
                 Text(model.statusMessage)
                     .foregroundStyle(.secondary)
 
+                if let thumbnail = model.scrubThumbnail {
+                    Image(decorative: thumbnail, scale: 1)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 320, height: 180)
+                        .accessibilityIdentifier("hybrid-smoke-thumbnail")
+                }
+
                 if model.activeMode == .aetherEngine,
                    let target = model.activeSeekTarget {
                     Button(

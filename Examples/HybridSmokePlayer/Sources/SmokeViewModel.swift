@@ -56,6 +56,7 @@ final class SmokeViewModel: ObservableObject {
     @Published private(set) var activeMode: SmokePlaybackMode?
     @Published private(set) var aetherEngine: AetherEngine?
     @Published private(set) var activeSeekTarget: Double?
+    @Published private(set) var scrubThumbnail: CGImage?
 
     let playerViewController: AVPlayerViewController
 
@@ -154,6 +155,7 @@ final class SmokeViewModel: ObservableObject {
         hasActivePresentation = false
         activeMode = nil
         activeSeekTarget = nil
+        scrubThumbnail = nil
         routeName = "unbound"
         phaseName = "idle"
         currentTime = 0
@@ -356,11 +358,13 @@ final class SmokeViewModel: ObservableObject {
         try Task.checkCancellation()
         try requireAetherPresentation(engine)
 
-        let options = LoadOptions(
+        var options = LoadOptions(
             httpHeaders: configuration.httpHeaders,
             heldSourceConnection: configuration.heldSourceConnection,
             autoplay: false
         )
+        options.objectAudioRendering = configuration.objectAudioRendering
+        options.preferDualLayerDolbyVision = configuration.preferDualLayerDolbyVision
         do {
             try await engine.load(
                 url: configuration.sourceURL,
@@ -597,8 +601,19 @@ final class SmokeViewModel: ObservableObject {
         let request = try HybridPlaybackRequest(
             url: configuration.sourceURL,
             httpHeaders: configuration.httpHeaders,
-            heldSourceConnection: configuration.heldSourceConnection
+            heldSourceConnection: configuration.heldSourceConnection,
+            objectAudioRendering: configuration.objectAudioRendering,
+            preferDualLayerDolbyVision: configuration.preferDualLayerDolbyVision
         )
+        let components = HybridOptionalComponent.allCases
+        guard components.allSatisfy(\.isBuiltIn) else {
+            throw SmokeFailure.aetherContractViolation("All four optional components must be built in")
+        }
+        emitter.emit("optional_components", metrics: [
+            "compiled": components.map(\.traitName).joined(separator: ","),
+            "object_audio_requested": String(describing: request.objectAudioRendering),
+            "dual_layer_requested": String(request.preferDualLayerDolbyVision),
+        ])
         let playbackSession = try await HybridPlaybackSession(
             request: request
         )
@@ -680,6 +695,19 @@ final class SmokeViewModel: ObservableObject {
                 ]
             )
         )
+
+        if let seconds = configuration.thumbnailSeconds {
+            guard playbackSession.supportsCacheBackedStills,
+                  let image = await playbackSession.scrubThumbnail(atSeconds: seconds) else {
+                throw SmokeFailure.aetherContractViolation("Requested cache-backed thumbnail is unavailable")
+            }
+            scrubThumbnail = image
+            emitter.emit("thumbnail_passed", metrics: [
+                "seconds": SmokeEventEmitter.number(seconds),
+                "width": String(image.width),
+                "height": String(image.height),
+            ])
+        }
 
         let fingerprintMetrics: [String: String]
         if let fingerprint = configuration.fingerprint {

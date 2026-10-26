@@ -7,17 +7,24 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0EF3877BD77DC666ED5F8C72 /* HybridOptionalComponentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3536293E819CD656CE3BB2AB /* HybridOptionalComponentsTests.swift */; };
 		1982671B8DFD723D4BC08A89 /* AetherSmokeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E537BE7BAFD478A0C955B8E9 /* AetherSmokeSnapshot.swift */; };
+		44B4E75349408D20D080F7BD /* SpatialObjectRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFAF68C02FBC99C3E670EE3F /* SpatialObjectRenderingTests.swift */; };
 		458BF66BA978D14B4A1A3DFA /* SmokeEventLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */; };
+		6C73FF1A7DD20CDE838B7268 /* DolbyVisionColorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B514D6380477A5614705FC /* DolbyVisionColorTests.swift */; };
 		6D623A87FE863E508C736139 /* SmokePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */; };
 		74A0CE2F36B79F41924AC7AB /* SyncnextHybrid in Frameworks */ = {isa = PBXBuildFile; productRef = F758CDF2666D21B52AB35802 /* SyncnextHybrid */; };
 		7FDA17206AA2CA3DC8302DBB /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 957CFDCD956051DC67233438 /* ContentView.swift */; };
 		82FEFCB6580F1ADFC675DADF /* HybridSmokePlayerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */; };
 		8FC335CB4A3BABB5E12C60FB /* SmokePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */; };
 		997A0229EA8DD52145D5968E /* SmokeConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */; };
+		A468B83C233562606A702F89 /* DualLayerRouteDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A018CA31BEB8E22332CA856 /* DualLayerRouteDecisionTests.swift */; };
 		C968BFEA7333DC4D53A16C56 /* SmokeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13888A4ED150FE27BC7BB2B /* SmokeViewModel.swift */; };
+		CEAB5DDBA20B6AE0DE67594B /* APACEncoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FDBE6F319A621989FADFF4C /* APACEncoderTests.swift */; };
 		D2550F257632377FB6B6BEBC /* SmokeConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */; };
 		D28F900A14EC0CD825B28175 /* AetherEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 88E54F624684ACF6555A970E /* AetherEngine */; };
+		DEA8A12A98F34E2284A5C4CB /* TrueHDObjectMetadataMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72E34B283D03A1FC98FD5A28 /* TrueHDObjectMetadataMappingTests.swift */; };
+		F50DCD6A2EC478DE4631822A /* DTSXObjectMetadataMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B878A55121D248028F0C1F87 /* DTSXObjectMetadataMappingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,15 +39,22 @@
 
 /* Begin PBXFileReference section */
 		08CD2D22D8F62BA43060BA55 /* HybridSmokePlayerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HybridSmokePlayerApp.swift; sourceTree = "<group>"; };
+		0FDBE6F319A621989FADFF4C /* APACEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APACEncoderTests.swift; sourceTree = "<group>"; };
 		2299C58C9E3BB088250C5E0A /* SmokeConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfigurationTests.swift; sourceTree = "<group>"; };
 		257CD41B8DC6912CE85A445A /* HybridSmokePlayer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HybridSmokePlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3536293E819CD656CE3BB2AB /* HybridOptionalComponentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HybridOptionalComponentsTests.swift; sourceTree = "<group>"; };
 		39D24F4344829401094C42EF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		4A018CA31BEB8E22332CA856 /* DualLayerRouteDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DualLayerRouteDecisionTests.swift; sourceTree = "<group>"; };
+		55B514D6380477A5614705FC /* DolbyVisionColorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DolbyVisionColorTests.swift; sourceTree = "<group>"; };
+		72E34B283D03A1FC98FD5A28 /* TrueHDObjectMetadataMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrueHDObjectMetadataMappingTests.swift; sourceTree = "<group>"; };
 		7D88273CD8F6A6D21EC3C41B /* SmokePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicyTests.swift; sourceTree = "<group>"; };
 		86DB51523C9AC0F6BB818CE0 /* SmokeConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeConfiguration.swift; sourceTree = "<group>"; };
+		8AF20A7072EA86AF7BA6A42F /* candidate */ = {isa = PBXFileReference; lastKnownFileType = folder; name = candidate; path = ../..; sourceTree = SOURCE_ROOT; };
 		957CFDCD956051DC67233438 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A13888A4ED150FE27BC7BB2B /* SmokeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeViewModel.swift; sourceTree = "<group>"; };
 		AE9AD84B1745FAEEB02A5CBF /* SmokePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokePolicy.swift; sourceTree = "<group>"; };
-		B90583E2D295C9144488C957 /* SyncnextHybrid */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SyncnextHybrid; path = ../..; sourceTree = SOURCE_ROOT; };
+		AFAF68C02FBC99C3E670EE3F /* SpatialObjectRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatialObjectRenderingTests.swift; sourceTree = "<group>"; };
+		B878A55121D248028F0C1F87 /* DTSXObjectMetadataMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DTSXObjectMetadataMappingTests.swift; sourceTree = "<group>"; };
 		C58227F1E870236CD349C3EE /* SmokeEventLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeEventLogger.swift; sourceTree = "<group>"; };
 		CE099D795683F5BEB21D967A /* HybridSmokePlayerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = HybridSmokePlayerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E537BE7BAFD478A0C955B8E9 /* AetherSmokeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AetherSmokeSnapshot.swift; sourceTree = "<group>"; };
@@ -60,11 +74,22 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		272174FDB58FB683ED633720 /* SyncnextHybridTests */ = {
+			isa = PBXGroup;
+			children = (
+				3536293E819CD656CE3BB2AB /* HybridOptionalComponentsTests.swift */,
+			);
+			name = SyncnextHybridTests;
+			path = ../../Tests/SyncnextHybridTests;
+			sourceTree = "<group>";
+		};
 		640D62A4187E69799082C985 = {
 			isa = PBXGroup;
 			children = (
+				982A9203CEDFBBA9717DFCB8 /* AetherEngineTests */,
 				B563F71C289B5E3C6ED40E57 /* Packages */,
 				F9AA9C86F7A3A36DC2EFACC0 /* Sources */,
+				272174FDB58FB683ED633720 /* SyncnextHybridTests */,
 				8AB1B866DEC5649DFEAD9E41 /* Tests */,
 				DDF11F830C831C2851F9657D /* Products */,
 			);
@@ -79,11 +104,25 @@
 			path = Tests;
 			sourceTree = "<group>";
 		};
+		982A9203CEDFBBA9717DFCB8 /* AetherEngineTests */ = {
+			isa = PBXGroup;
+			children = (
+				0FDBE6F319A621989FADFF4C /* APACEncoderTests.swift */,
+				55B514D6380477A5614705FC /* DolbyVisionColorTests.swift */,
+				B878A55121D248028F0C1F87 /* DTSXObjectMetadataMappingTests.swift */,
+				4A018CA31BEB8E22332CA856 /* DualLayerRouteDecisionTests.swift */,
+				AFAF68C02FBC99C3E670EE3F /* SpatialObjectRenderingTests.swift */,
+				72E34B283D03A1FC98FD5A28 /* TrueHDObjectMetadataMappingTests.swift */,
+			);
+			name = AetherEngineTests;
+			path = ../../AetherEngine/Tests/AetherEngineTests;
+			sourceTree = "<group>";
+		};
 		B563F71C289B5E3C6ED40E57 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
 				FD0730942075C43FFD8C1DD0 /* AetherEngine */,
-				B90583E2D295C9144488C957 /* SyncnextHybrid */,
+				8AF20A7072EA86AF7BA6A42F /* candidate */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -197,8 +236,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CEAB5DDBA20B6AE0DE67594B /* APACEncoderTests.swift in Sources */,
+				F50DCD6A2EC478DE4631822A /* DTSXObjectMetadataMappingTests.swift in Sources */,
+				6C73FF1A7DD20CDE838B7268 /* DolbyVisionColorTests.swift in Sources */,
+				A468B83C233562606A702F89 /* DualLayerRouteDecisionTests.swift in Sources */,
+				0EF3877BD77DC666ED5F8C72 /* HybridOptionalComponentsTests.swift in Sources */,
 				D2550F257632377FB6B6BEBC /* SmokeConfigurationTests.swift in Sources */,
 				6D623A87FE863E508C736139 /* SmokePolicyTests.swift in Sources */,
+				44B4E75349408D20D080F7BD /* SpatialObjectRenderingTests.swift in Sources */,
+				DEA8A12A98F34E2284A5C4CB /* TrueHDObjectMetadataMappingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -303,6 +349,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmokeTests;
 				SDKROOT = appletvos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) TrueHDObjectAudio DTSXObjectAudio DualLayerDolbyVision DolbyVisionStillReshaping";
 				TARGETED_DEVICE_FAMILY = 3;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HybridSmokePlayer.app/HybridSmokePlayer";
 			};
@@ -342,6 +389,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.qoli.SyncnextHybridSmokeTests;
 				SDKROOT = appletvos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) TrueHDObjectAudio DTSXObjectAudio DualLayerDolbyVision DolbyVisionStillReshaping";
 				TARGETED_DEVICE_FAMILY = 3;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HybridSmokePlayer.app/HybridSmokePlayer";
 			};

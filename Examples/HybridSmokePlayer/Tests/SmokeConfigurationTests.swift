@@ -2,6 +2,36 @@ import XCTest
 @testable import HybridSmokePlayer
 
 final class SmokeConfigurationTests: XCTestCase {
+    func testOptionalPlaybackComponentsAreExplicitAndValidated() throws {
+        let environment = [
+            SmokeConfiguration.modeEnvironmentKey: "hybridAVKit",
+            SmokeConfiguration.urlEnvironmentKey: "https://example.test/movie.mkv",
+        ]
+        let defaults = try XCTUnwrap(SmokeConfiguration.fromEnvironment(environment))
+        XCTAssertEqual(defaults.objectAudioRendering, .off)
+        XCTAssertFalse(defaults.preferDualLayerDolbyVision)
+        XCTAssertNil(defaults.thumbnailSeconds)
+
+        let explicit = try XCTUnwrap(SmokeConfiguration.fromEnvironment(environment.merging([
+            SmokeConfiguration.objectAudioEnvironmentKey: "7.1.4",
+            SmokeConfiguration.dualLayerEnvironmentKey: "true",
+            SmokeConfiguration.thumbnailEnvironmentKey: "2",
+        ], uniquingKeysWith: { _, value in value })))
+        XCTAssertEqual(explicit.objectAudioRendering, .apac(.l714))
+        XCTAssertTrue(explicit.preferDualLayerDolbyVision)
+        XCTAssertEqual(explicit.thumbnailSeconds, 2)
+
+        for (key, value) in [
+            (SmokeConfiguration.objectAudioEnvironmentKey, "7.1"),
+            (SmokeConfiguration.dualLayerEnvironmentKey, "yes"),
+            (SmokeConfiguration.thumbnailEnvironmentKey, "nan"),
+        ] {
+            XCTAssertThrowsError(try SmokeConfiguration.fromEnvironment(
+                environment.merging([key: value], uniquingKeysWith: { _, value in value })
+            ))
+        }
+    }
+
     func testPersistentHTTP1AndSustainedPlaybackAreExplicitOptIns() throws {
         let environment = [
             SmokeConfiguration.modeEnvironmentKey: "hybridAVKit",

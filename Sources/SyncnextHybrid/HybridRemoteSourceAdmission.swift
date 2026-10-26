@@ -591,6 +591,8 @@ struct HybridPlaybackPlan {
             externalSubtitles: externalSubtitles,
             autoplay: false
         )
+        options.objectAudioRendering = request.objectAudioRendering
+        options.preferDualLayerDolbyVision = request.preferDualLayerDolbyVision
         options.progressiveSegmentDelivery = !options.isLive && !options.nativeRemoteHLS
         #if DEBUG
         request.vodNetworkTestVariant?.configure(&options, isLive: admission.isLiveHLS)

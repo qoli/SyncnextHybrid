@@ -1,3 +1,4 @@
+import AetherEngine
 import AVFoundation
 import Foundation
 
@@ -35,6 +36,10 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
     /// Forward-buffer preference for native loopback VOD; not a startup threshold.
     /// Zero lets AVPlayer choose an appropriate buffer duration automatically.
     public let preferredForwardBufferDuration: TimeInterval
+    /// TrueHD Atmos / DTS:X rendering. Off preserves the existing audio path.
+    public let objectAudioRendering: HybridObjectAudioRendering
+    /// Requests Profile 7 FEL composition; Aether owns effective media routing.
+    public let preferDualLayerDolbyVision: Bool
 
     #if DEBUG
     public var vodNetworkTestVariant: HybridVODNetworkTestVariant?
@@ -51,7 +56,9 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         externalSubtitles: [HybridExternalSubtitle] = [],
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
-        preferredForwardBufferDuration: TimeInterval = HybridVODBufferDuration.defaultSeconds
+        preferredForwardBufferDuration: TimeInterval = HybridVODBufferDuration.defaultSeconds,
+        objectAudioRendering: HybridObjectAudioRendering = .off,
+        preferDualLayerDolbyVision: Bool = false
     ) throws {
         guard HybridVODBufferDuration.isSupported(preferredForwardBufferDuration) else {
             throw HybridPlaybackError.invalidForwardBufferDuration
@@ -68,6 +75,8 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         self.preferredAudioLanguages = preferredAudioLanguages
         self.preferredSubtitleLanguages = preferredSubtitleLanguages
         self.preferredForwardBufferDuration = preferredForwardBufferDuration
+        self.objectAudioRendering = objectAudioRendering
+        self.preferDualLayerDolbyVision = preferDualLayerDolbyVision
     }
 }
 

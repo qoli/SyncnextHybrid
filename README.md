@@ -63,6 +63,33 @@ HLS VOD 的同源分片由官方 transport 持有連線，FIFO、framing、背�
 HTTP/2；DNS provider 與 preferences 留在 App。原生分片沒有可用的 host DNS
 metrics 時保持未確認，AVKit 與 Hybrid 字幕層維持原有呈現責任。
 
+## Aether 可選組件
+
+Hybrid 編入 `TrueHDObjectAudio`、`DTSXObjectAudio`、`DualLayerDolbyVision` 與
+`DolbyVisionStillReshaping` 四個 package traits；`TrueHDReferenceRender` 是量測用
+組件，不啟用。App 可透過 `HybridOptionalComponent.allCases` 的 `isBuiltIn`
+查詢編譯能力，不需要直接 import AetherEngine。
+
+音訊與 FEL 由每次播放明確選擇，既有呼叫預設為 `.off`／`false`：
+
+```swift
+let request = try HybridPlaybackRequest(
+    url: url,
+    objectAudioRendering: .apac(.l714),
+    preferDualLayerDolbyVision: true
+)
+```
+
+APAC 需要 OS 26 以上；喇叭配置必須對應接收器實際配置，音訊會經過有損重新編碼。
+來源、解碼能力與有效路由仍由 Aether 決定；傳入選項不代表該來源已使用該能力。
+`session.supportsCacheBackedStills` 與 `session.scrubThumbnail(atSeconds:)` 暴露
+播放快取縮圖，包含 DV 靜態圖 reshaping；未支援或尚無素材時回傳 nil，不另開來源連線。
+
+這些選項不更換既有 fingerprint／音樂辨識 provider。正式 release 的 FEL 路徑
+沒有 native SegmentCache，APAC 也不是 FFmpeg 音訊分析可解碼的格式，因此不能
+把一般 HLS 的 PCM 驗收當作 FEL／APAC 的分析相容證據。FEL 與物件音訊同時保留
+的後續上游改動不屬於此正式 release。HDMI Atmos 與實際 FEL 畫面仍需書房電視驗收。
+
 ## 驗證
 
 ```sh

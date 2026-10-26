@@ -37,6 +37,13 @@ targets:
     platform: tvOS
     sources:
       - Tests
+      - ../../Tests/SyncnextHybridTests/HybridOptionalComponentsTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/APACEncoderTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/SpatialObjectRenderingTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/TrueHDObjectMetadataMappingTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/DTSXObjectMetadataMappingTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/DualLayerRouteDecisionTests.swift
+      - ../../AetherEngine/Tests/AetherEngineTests/DolbyVisionColorTests.swift
     dependencies:
       - target: HybridSmokePlayer
     settings:
@@ -44,6 +51,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.qoli.SyncnextHybridSmokeTests
         GENERATE_INFOPLIST_FILE: YES
         EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) TrueHDObjectAudio DTSXObjectAudio DualLayerDolbyVision DolbyVisionStillReshaping
 schemes:
   HybridSmokePlayer:
     build:

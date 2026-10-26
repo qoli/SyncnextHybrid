@@ -186,6 +186,9 @@ Supported environment values:
 | `HYBRID_SMOKE_HELD_SOURCE_CONNECTION` | Optional explicit `true` or `false` (default); forwards the source-scoped persistent HTTP/1.1 policy to both modes |
 | `HYBRID_SMOKE_OBSERVATION_SECONDS` | Optional positive finite media progress required after seek recovery, before terminal PASS; emits 15-second checkpoints, fails on player error, early EOS, or failure to reach that progress within the requested duration at the selected rate plus the existing 60.5-second progress allowance |
 | `HYBRID_SMOKE_EXPECTED_ROUTE` | Optional `nativeAVPlayer` or `avKitProxy` assertion; valid only in `hybridAVKit` mode |
+| `HYBRID_SMOKE_OBJECT_AUDIO` | Optional `off` (default), `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, or `9.1.6`; explicitly forwards the APAC speaker layout to both modes |
+| `HYBRID_SMOKE_DUAL_LAYER_DOLBY_VISION` | Optional `true` or `false` (default); explicitly forwards the FEL preference to both modes |
+| `HYBRID_SMOKE_THUMBNAIL_SECONDS` | Optional finite non-negative cache timestamp, Hybrid only; requires an available cache-backed thumbnail, displays it, and emits its actual dimensions |
 | `HYBRID_SMOKE_FINGERPRINT_START_SECONDS` | Optional fingerprint PCM range start; requires the end and expected provider values |
 | `HYBRID_SMOKE_FINGERPRINT_END_SECONDS` | Optional fingerprint PCM range end; the range must be no longer than 180 seconds |
 | `HYBRID_SMOKE_EXPECTED_FINGERPRINT_PROVIDER` | Required with a fingerprint range; exactly `segmentCache`, `independentRemoteHLS`, or `independentDemuxer` |
@@ -207,6 +210,15 @@ The console emits one-line, sorted JSON records prefixed with
 phase, media time, duration, checkpoints, and the terminal result. Aether
 records also include `aether_backend` and `aether_current_avplayer`. Records do
 not include the source URL, query, or HTTP header values.
+
+Every Hybrid run asserts that all four optional components are built and emits
+`optional_components` with the compiled traits and requested playback options.
+That event proves compilation and forwarding; ordinary H.264/AAC playback does
+not prove TrueHD Atmos, DTS:X, or FEL presentation. The hosted test target also
+runs the pinned upstream APAC encoder, object renderer, TrueHD/DTS:X metadata,
+dual-layer routing, and DV still-colour suites. Its compilation conditions match
+the four enabled traits. Tests guarded by `TrueHDReferenceRender` remain absent
+from the executable; that measurement component must not ship.
 
 Examples of required terminal events:
 

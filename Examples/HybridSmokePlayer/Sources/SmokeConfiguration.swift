@@ -1,4 +1,6 @@
+import AetherEngine
 import Foundation
+import SyncnextHybrid
 
 enum SmokePlaybackMode: String, CaseIterable, Sendable, Equatable {
     case aetherEngine
@@ -54,6 +56,9 @@ struct SmokeConfiguration: Sendable, Equatable {
     static let environmentPrefix = "HYBRID_SMOKE_"
     static let heldSourceConnectionEnvironmentKey = "HYBRID_SMOKE_HELD_SOURCE_CONNECTION"
     static let observationSecondsEnvironmentKey = "HYBRID_SMOKE_OBSERVATION_SECONDS"
+    static let objectAudioEnvironmentKey = "HYBRID_SMOKE_OBJECT_AUDIO"
+    static let dualLayerEnvironmentKey = "HYBRID_SMOKE_DUAL_LAYER_DOLBY_VISION"
+    static let thumbnailEnvironmentKey = "HYBRID_SMOKE_THUMBNAIL_SECONDS"
     static let defaultSeekSeconds = 10.0
     static let defaultPlaybackRate: Float = 1
 
@@ -68,6 +73,9 @@ struct SmokeConfiguration: Sendable, Equatable {
     let fingerprint: SmokeFingerprintConfiguration?
     private(set) var heldSourceConnection = false
     private(set) var observationSeconds = 0.0
+    private(set) var objectAudioRendering: HybridObjectAudioRendering = .off
+    private(set) var preferDualLayerDolbyVision = false
+    private(set) var thumbnailSeconds: Double?
 
     var displaySource: String {
         if sourceURL.isFileURL {
@@ -131,6 +139,25 @@ struct SmokeConfiguration: Sendable, Equatable {
                 throw SmokeConfigurationError.invalidObservationSeconds
             }
             configuration.observationSeconds = seconds
+        }
+        if let value = environment[objectAudioEnvironmentKey], value != "off" {
+            guard let layout = HybridSpatialSpeakerLayout(rawValue: value) else {
+                throw SmokeConfigurationError.invalidOptionalComponents
+            }
+            configuration.objectAudioRendering = .apac(layout)
+        }
+        if let value = environment[dualLayerEnvironmentKey] {
+            guard value == "true" || value == "false" else {
+                throw SmokeConfigurationError.invalidOptionalComponents
+            }
+            configuration.preferDualLayerDolbyVision = value == "true"
+        }
+        if let value = environment[thumbnailEnvironmentKey] {
+            guard configuration.mode == .hybridAVKit,
+                  let seconds = Double(value), seconds.isFinite, seconds >= 0 else {
+                throw SmokeConfigurationError.invalidOptionalComponents
+            }
+            configuration.thumbnailSeconds = seconds
         }
         return configuration
     }
@@ -364,6 +391,7 @@ enum SmokeConfigurationError:
     case invalidPlaybackRate
     case invalidHeldSourceConnection
     case invalidObservationSeconds
+    case invalidOptionalComponents
     case invalidExpectedRoute(String)
     case expectedRouteRequiresHybrid
     case incompleteFingerprintConfiguration
@@ -395,6 +423,8 @@ enum SmokeConfigurationError:
             "HYBRID_SMOKE_HELD_SOURCE_CONNECTION must be true or false"
         case .invalidObservationSeconds:
             "Observation seconds must be finite and greater than zero"
+        case .invalidOptionalComponents:
+            "Object audio must be off or a supported speaker layout; dual layer must be true or false; thumbnail seconds require Hybrid and a finite non-negative time"
         case .invalidExpectedRoute(let value):
             "Expected route must be nativeAVPlayer or avKitProxy, not \(value)"
         case .expectedRouteRequiresHybrid:

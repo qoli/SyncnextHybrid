@@ -3,6 +3,7 @@ import AetherEngine
 import AVFoundation
 import AVKit
 import Combine
+import CoreGraphics
 import Foundation
 import UIKit
 
@@ -813,6 +814,19 @@ public final class HybridPlaybackSession:
     }
 
     public func removeAudioTap() { engine.removeAudioTap() }
+
+    /// Availability of stills from playback's resident cache, without another
+    /// source connection. Individual frames can remain unavailable.
+    public var supportsCacheBackedStills: Bool {
+        !stopped && engine.supportsCacheBackedStills
+    }
+
+    /// Uses the engine's session timeline, matching seek(to:). Unavailable
+    /// cache material or an unsupported route returns nil without another read.
+    public func scrubThumbnail(atSeconds seconds: Double, maxWidth: Int = 320) async -> CGImage? {
+        guard !stopped else { return nil }
+        return await engine.scrubThumbnail(atSeconds: seconds, maxWidth: maxWidth)
+    }
 
     /// Cache-backed sources share playback's cursor. Other providers retain
     /// their bounded input. Stop and audio-selection changes revoke the work.
