@@ -27,6 +27,12 @@ public final class HybridPlaybackSession:
     @Published public private(set) var avPlayer: AVPlayer
     @Published public private(set) var snapshot: HybridPlaybackSnapshot
 
+    /// Reads the loaded engine's source metadata, never the AVKit proxy's black carrier.
+    /// No probe, decoder, network request or cached copy is created by this query.
+    public var mediaInformation: HybridMediaInformation {
+        HybridMediaInformation.loaded(engine: engine, snapshot: snapshot)
+    }
+
     /// Read-only renderer evidence for the standalone playback acceptance app.
     /// Proxy snapshots intentionally report the Server clock, so they cannot
     /// independently detect a renderer rewind behind an unchanged UI timeline.
