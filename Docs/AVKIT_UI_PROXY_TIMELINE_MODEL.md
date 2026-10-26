@@ -53,6 +53,20 @@ letterbox 與 canvas placement）及 tvOS 的 `HybridSubtitleOverlayViewTests`
 （文字視圖、白字填色 raster、暫停／關閉、同 ID 切軌和圖像字幕）。兩者均屬
 `SyncnextHybridTests`；原生測試須選定可用的 tvOS Simulator 執行。
 
+### 2.2 來源音軌選單
+
+Hybrid 的 Audio 選單使用引擎完整 `audioTracks`，同時適用 `nativeAVPlayer`
+與 `avKitProxy`。原生 loopback 的 AVKit audible group 只描述當前轉送音軌，
+不能代表來源完整音軌數量。Audio 選單保留喇叭圖示，讓 AVKit 工具列呈現入口；
+標題以來源順序編號、原名稱及已知聲道數區分同名軌，action identifier 綁定
+原始 stream ID。重新建立選單後仍保留這些資訊，勾選以引擎確認的已選 ID 為準。
+
+`SYNCNEXT_HYBRID_AUDIO_SELECTION` 的 `menu-invoked`、`requested` 與
+`revision-changed` 區分使用者 action、轉交請求與引擎選擇變更，不以點擊成功
+宣稱已完成切軌。來源只有 `zho` 時沿用原標記，不猜測國語、粵語或台配。
+App 的 `AudioTrackDiagnosis` case 使用同一 ISO 與正式選單 actions 驗證多音軌
+切換、generation、勾選及切換後進度；工具列的實際可見性另由書房電視畫面核對。
+
 ## 3. 三個時間軸的責任
 
 進階資訊由 `HybridPlaybackSnapshot.diagnostics` 傳遞實際媒體讀數：影片尺寸

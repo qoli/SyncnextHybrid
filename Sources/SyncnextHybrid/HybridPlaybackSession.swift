@@ -807,8 +807,14 @@ public final class HybridPlaybackSession:
     }
 
     public func selectAudioTrack(id: Int) {
-        guard !stopped,
-              engine.audioTracks.contains(where: { $0.id == id }) else {
+        let trackExists = engine.audioTracks.contains(where: { $0.id == id })
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_AUDIO_SELECTION session=\(diagnosticsID) "
+                + "event=requested targetTrack=\(id) "
+                + "engineTrack=\(engine.activeAudioTrackIndex.map(String.init) ?? "nil") "
+                + "stopped=\(stopped) trackExists=\(trackExists) route=\(snapshot.route)"
+        )
+        guard !stopped, trackExists else {
             return
         }
         engine.selectAudioTrack(index: id)
@@ -2262,13 +2268,20 @@ public final class HybridPlaybackSession:
     private func makeTrackMenus() -> [UIMenuElement] {
         var menus: [UIMenuElement] = []
         if !engine.audioTracks.isEmpty {
-            let actions = engine.audioTracks.map { track in
-                UIAction(
-                    title: track.name,
+            let sessionID = diagnosticsID
+            let actions = engine.audioTracks.enumerated().map { ordinal, track in
+                let channels = track.channels > 0 ? " · \(track.channels) ch" : ""
+                return UIAction(
+                    title: "\(ordinal + 1). \(track.name)\(channels)",
+                    identifier: UIAction.Identifier("com.qoli.SyncnextHybrid.audio.\(track.id)"),
                     state: track.id == engine.activeAudioTrackIndex
                         ? .on
                         : .off
                 ) { [weak self] _ in
+                    HybridDiagnosticEmitter.emit(
+                        "SYNCNEXT_HYBRID_AUDIO_SELECTION session=\(sessionID) "
+                            + "event=menu-invoked targetTrack=\(track.id)"
+                    )
                     Task { @MainActor in
                         self?.selectAudioTrack(id: track.id)
                     }
@@ -2277,6 +2290,7 @@ public final class HybridPlaybackSession:
             menus.append(
                 UIMenu(
                     title: "Audio",
+                    image: UIImage(systemName: "speaker.wave.2.fill"),
                     identifier: UIMenu.Identifier(
                         "com.qoli.SyncnextHybrid.audio"
                     ),
