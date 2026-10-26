@@ -147,6 +147,31 @@ public final class HybridPlaybackSession:
     public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool, videoWidth: Int, videoHeight: Int) {
         (engine.videoRoute.rawValue, engine.isLive, Int(engine.sourceVideoWidth), Int(engine.sourceVideoHeight))
     }
+
+    /// Read-only evidence for optional-component acceptance on the mounted session.
+    public var optionalComponentsObservation: [String: String] {
+        let telemetry = engine.liveTelemetry
+        let audio = telemetry?.objectAudio
+        return [
+            "videoRoute": engine.videoRoute.rawValue,
+            "videoDecoder": engine.activeVideoDecoder ?? "unavailable",
+            "sourceVideoCodec": engine.sourceVideoCodecName ?? "unavailable",
+            "sourceVideoFormat": String(describing: engine.sourceVideoFormat),
+            "sourceDVProfile": engine.sourceDVProfile.map { String($0) } ?? "unavailable",
+            "dolbyVisionConversion": engine.dolbyVisionConversion.map { String(describing: $0) } ?? "none",
+            "objectAudioLayout": audio?.layout.rawValue ?? "unavailable",
+            "objectAudioObjects": audio.map { String($0.objects) } ?? "unavailable",
+            "objectAudioActiveObjects": audio.map { String($0.activeObjects) } ?? "unavailable",
+            "objectAudioElevatedObjects": audio.map { String($0.elevatedObjects) } ?? "unavailable",
+            "objectAudioHeightChannels": audio.map { String($0.heightChannels) } ?? "unavailable",
+            "observedFPS": telemetry?.observedFps.map { String($0) } ?? "unavailable",
+            "droppedFrameCount": telemetry?.droppedFrameCount.map { String($0) } ?? "unavailable",
+            "displayCushionSeconds": telemetry?.displayCushionSeconds.map { String($0) } ?? "unavailable",
+            "cachedBytes": telemetry?.cachedBytes.map { String($0) } ?? "unavailable",
+            "readerWindowAheadBytes": telemetry?.readerWindowAheadBytes.map { String($0) } ?? "unavailable",
+            "audioBridgeLiveBytes": telemetry.map { String($0.audioBridgeLiveBytes) } ?? "unavailable",
+        ]
+    }
     #endif
 
     private func configureVODBufferPolicy() {

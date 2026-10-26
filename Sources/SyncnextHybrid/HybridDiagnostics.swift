@@ -42,13 +42,17 @@ public enum HybridMemoryDiagnostics {
     public final class Observation {
         private let previous: ((String) -> Void)?
 
-        public init(receive: @escaping @Sendable (String) -> Void) {
+        public init(includePlaybackRouting: Bool = false, receive: @escaping @Sendable (String) -> Void) {
             previous = EngineLog.handler
             let previous = previous
             EngineLog.handler = { message in
                 previous?(message)
                 guard !message.contains("http://"), !message.contains("https://") else { return }
-                if message.contains("memprobe") || message.contains("census") || message.contains("Census") {
+                let routing = includePlaybackRouting && (
+                    message.contains("DV P7") || message.contains("FEL") || message.contains("APAC")
+                        || message.contains("SpatialAudio") || message.contains("[DualLayerVideoDecoder]")
+                )
+                if routing || message.contains("memprobe") || message.contains("census") || message.contains("Census") {
                     receive(message)
                 }
             }
