@@ -38,6 +38,13 @@ Patch 的工作。正式變更放在 root repo，不能只保留 dirty upstream 
 直接比較固定 cue，不需經過訂閱、片源與播放流程。
 時間軸權責與手工驗收見 [AVKit proxy 模型](Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md)。
 
+`HybridPlaybackSession.playbackClockDiagnosticFields()` 只讀取既有快照、engine／
+source／AVPlayer 時鐘、generation、音軌、player／item identity 及 publisher
+觀察時間，供 App 的既有進度、狀態與換址 checkpoint 寫入 HTTP log。
+音軌選擇另以 Task-local session／origin operation 串起 SDK 已有的重建日誌；
+`HybridAudioReloadDiagnostics` 只轉送已知事件與數值，其他 handler 仍沿用。
+欄位不重新定義播放位置，也不改變 SDK 重建或時鐘觀察的生命週期。
+
 有限 HLS 的既有 target-duration 修正由
 [HybridHLSManifestFallback.swift](Sources/SyncnextHybrid/HybridHLSManifestFallback.swift)
 擁有；只修正已 admitted 的直接 VOD media playlist，保留原始資源、headers 與

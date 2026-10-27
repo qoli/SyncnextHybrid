@@ -25,7 +25,41 @@ public final class HybridPlaybackSession:
     }
 
     @Published public private(set) var avPlayer: AVPlayer
-    @Published public private(set) var snapshot: HybridPlaybackSnapshot
+    @Published public private(set) var snapshot: HybridPlaybackSnapshot {
+        didSet { snapshotPublishedAt = ProcessInfo.processInfo.systemUptime }
+    }
+
+    private var snapshotPublishedAt = ProcessInfo.processInfo.systemUptime
+    private var engineClockObservedAt: TimeInterval?
+    private var sourceClockObservedAt: TimeInterval?
+
+    /// Samples existing clocks only; it never seeks, refreshes a source, or
+    /// equates the Proxy transport clock with the engine's presentation axis.
+    public func playbackClockDiagnosticFields() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        let fields = HybridPlaybackClockDiagnostics.self
+        let enginePlayer = Self.presentationPlayer(for: engine)
+        return "session=\(diagnosticsID) engineGeneration=\(engine.scrubPreviewSourceGeneration.uuidString)"
+            + " sourceID=\(HybridPlaybackPlan.sourceID(request.url)) route=\(snapshot.route)"
+            + " snapshotTime=\(fields.number(snapshot.currentTime)) engineTime=\(fields.number(engine.currentTime))"
+            + " sourceTime=\(fields.number(engine.sourceTime)) avPlayerTime=\(fields.number(avPlayer.currentTime().seconds))"
+            + " snapshotPhase=\(fields.phase(snapshot.phase)) enginePhase=\(fields.phase(Self.mapPhase(engine.playbackPhase)))"
+            + " engineSeeking=\(engine.isSeeking) sourceFollowsPicture=\(engine.sourceTimeFollowsPicture)"
+            + " snapshotAgeMs=\(fields.ageMilliseconds(since: snapshotPublishedAt, now: now))"
+            + " engineClockAgeMs=\(fields.ageMilliseconds(since: engineClockObservedAt, now: now))"
+            + " sourceClockAgeMs=\(fields.ageMilliseconds(since: sourceClockObservedAt, now: now))"
+            + " snapshotAudio=\(snapshot.selectedAudioTrackID.map(String.init) ?? "none")"
+            + " engineAudio=\(engine.activeAudioTrackIndex.map(String.init) ?? "none") audioRevision=\(audioSelectionRevision)"
+            + " snapshotRate=\(fields.number(Double(snapshot.rate))) avPlayerRate=\(fields.number(Double(avPlayer.rate)))"
+            + " avPlayerState=\(avPlayer.timeControlStatus.rawValue) bufferSeconds=\(fields.number(snapshot.diagnostics.bufferSeconds))"
+            + " playerID=\(fields.identity(avPlayer)) itemID=\(fields.identity(avPlayer.currentItem))"
+            + " enginePlayerID=\(fields.identity(enginePlayer)) engineItemID=\(fields.identity(enginePlayer?.currentItem))"
+            + " uptimeMs=\(Int64(now * 1_000))"
+    }
+
+    private func logPlaybackClock(_ event: String, operation: String? = nil) {
+        HybridDiagnosticEmitter.emit("PLAYBACK_CLOCK event=\(event) operation=\(operation ?? "none") \(playbackClockDiagnosticFields())")
+    }
 
     /// Reads the loaded engine's source metadata, never the AVKit proxy's black carrier.
     /// No probe, decoder, network request or cached copy is created by this query.
@@ -359,6 +393,7 @@ public final class HybridPlaybackSession:
         )
 
         super.init()
+        snapshotPublishedAt = ProcessInfo.processInfo.systemUptime
         proxyContext?.timeline.setEventHandler { [weak self] event in
             self?.handleProxyServerEvent(event)
         }
@@ -408,6 +443,7 @@ public final class HybridPlaybackSession:
             audioSelectionRevision: audioSelectionRevision
         )
         super.init()
+        snapshotPublishedAt = ProcessInfo.processInfo.systemUptime
         proxyTimeline.setEventHandler { [weak self] event in
             self?.handleProxyServerEvent(event)
         }
@@ -814,17 +850,22 @@ public final class HybridPlaybackSession:
     }
 
     public func selectAudioTrack(id: Int) {
+        let operation = UUID().uuidString
         let trackExists = engine.audioTracks.contains(where: { $0.id == id })
         HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_AUDIO_SELECTION session=\(diagnosticsID) "
                 + "event=requested targetTrack=\(id) "
                 + "engineTrack=\(engine.activeAudioTrackIndex.map(String.init) ?? "nil") "
-                + "stopped=\(stopped) trackExists=\(trackExists) route=\(snapshot.route)"
+                + "stopped=\(stopped) trackExists=\(trackExists) route=\(snapshot.route) operation=\(operation)"
         )
         guard !stopped, trackExists else {
             return
         }
-        engine.selectAudioTrack(index: id)
+        HybridAudioReloadDiagnostics.install()
+        logPlaybackClock("audio-selection-requested", operation: operation)
+        HybridAudioReloadDiagnostics.$context.withValue(.init(session: diagnosticsID, operation: operation)) {
+            engine.selectAudioTrack(index: id)
+        }
     }
 
     /// Changes on the engine's actual session teardown, including subtitle reloads.
@@ -1333,6 +1374,7 @@ public final class HybridPlaybackSession:
     }
 
     private func installObservers() {
+        logPlaybackClock("observers-installed")
         engine.$subtitleCues
             .sink { [weak self] _ in
                 Task { @MainActor in
@@ -1344,6 +1386,7 @@ public final class HybridPlaybackSession:
         engine.clock.$sourceTime
             .sink { [weak self] _ in
                 Task { @MainActor in
+                    self?.sourceClockObservedAt = ProcessInfo.processInfo.systemUptime
                     self?.updateSubtitleOverlay()
                 }
             }
@@ -1354,6 +1397,7 @@ public final class HybridPlaybackSession:
                 Task { @MainActor in
                     guard let self else { return }
                     self.applyAetherPlayer(self.engineAVPlayer)
+                    self.logPlaybackClock("engine-player-observed")
                 }
             }
             .store(in: &observations)
@@ -1365,6 +1409,7 @@ public final class HybridPlaybackSession:
                         return
                     }
                     self.applyAetherMaterial()
+                    self.logPlaybackClock("engine-phase-observed-\(HybridPlaybackClockDiagnostics.phase(Self.mapPhase(phase)))")
                     if self.snapshot.route == .nativeAVPlayer {
                         self.publishSnapshot()
                     }
@@ -1387,10 +1432,9 @@ public final class HybridPlaybackSession:
         engine.clock.$currentTime
             .sink { [weak self] _ in
                 Task { @MainActor in
-                    guard let self,
-                          self.snapshot.route == .nativeAVPlayer else {
-                        return
-                    }
+                    guard let self else { return }
+                    self.engineClockObservedAt = ProcessInfo.processInfo.systemUptime
+                    guard self.snapshot.route == .nativeAVPlayer else { return }
                     self.publishSnapshot()
                 }
             }
