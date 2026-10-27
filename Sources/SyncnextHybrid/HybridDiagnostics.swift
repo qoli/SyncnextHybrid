@@ -6,6 +6,13 @@ import AetherEngine
 public enum HybridNetworkDiagnostics {
     private static let mediaRequestLogBridge: Void = {
         MediaRequestDiagnostics.handler = { line in
+            if let response = HybridMediaResponse(diagnosticLine: line) {
+                NotificationCenter.default.post(
+                    name: .syncnextHybridMediaResponse,
+                    object: nil,
+                    userInfo: [HybridDiagnosticNotification.mediaResponseKey: response]
+                )
+            }
             HybridDiagnosticEmitter.emit(line)
         }
     }()
@@ -68,12 +75,16 @@ public enum HybridMemoryDiagnostics {
 #endif
 
 public extension Notification.Name {
+    static let syncnextHybridMediaResponse = Notification.Name(
+        "com.qoli.SyncnextHybrid.mediaResponse"
+    )
     static let syncnextHybridDiagnostic = Notification.Name(
         "com.qoli.SyncnextHybrid.diagnostic"
     )
 }
 
 public enum HybridDiagnosticNotification {
+    public static let mediaResponseKey = "mediaResponse"
     public static let messageKey = "message"
 }
 

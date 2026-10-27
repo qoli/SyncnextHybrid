@@ -98,6 +98,16 @@ APAC 需要 OS 26 以上；喇叭配置必須對應接收器實際配置，音�
 把一般 HLS 的 PCM 驗收當作 FEL／APAC 的分析相容證據。FEL 與物件音訊同時保留
 的後續上游改動不屬於此正式 release。HDMI Atmos 與實際 FEL 畫面仍需書房電視驗收。
 
+## 來源地址更新的宿主邊界
+
+`HybridMediaResponse` 將既有 privacy-safe media response 轉為型別化通知，
+保留 source/resource SHA-256 與 HTTP status；不新增探測或變更 Aether 重試。
+原插件、episode input、使用者恢復政策及 session 替換由 App 擁有。
+`HybridPlaybackRequest.replacingSource` 保留原播放選項與外掛字幕，更新來源、
+headers 及起始位置；`initialAudioTrackID` 經 Aether 公開 load 參數在首次載入指定
+原音軌，實際選軌不符時明確失敗。沒有原 resolver 的來源不自行猜測新地址；
+App 的恢復與書房驗收契約見 `Syncnext/Docs/Reference/app_logging.md`。
+
 ## 驗證
 
 ```sh

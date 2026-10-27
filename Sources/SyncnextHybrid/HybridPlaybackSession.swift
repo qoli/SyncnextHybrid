@@ -284,7 +284,8 @@ public final class HybridPlaybackSession:
             try await engine.load(
                 url: plan.url,
                 startPosition: request.initialPosition,
-                options: plan.options
+                options: plan.options,
+                audioSourceStreamIndex: request.initialAudioTrackID
             )
             startupDiagnostics.mark("renderer-load-completed")
         } catch {
@@ -301,6 +302,12 @@ public final class HybridPlaybackSession:
             )
         }
 
+        if let selected = request.initialAudioTrackID,
+           engine.activeAudioTrackIndex != Int(selected) {
+            engine.stop()
+            engine.unbind(view: surface)
+            throw HybridPlaybackError.sourceLoadFailed("更新來源未能保留原音軌")
+        }
         let nativePlayer = Self.presentationPlayer(for: engine)
         guard nativePlayer != nil
                 || engine.sourceVideoWidth > 0

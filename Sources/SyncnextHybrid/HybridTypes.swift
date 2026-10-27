@@ -30,6 +30,8 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
     /// Selects Aether's persistent HTTP/1.1 policy for this source.
     public let heldSourceConnection: Bool
     public let initialPosition: Double?
+    /// Selects the same source stream on the first load of a renewed URL.
+    public let initialAudioTrackID: Int32?
     public let externalSubtitles: [HybridExternalSubtitle]
     public let preferredAudioLanguages: [String]
     public let preferredSubtitleLanguages: [String]
@@ -58,7 +60,8 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         preferredSubtitleLanguages: [String] = [],
         preferredForwardBufferDuration: TimeInterval = HybridVODBufferDuration.defaultSeconds,
         objectAudioRendering: HybridObjectAudioRendering = .off,
-        preferDualLayerDolbyVision: Bool = false
+        preferDualLayerDolbyVision: Bool = false,
+        initialAudioTrackID: Int32? = nil
     ) throws {
         guard HybridVODBufferDuration.isSupported(preferredForwardBufferDuration) else {
             throw HybridPlaybackError.invalidForwardBufferDuration
@@ -71,12 +74,37 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
         self.httpHeaders = httpHeaders
         self.heldSourceConnection = heldSourceConnection
         self.initialPosition = initialPosition
+        self.initialAudioTrackID = initialAudioTrackID
         self.externalSubtitles = externalSubtitles
         self.preferredAudioLanguages = preferredAudioLanguages
         self.preferredSubtitleLanguages = preferredSubtitleLanguages
         self.preferredForwardBufferDuration = preferredForwardBufferDuration
         self.objectAudioRendering = objectAudioRendering
         self.preferDualLayerDolbyVision = preferDualLayerDolbyVision
+    }
+
+    /// Rebinds the same item without dropping its playback options or subtitles.
+    public func replacingSource(
+        url: URL, httpHeaders: [String: String], initialPosition: Double,
+        initialAudioTrackID: Int32? = nil
+    ) throws -> Self {
+        var replacement = try Self(
+            url: url, httpHeaders: httpHeaders,
+            heldSourceConnection: heldSourceConnection,
+            initialPosition: initialPosition,
+            externalSubtitles: externalSubtitles,
+            preferredAudioLanguages: preferredAudioLanguages,
+            preferredSubtitleLanguages: preferredSubtitleLanguages,
+            preferredForwardBufferDuration: preferredForwardBufferDuration,
+            objectAudioRendering: objectAudioRendering,
+            preferDualLayerDolbyVision: preferDualLayerDolbyVision,
+            initialAudioTrackID: initialAudioTrackID ?? self.initialAudioTrackID
+        )
+        #if DEBUG
+        replacement.vodNetworkTestVariant = vodNetworkTestVariant
+        replacement.startupProbeBytes = startupProbeBytes
+        #endif
+        return replacement
     }
 }
 
