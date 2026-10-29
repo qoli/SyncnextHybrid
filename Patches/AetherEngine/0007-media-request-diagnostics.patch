@@ -1,8 +1,7 @@
 diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngine/Demuxer/AVIOReader.swift
-index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4fe66f00d 100644
 --- a/Sources/AetherEngine/Demuxer/AVIOReader.swift
 +++ b/Sources/AetherEngine/Demuxer/AVIOReader.swift
-@@ -1903,6 +1903,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -2022,6 +2022,7 @@
          streamingTaskSuspended = false
          streamLock.unlock()
          if wasSuspended { sTask?.resume() }
@@ -10,7 +9,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          sTask?.cancel()
          winCond.lock()
          connGeneration &+= 1
-@@ -1968,6 +1969,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -2087,6 +2088,7 @@
          if wasSuspended { sTask?.resume() }
          streamDataReady.signal()
          // Covers a close() without prior markClosed().
@@ -18,7 +17,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          sTask?.cancel()
          sSession?.invalidateAndCancel()
  
-@@ -3485,6 +3487,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -3624,6 +3626,7 @@
                  extraHeaders: headers(for: request.url ?? requestURLForBudget),
                  userAgent: nil,
                  label: label,
@@ -26,7 +25,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
                  generation: generation,
                  ticket: ticket,
                  delegate: self
-@@ -3495,7 +3498,8 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -3635,7 +3638,8 @@
                  generation: generation,
                  extraHeaders: headers(for: request.url),
                  ticket: ticket,
@@ -34,17 +33,17 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
 +                originURL: requestURLForBudget,
 +                sourceURL: url
              )
-             let task = Self.persistentSession.dataTask(with: request)
+             let task = (persistentRequestSession ?? Self.persistentSession).dataTask(with: request)
              task.delegate = delegate
-@@ -4029,6 +4033,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-         let semaphore = DispatchSemaphore(value: 0)
+@@ -4181,6 +4185,7 @@
  
          let delegate = StreamingDelegate(
+             diagnosticContext: diagnosticContext,
 +            requestTrace: MediaRequestTrace(url: request.url, sourceURL: url, transport: "avio-stream"),
              extraHeaders: headers(for: request.url),
              onResponse: { [weak self] response in
                  // Advisory length for the EOF/EIO distinction; -1 (chunked / unknown) leaves the
-@@ -4124,8 +4129,12 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -4280,8 +4285,12 @@
          streamingTask = task
          streamLock.unlock()
  
@@ -58,10 +57,10 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
  
          #if DEBUG
          EngineLog.emit("[AVIOReader] Streaming started: \(url.lastPathComponent)", category: .demux)
-@@ -4845,6 +4854,10 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -5006,6 +5015,10 @@
  
          let delegate = ChunkFetchDelegate(extraHeaders: headers(for: request.url),
-                                           bodyLimit: Self.expectedBodyBytes(for: request))
+                                           bodyLimit: Self.expectedBodyBytes(for: request), diagnosticContext: diagnosticContext)
 +        delegate.requestTrace = MediaRequestTrace(
 +            url: request.url, sourceURL: url,
 +            transport: "avio-range", range: request.value(forHTTPHeaderField: "Range")
@@ -69,7 +68,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          let task = (probeRequestSession ?? Self.chunkSession).dataTask(with: request)
          task.delegate = delegate
          delegate.onBodyReserve = { [weak self] reserve in
-@@ -4861,6 +4874,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -5022,6 +5035,7 @@
          delegate.onResolved = { [weak self] resolved in
              self?.recordResolvedURL(resolved)
          }
@@ -77,7 +76,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          task.resume()
  
          // Poll for close / read-deadline so a superseded or torn-down still-extraction
-@@ -4870,6 +4884,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
+@@ -5031,6 +5045,7 @@
              shouldAbort: { [weak self] in self?.isClosed == true || self?.readDeadlinePassedOrAborted == true }
          )
          guard outcome == .signaled else {
@@ -85,7 +84,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
              task.cancel()
              finishCancelledProbeRequest(semaphore)
              throw AVIOReaderError.requestTimeout
-@@ -5156,8 +5171,14 @@ protocol PersistentTransfer: AnyObject {
+@@ -5348,8 +5363,14 @@
  }
  
  extension URLSessionDataTask: PersistentTransfer {
@@ -102,25 +101,25 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
      /// The ticket lives on the delegate because the delegate's lifetime IS the task's; see the
      /// note on `PersistentReadDelegate.ticket`.
      func releaseOriginTicket() { (delegate as? PersistentReadDelegate)?.releaseTicket() }
-@@ -5165,6 +5186,7 @@ extension URLSessionDataTask: PersistentTransfer {
+@@ -5357,6 +5378,7 @@
  }
  
  private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
 +    fileprivate let requestTrace: MediaRequestTrace?
+     private let sourceTrace: SourceNetworkDiagnostics.Trace
      weak var reader: AVIOReader?
      let generation: Int
-     let extraHeaders: [String: String]
-@@ -5178,7 +5200,8 @@ private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @u
+@@ -5371,7 +5393,8 @@
      private let originURL: URL
  
-     init(reader: AVIOReader, generation: Int, extraHeaders: [String: String],
+     init(reader: AVIOReader, diagnosticContext: SourceNetworkDiagnostics.Context?, generation: Int, extraHeaders: [String: String],
 -         ticket: OriginRequestBudget.Ticket?, originURL: URL) {
 +         ticket: OriginRequestBudget.Ticket?, originURL: URL, sourceURL: URL) {
 +        requestTrace = MediaRequestTrace(url: originURL, sourceURL: sourceURL, transport: "avio-urlsession")
+         self.sourceTrace = .init(role: .persistentRead, context: diagnosticContext)
          self.reader = reader
          self.generation = generation
-         self.extraHeaders = extraHeaders
-@@ -5232,6 +5255,7 @@ private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @u
+@@ -5428,6 +5451,7 @@
              completionHandler(.cancel)
              return
          }
@@ -128,7 +127,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          // #377: unconditional, and the 2xx gate for pinning moved into the reader with the comment
          // that explains it. A refused response has a host too, and after a pin drop that host is
          // the whole question (source, the dropped target minted again, or a fresh one).
-@@ -5247,6 +5271,7 @@ private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @u
+@@ -5443,6 +5467,7 @@
          dataTask: URLSessionDataTask,
          didReceive data: Data
      ) {
@@ -136,31 +135,31 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          reader?.appendPersistentData(data, generation: generation)
      }
  
-@@ -5255,6 +5280,7 @@ private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @u
-         task: URLSessionTask,
+@@ -5452,6 +5477,7 @@
          didCompleteWithError error: Error?
      ) {
+         sourceTrace.completed(task: task, error: error)
 +        requestTrace?.finish(error: error)
          releaseTicket()
          reader?.persistentConnectionEnded(error: error, generation: generation)
      }
-@@ -5284,6 +5310,7 @@ private final class PersistentReadDelegate: NSObject, URLSessionDataDelegate, @u
+@@ -5482,6 +5508,7 @@
  /// dispatch_data is released per delivery. @unchecked Sendable: ownership
  /// via semaphore ensures no concurrent access to mutable fields.
  private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
 +    var requestTrace: MediaRequestTrace?
+     private let sourceTrace: SourceNetworkDiagnostics.Trace
      let extraHeaders: [String: String]
      /// Most this fetch will ever buffer, nil when the request is open-ended (#255). Derived from
-     /// the request, never from the response: a declared length is the origin's claim about the
-@@ -5333,6 +5360,7 @@ private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unche
-     ) {
+@@ -5535,6 +5562,7 @@
+         sourceTrace.response(task: dataTask, response: response)
          self.response = response
          if let http = response as? HTTPURLResponse {
 +            requestTrace?.response(http)
              let reserve = AVIOReader.bodyReservation(
                  declaredLength: http.expectedContentLength, limit: bodyLimit)
              onBodyReserve?(reserve)
-@@ -5352,6 +5380,7 @@ private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unche
+@@ -5554,6 +5582,7 @@
          didReceive data: Data
      ) {
          var count = data.count
@@ -168,7 +167,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          var overshoot = false
          if let bodyLimit {
              // Past what the request asked for means the origin ignored the Range and is streaming
-@@ -5378,6 +5407,7 @@ private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unche
+@@ -5580,6 +5609,7 @@
          }
          if overshoot {
              truncated = true
@@ -176,26 +175,26 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
              dataTask.cancel()
          }
      }
-@@ -5388,6 +5418,7 @@ private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unche
-         didCompleteWithError error: Error?
+@@ -5591,6 +5621,7 @@
      ) {
+         sourceTrace.completed(task: task, error: error)
          self.error = error
 +        requestTrace?.finish(error: error)
          onCompletion?(response as? HTTPURLResponse)
      }
- }
-@@ -5395,6 +5426,7 @@ private final class ChunkFetchDelegate: NSObject, URLSessionDataDelegate, @unche
+     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+@@ -5602,6 +5633,7 @@
  // MARK: - Streaming Delegate
  
  private final class StreamingDelegate: NSObject, URLSessionDataDelegate {
 +    let requestTrace: MediaRequestTrace?
+     private let sourceTrace: SourceNetworkDiagnostics.Trace
      let onData: @Sendable (Data) -> Void
      let onComplete: @Sendable (Error?) -> Void
-     /// Response hook (advisory Content-Length capture on the sequential-origin path).
-@@ -5410,12 +5442,14 @@ private final class StreamingDelegate: NSObject, URLSessionDataDelegate {
-     let extraHeaders: [String: String]
+@@ -5619,12 +5651,14 @@
  
      init(
+         diagnosticContext: SourceNetworkDiagnostics.Context?,
 +        requestTrace: MediaRequestTrace? = nil,
          extraHeaders: [String: String] = [:],
          onResponse: (@Sendable (URLResponse) -> Void)? = nil,
@@ -205,9 +204,9 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
      ) {
 +        self.requestTrace = requestTrace
          self.extraHeaders = extraHeaders
+         self.sourceTrace = .init(role: .streaming, context: diagnosticContext)
          self.onResponse = onResponse
-         self.onRefused = onRefused
-@@ -5454,6 +5488,7 @@ private final class StreamingDelegate: NSObject, URLSessionDataDelegate {
+@@ -5666,6 +5700,7 @@
          // Hang up at the header so the error page never enters the stream buffer, where FFmpeg
          // would probe it as container bytes and report "Invalid data found when processing
          // input" for what was a refusal (#378).
@@ -215,7 +214,7 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
          if let http = response as? HTTPURLResponse, http.statusCode != 200, http.statusCode != 206 {
              onRefused?(http.statusCode, dataTask.currentRequest?.url ?? http.url)
              completionHandler(.cancel)
-@@ -5464,10 +5499,12 @@ private final class StreamingDelegate: NSObject, URLSessionDataDelegate {
+@@ -5676,10 +5711,12 @@
      }
  
      func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -225,14 +224,13 @@ index 664ad8e76aa2b2b34d19c41ceda278f036e41371..930f9c7643815fd5b28b726f73add0e4
  
      func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
 +        requestTrace?.finish(error: error)
+         sourceTrace.completed(task: task, error: error)
          #if DEBUG
          if let error {
-             EngineLog.emit("[AVIOReader] Stream error: \(error.localizedDescription)", category: .demux)
 diff --git a/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift b/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
-index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f08536e66a43f 100644
 --- a/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
 +++ b/Sources/AetherEngine/Demuxer/HeldSourceConnection.swift
-@@ -89,6 +89,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -89,6 +89,7 @@
      private let offset: Int64
      private let userAgent: String?
      private let queue: DispatchQueue
@@ -240,7 +238,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
      /// The reader's connection generation this transfer belongs to. Carried here because the
      /// reader's response, delivery and end handling are all keyed on it and a stale callback has
      /// to be recognisable as stale.
-@@ -111,9 +112,14 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -111,9 +112,14 @@
           extraHeaders: [String: String],
           userAgent: String?,
           label: String,
@@ -255,7 +253,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
          self.respondedBy = url
          self.offset = offset
          self.extraHeaders = extraHeaders
-@@ -131,6 +137,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -131,6 +137,7 @@
  
      /// Open the connection and run the pull loop until it ends. Returns immediately.
      func start() {
@@ -263,7 +261,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
          queue.async { [weak self] in self?.run() }
      }
  
-@@ -147,6 +154,10 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -147,6 +154,10 @@
      /// End the connection. Idempotent, and safe from any thread including from inside a delegate
      /// callback: the loop notices on its next turn and the socket is torn down here.
      func cancel() {
@@ -274,7 +272,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
          stateLock.lock()
          if _cancelled {
              stateLock.unlock()
-@@ -158,6 +169,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -158,6 +169,7 @@
          self.task = nil
          self.session = nil
          stateLock.unlock()
@@ -282,7 +280,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
          task?.closeRead()
          task?.closeWrite()
          session?.invalidateAndCancel()
-@@ -175,7 +187,8 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -175,7 +187,8 @@
              // deliberate end.
              failure = isCancelled ? nil : error
          }
@@ -292,7 +290,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
          delegate?.heldConnection(self, didEndWith: failure)
      }
  
-@@ -206,6 +219,7 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -206,6 +219,7 @@
              guard let response = Self.makeResponse(head, url: target) else {
                  throw ConnectionError.malformedResponse("status \(head.status)")
              }
@@ -300,7 +298,7 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
              guard delegate?.heldConnection(self, didReceive: response, from: target) == true else {
                  return
              }
-@@ -262,7 +276,10 @@ final class HeldSourceConnection: @unchecked Sendable {
+@@ -262,7 +276,10 @@
  
              let wire = try nextWireBytes(upTo: min(budget, Self.maxReadBytes), framing: &framing)
              guard let wire else { return }   // end of body
@@ -313,18 +311,17 @@ index 2b7b274965623e05dde34bcdcfa111401f4414cb..a87c0bedf2dc2fe1ddc3ba86739f0853
      }
  
 diff --git a/Sources/AetherEngine/IO/HLSIngest/BoundedPlaylistFetch.swift b/Sources/AetherEngine/IO/HLSIngest/BoundedPlaylistFetch.swift
-index cf9368ca2b18de05d54660e840795308a63f7a5d..14a39c8b531d072b021b4c427906b8bad432b45c 100644
 --- a/Sources/AetherEngine/IO/HLSIngest/BoundedPlaylistFetch.swift
 +++ b/Sources/AetherEngine/IO/HLSIngest/BoundedPlaylistFetch.swift
-@@ -58,6 +58,7 @@ enum BoundedFetch {
+@@ -58,6 +58,7 @@
          -> (Data, URLResponse)
      {
-         let delegate = BoundedBodyDelegate(limit: limit)
+         let delegate = BoundedBodyDelegate(limit: limit, role: role, context: SourceNetworkDiagnostics.context(for: request))
 +        delegate.requestTrace = MediaRequestTrace(url: request.url, transport: "hls-urlsession")
          defer { withExtendedLifetime(delegate) {} }
          let task = session.dataTask(with: request)
          task.delegate = delegate
-@@ -67,9 +68,11 @@ enum BoundedFetch {
+@@ -67,9 +68,11 @@
                  // landed: `onCancel` runs on the spot for a task that is already cancelled, so the
                  // transfer can end before this line.
                  delegate.installOutcomeHandler { continuation.resume(returning: $0) }
@@ -336,7 +333,7 @@ index cf9368ca2b18de05d54660e840795308a63f7a5d..14a39c8b531d072b021b4c427906b8ba
              task.cancel()
          }
          switch outcome {
-@@ -84,6 +87,7 @@ enum BoundedFetch {
+@@ -84,6 +87,7 @@
  private final class BoundedBodyDelegate: EngineTLS.RedirectScrubbingDelegate, URLSessionDataDelegate,
      @unchecked Sendable
  {
@@ -344,15 +341,15 @@ index cf9368ca2b18de05d54660e840795308a63f7a5d..14a39c8b531d072b021b4c427906b8ba
      enum Outcome {
          case body(Data, URLResponse)
          case refused(URLResponse)
-@@ -145,6 +149,7 @@ private final class BoundedBodyDelegate: EngineTLS.RedirectScrubbingDelegate, UR
+@@ -147,6 +151,7 @@
      func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                      completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
          self.response = response
 +        if let http = response as? HTTPURLResponse { requestTrace?.response(http) }
+         trace.response(task: dataTask, response: response)
          let status = (response as? HTTPURLResponse)?.statusCode ?? -1
          guard (200..<300).contains(status) else {
-             verdict = .refused
-@@ -162,6 +167,7 @@ private final class BoundedBodyDelegate: EngineTLS.RedirectScrubbingDelegate, UR
+@@ -165,6 +170,7 @@
      }
  
      func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -360,20 +357,19 @@ index cf9368ca2b18de05d54660e840795308a63f7a5d..14a39c8b531d072b021b4c427906b8ba
          guard verdict == nil else { return }
          guard buffer.count + data.count <= limit else {
              verdict = .exceeded
-@@ -173,6 +179,7 @@ private final class BoundedBodyDelegate: EngineTLS.RedirectScrubbingDelegate, UR
+@@ -176,6 +182,7 @@
      }
  
      func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
 +        requestTrace?.finish(error: error)
-         switch verdict {
-         case .refused?:
-             if let response { deliver(.refused(response)) } else { deliver(.failed(URLError(.badServerResponse))) }
+         // Refusal/body limits deliberately cancel the task; do not report that as user cancellation.
+         trace.completed(task: task, error: verdict == nil ? error : nil,
+                         phase: verdict == .exceeded ? .bodyLimitExceeded : .completed)
 diff --git a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
-index 1e9d2edf92b643f8a015bcae9a2e258f35724df5..200dbebd6c4bc3bd22b7c159db47fe704873e39b 100644
 --- a/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
 +++ b/Sources/AetherEngine/IO/HLSIngest/HLSVODIngestReader.swift
-@@ -69,7 +69,7 @@ final class HLSVODIngestReader: TimeSeekableIOReader, @unchecked Sendable {
-     ) {
+@@ -72,7 +72,7 @@
+         self.diagnosticContext = diagnosticContext
          self.playlistURL = playlistURL
          self.httpHeaders = httpHeaders
 -        transport = persistentHTTP1 ? PersistentHTTP1Transport(label: "vod") : nil
@@ -382,10 +378,9 @@ index 1e9d2edf92b643f8a015bcae9a2e258f35724df5..200dbebd6c4bc3bd22b7c159db47fe70
              self.session = session
              ownsSession = false
 diff --git a/Sources/AetherEngine/IO/HLSIngest/PersistentHTTP1Transport.swift b/Sources/AetherEngine/IO/HLSIngest/PersistentHTTP1Transport.swift
-index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b16dbde85b 100644
 --- a/Sources/AetherEngine/IO/HLSIngest/PersistentHTTP1Transport.swift
 +++ b/Sources/AetherEngine/IO/HLSIngest/PersistentHTTP1Transport.swift
-@@ -39,15 +39,18 @@ final class PersistentHTTP1Transport: @unchecked Sendable {
+@@ -39,15 +39,18 @@
  
      let label: String
      private let readTimeout: TimeInterval
@@ -405,7 +400,7 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
      }
  
      /// GET `url` with `headers`, redirects followed under the #126 header policy, the whole body
-@@ -196,7 +199,8 @@ final class PersistentHTTP1Transport: @unchecked Sendable {
+@@ -229,7 +232,8 @@
      private func makeConnection(_ origin: Origin) -> PersistentHTTP1Connection {
          nextConnectionID += 1
          return PersistentHTTP1Connection(
@@ -415,7 +410,7 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
      }
  
      private func replaceClaim(_ origin: Origin, with connection: PersistentHTTP1Connection) {
-@@ -206,6 +210,8 @@ final class PersistentHTTP1Transport: @unchecked Sendable {
+@@ -239,6 +243,8 @@
      /// Ends the claim `connection` holds: back to the pool when `refusal` is nil, closed otherwise,
      /// and the next waiting request goes ahead. Idempotent.
      fileprivate func release(_ connection: PersistentHTTP1Connection, refusal: String?) {
@@ -424,7 +419,7 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
          lock.lock()
          var waiters: [CheckedContinuation<Void, Never>] = []
          if let claim = claims[connection.origin], claim.connection === connection {
-@@ -392,6 +398,7 @@ final class PersistentHTTP1Transport: @unchecked Sendable {
+@@ -433,6 +439,7 @@
                  }
              }
              guard let decision else { return }
@@ -432,14 +427,15 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
              guard decision.drainable else {
                  finish(refusal: "abandoned mid-body, \(progress())")
                  return
-@@ -528,11 +535,28 @@ final class PersistentHTTP1Connection: @unchecked Sendable {
+@@ -576,11 +583,28 @@
      private var pending = Data()
      private var _requestCount = 0
      private var _lastUsed = Date.distantPast
+-
+-    init(origin: PersistentHTTP1Transport.Origin, label: String, readTimeout: TimeInterval = defaultReadTimeout) {
 +    private let diagnosticSourceURL: URL?
 +    private var requestTrace: MediaRequestTrace?
- 
--    init(origin: PersistentHTTP1Transport.Origin, label: String, readTimeout: TimeInterval = defaultReadTimeout) {
++
 +    func cancelRequestTrace() {
 +        stateLock.withLock { requestTrace }?.cancel()
 +    }
@@ -462,7 +458,7 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
      }
  
      var requestCount: Int { stateLock.withLock { _requestCount } }
-@@ -543,32 +567,44 @@ final class PersistentHTTP1Connection: @unchecked Sendable {
+@@ -591,38 +615,60 @@
      /// without its answer leaves nothing on the socket worth keeping.
      func sendRequest(target: URL, headers: [String: String]) async throws -> HeldSourceConnection.ResponseHead {
          let task = try connectIfNeeded()
@@ -484,6 +480,17 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
 -            } catch {
 -                if reused, !Task.isCancelled { throw ConnectionError.staleKeepAlive }
 -                throw error
+-            }
+-            do {
+-                return try await readHead(task, reused: reused, deadline: deadline)
+-            } catch let error as ConnectionError {
+-                throw error
+-            } catch {
+-                if reused, !Task.isCancelled { throw ConnectionError.staleKeepAlive }
+-                throw error
+-            }
+-        } onCancel: {
+-            self.retire(reason: "cancelled")
 +        do {
 +            let head = try await withTaskCancellationHandler {
 +                let request = try HeldSourceConnection.requestBytes(
@@ -505,19 +512,10 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
 +                }
 +            } onCancel: {
 +                self.retire(reason: "cancelled")
-             }
--            do {
--                return try await readHead(task, reused: reused, deadline: deadline)
--            } catch let error as ConnectionError {
--                throw error
--            } catch {
--                if reused, !Task.isCancelled { throw ConnectionError.staleKeepAlive }
--                throw error
++            }
 +            if let response = HeldSourceConnection.makeResponse(head, url: target) {
 +                trace?.response(response)
-             }
--        } onCancel: {
--            self.retire(reason: "cancelled")
++            }
 +            return head
 +        } catch {
 +            finishRequestTrace(error: error)
@@ -525,10 +523,11 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
          }
      }
  
-@@ -577,6 +613,16 @@ final class PersistentHTTP1Connection: @unchecked Sendable {
+     /// The next piece of a body under `framing`, nil at its end, plus the framing after it. No
+     /// cancellation handler: the caller decides whether an abandoned body is drained or closed.
      func readChunk(
-         _ framing: Framing, progress: () -> String,
-         isolation: isolated (any Actor)? = #isolation
++        _ framing: Framing, progress: () -> String,
++        isolation: isolated (any Actor)? = #isolation
 +    ) async throws -> (Data?, Framing) {
 +        let trace = stateLock.withLock { requestTrace }
 +        let result = try await readChunkBody(framing, progress: progress, isolation: isolation)
@@ -537,12 +536,10 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
 +    }
 +
 +    private func readChunkBody(
-+        _ framing: Framing, progress: () -> String,
-+        isolation: isolated (any Actor)? = #isolation
+         _ framing: Framing, progress: () -> String,
+         isolation: isolated (any Actor)? = #isolation
      ) async throws -> (Data?, Framing) {
-         guard let task = stateLock.withLock({ retired ? nil : task }) else { throw CancellationError() }
-         while true {
-@@ -638,6 +684,7 @@ final class PersistentHTTP1Connection: @unchecked Sendable {
+@@ -686,6 +732,7 @@
          self.session = nil
          pending = Data()
          stateLock.unlock()
@@ -552,7 +549,6 @@ index 65b58f8325a0cc7f48a6656757a3ee09e7fdbb3a..10305e9f4fab8dd4771ce8c6634614b1
          session?.invalidateAndCancel()
 diff --git a/Sources/AetherEngine/Network/MediaRequestDiagnostics.swift b/Sources/AetherEngine/Network/MediaRequestDiagnostics.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe4fed77e25ac00e5bba582fae8e41366deb060b
 --- /dev/null
 +++ b/Sources/AetherEngine/Network/MediaRequestDiagnostics.swift
 @@ -0,0 +1,105 @@
@@ -663,7 +659,6 @@ index 0000000000000000000000000000000000000000..fe4fed77e25ac00e5bba582fae8e4136
 +}
 diff --git a/Tests/AetherEngineTests/MediaRequestDiagnosticsTests.swift b/Tests/AetherEngineTests/MediaRequestDiagnosticsTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea3790104f79bceee20c45bfd66a9fbba3fd0a02
 --- /dev/null
 +++ b/Tests/AetherEngineTests/MediaRequestDiagnosticsTests.swift
 @@ -0,0 +1,140 @@

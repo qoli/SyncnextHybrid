@@ -1,9 +1,8 @@
 diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 new file mode 100644
-index 00000000..f75f4d4f
 --- /dev/null
 +++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,340 @@
 +import Foundation
 +import AVFAudio
 +
@@ -178,6 +177,7 @@ index 00000000..f75f4d4f
 +        let collector = FingerprintAudioCollector()
 +        let filter = AudioTapMonotonicFilter { buffer in
 +            collector.append(buffer)
++            return true
 +        }
 +        var pendingDiscontinuity = true
 +        var cacheWaitSeconds = 0.0
@@ -344,13 +344,13 @@ index 00000000..f75f4d4f
 +    }
 +}
 diff --git a/Sources/AetherEngine/Video/HLSSegmentProducer.swift b/Sources/AetherEngine/Video/HLSSegmentProducer.swift
-index 5395ef0e..26564629 100644
 --- a/Sources/AetherEngine/Video/HLSSegmentProducer.swift
 +++ b/Sources/AetherEngine/Video/HLSSegmentProducer.swift
-@@ -823,6 +823,16 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -841,6 +841,16 @@
+     /// Dynamic PTS shift = firstActualDts - desiredFirstTfdt; Int64.min = not yet computed.
      private var videoShiftPts: Int64 = Int64.min
      private var audioShiftPts: Int64 = Int64.min
- 
++
 +    /// Translation from the muxed fragment's audio PTS back to the source audio PTS. It is sampled
 +    /// at each adoption because producer restarts and folded epochs may use different shifts.
 +    private var audioSourceShiftSeconds: Double? {
@@ -360,11 +360,10 @@ index 5395ef0e..26564629 100644
 +              timeBase.den > 0 else { return nil }
 +        return Double(audioShiftPts) * Double(timeBase.num) / Double(timeBase.den)
 +    }
-+
+ 
      /// Max segments ahead of AVPlayer's highest fetched segment. Historically a constant (cut from 20 to
      /// 10; 4K HEVC ~10 MB/seg = 200 MB old buffer); now per session from `LoadOptions.forwardBufferSegments`
-     /// via `HLSVideoEngine.forwardWindowSegments`. MUST equal the SegmentCache's forwardWindow so the muxer
-@@ -2433,7 +2443,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -2469,7 +2479,8 @@
              cache.adopt(index: currentMuxerSegmentIndex,
                          stagingPath: path,
                          byteCount: bytesWritten,
@@ -374,7 +373,7 @@ index 5395ef0e..26564629 100644
              // AE#286: per-epoch head. cache.highestStoredIndex is monotonic across restarts and would
              // credit this pump with the previous epoch's production.
              pumpEpochHighestStored = max(pumpEpochHighestStored, currentMuxerSegmentIndex)
-@@ -2681,7 +2692,8 @@ final class HLSSegmentProducer: @unchecked Sendable {
+@@ -2717,7 +2728,8 @@
              )
              cache.adopt(index: idx, stagingPath: result.path,
                          byteCount: result.bytesWritten,
@@ -385,10 +384,9 @@ index 5395ef0e..26564629 100644
                  reportLiveSegmentFinalized(index: idx, nextIndex: nil)
              } else if onSequentialSegmentFinalized != nil {
 diff --git a/Sources/AetherEngine/Video/SegmentCache.swift b/Sources/AetherEngine/Video/SegmentCache.swift
-index eecb0cb3..f746f3eb 100644
 --- a/Sources/AetherEngine/Video/SegmentCache.swift
 +++ b/Sources/AetherEngine/Video/SegmentCache.swift
-@@ -60,6 +60,10 @@ final class SegmentCache: @unchecked Sendable {
+@@ -60,6 +60,10 @@
      /// Per-index byte ledger for _totalBytes. Stat-on-eviction was wrong when same index was
      /// overwritten (stat returned new size, old bytes stayed counted forever).
      private var entryBytes: [Int: Int] = [:]
@@ -399,18 +397,18 @@ index eecb0cb3..f746f3eb 100644
  
      /// Progressive delivery: the segments a producer is writing right now, index to staging file.
      /// Registered when the producer opens the segment (`beginInProgress`), removed when it is
-@@ -89,6 +93,10 @@ final class SegmentCache: @unchecked Sendable {
+@@ -88,6 +92,10 @@
+     private var _lastCleanupResult: SessionCacheCleanupResult = .notRun
      /// Declared by provider at top of each mediaSegment(at:); non-monotonic (backward scrub is valid).
      private var currentTargetIndex: Int = -1
- 
++
 +    /// One-shot host analysis requests that may extend producer race-ahead
 +    /// without changing AVPlayer's fetch target or normal forward-buffer policy.
 +    private var analysisDemands: [UUID: Int] = [:]
-+
+ 
      /// Lowest index of the consumer's current uninterrupted fetch sequence, and the highest index it has
      /// reached in it. A seek flushes the consumer's buffer, so only within one sequence does everything
-     /// between the playhead and the target sit in that buffer, which is what
-@@ -400,6 +408,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -400,6 +408,7 @@
              residentSetChanged = superseded == nil
              if let superseded { supersededFile = superseded }
              entryBytes[index] = data.count
@@ -418,7 +416,7 @@ index eecb0cb3..f746f3eb 100644
              _totalBytes += data.count
              if index > _highestStoredIndex { _highestStoredIndex = index }
          }
-@@ -418,7 +427,8 @@ final class SegmentCache: @unchecked Sendable {
+@@ -418,7 +427,8 @@
      /// `videoReach` (AE#412) is what this segment's video offers a cold arrival; nil leaves the
      /// previous claim in place only if the index is re-adopted without one, which no caller does.
      @discardableResult
@@ -428,7 +426,7 @@ index eecb0cb3..f746f3eb 100644
          let fileURL = nextSegmentFileURL(index: index)
          var renameOK: Bool
          do {
-@@ -473,6 +483,9 @@ final class SegmentCache: @unchecked Sendable {
+@@ -473,6 +483,9 @@
              // AE#412: the claim describes THESE bytes, so a re-adoption replaces it, and an
              // adoption that cannot state one must not leave the old epoch's claim standing.
              videoReaches[index] = videoReach
@@ -438,7 +436,7 @@ index eecb0cb3..f746f3eb 100644
          }
          let doomed = pruneOutsideWindow()
          if !doomed.isEmpty { residentSetChanged = true }
-@@ -501,6 +514,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -501,6 +514,7 @@
          entries.removeAll(keepingCapacity: false)
          entryBytes.removeAll(keepingCapacity: false)
          videoReaches.removeAll(keepingCapacity: false)
@@ -446,7 +444,7 @@ index eecb0cb3..f746f3eb 100644
          initSegment = nil
          initVersions.removeAll(keepingCapacity: false)
          inProgress.removeAll(keepingCapacity: false)
-@@ -508,6 +522,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -508,6 +522,7 @@
          sealedStagingOrder.removeAll(keepingCapacity: false)
          _totalBytes = 0
          _highestStoredIndex = -1
@@ -454,10 +452,12 @@ index eecb0cb3..f746f3eb 100644
          _producerParked = false
          condition.broadcast()
          condition.unlock()
-@@ -548,6 +563,24 @@ final class SegmentCache: @unchecked Sendable {
+@@ -546,6 +561,24 @@
+         condition.unlock()
+         for url in doomed { try? FileManager.default.removeItem(at: url) }
          if !doomed.isEmpty { onResidentSetChanged?() }
-     }
- 
++    }
++
 +    /// Extend production through `index` for one bounded cache-backed analysis.
 +    /// The returned token must be released when the reader finishes or fails.
 +    func beginAnalysisDemand(through index: Int) -> UUID {
@@ -474,12 +474,10 @@ index eecb0cb3..f746f3eb 100644
 +        analysisDemands.removeValue(forKey: token)
 +        condition.broadcast()
 +        condition.unlock()
-+    }
-+
+     }
+ 
      /// Must be called with condition held.
-     ///
-     /// A fetch that leaves a gap above the front, or that drops further back than a handover refetch
-@@ -600,6 +633,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -600,6 +633,7 @@
          entries.removeValue(forKey: index)
          _totalBytes -= entryBytes.removeValue(forKey: index) ?? 0
          videoReaches.removeValue(forKey: index)
@@ -487,10 +485,12 @@ index eecb0cb3..f746f3eb 100644
          condition.broadcast()
          condition.unlock()
          EngineLog.emit("[SegmentCache] seg-\(index) vanished from disk; entry dropped (AE#451)",
-@@ -632,6 +666,26 @@ final class SegmentCache: @unchecked Sendable {
+@@ -630,6 +664,26 @@
+         condition.unlock()
+         guard let url = fileURL else { return nil }
          return readOrDrop(index: index, url: url)
-     }
- 
++    }
++
 +    /// Fetch segment bytes with the audio timeline metadata recorded for the same generation URL.
 +    /// An outer nil is a cache miss; a nil shift is an explicit missing-metadata state.
 +    func fetchForAudioAnalysis(index: Int, timeout: TimeInterval = 15.0)
@@ -509,12 +509,10 @@ index eecb0cb3..f746f3eb 100644
 +        guard let (url, shift) = snapshot,
 +              let data = readOrDrop(index: index, url: url) else { return nil }
 +        return (data, shift)
-+    }
-+
-     // MARK: - Progressive delivery
+     }
  
-     /// How many adoptions `sealedFromStaging` remembers: enough for every reader still draining.
-@@ -731,11 +785,20 @@ final class SegmentCache: @unchecked Sendable {
+     // MARK: - Progressive delivery
+@@ -731,11 +785,20 @@
      func awaitFetchHighWater(reaching target: Int, timeout: TimeInterval = 1.0) -> Bool {
          condition.lock()
          defer { condition.unlock() }
@@ -537,7 +535,7 @@ index eecb0cb3..f746f3eb 100644
      }
  
      /// Evict segments strictly below cutoff, which the live caller bounds at the consumer's own fetch
-@@ -748,6 +811,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -748,6 +811,7 @@
              _totalBytes -= entryBytes[k] ?? byteSize(of: url)
              entryBytes.removeValue(forKey: k)
              entries.removeValue(forKey: k)
@@ -545,7 +543,7 @@ index eecb0cb3..f746f3eb 100644
              doomed.append(url)
          }
          _evictionCount += doomed.count
-@@ -1147,6 +1211,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -1147,6 +1211,7 @@
                      _totalBytes -= bytes
                      entryBytes.removeValue(forKey: index)
                      videoReaches.removeValue(forKey: index)
@@ -553,7 +551,7 @@ index eecb0cb3..f746f3eb 100644
                      doomed.append(url)
                  }
              }
-@@ -1176,6 +1241,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -1176,6 +1241,7 @@
                      entryBytes.removeValue(forKey: k)
                      entries.removeValue(forKey: k)
                      videoReaches.removeValue(forKey: k)
@@ -561,7 +559,7 @@ index eecb0cb3..f746f3eb 100644
                      doomed.append(url)
                  }
              }
-@@ -1188,6 +1254,7 @@ final class SegmentCache: @unchecked Sendable {
+@@ -1188,6 +1254,7 @@
                  entryBytes.removeValue(forKey: k)
                  entries.removeValue(forKey: k)
                  videoReaches.removeValue(forKey: k)
@@ -570,13 +568,13 @@ index eecb0cb3..f746f3eb 100644
              }
          }
 diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngineTests/SegmentCacheTests.swift
-index 74011795..b4015b6d 100644
 --- a/Tests/AetherEngineTests/SegmentCacheTests.swift
 +++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
-@@ -7,6 +7,22 @@ struct SegmentCacheTests {
+@@ -6,6 +6,22 @@
+ struct SegmentCacheTests {
  
      private func makeData(_ n: Int, fill: UInt8 = 0xAA) -> Data { Data(repeating: fill, count: n) }
- 
++
 +    private func adopt(
 +        _ cache: SegmentCache,
 +        index: Int,
@@ -592,14 +590,15 @@ index 74011795..b4015b6d 100644
 +            audioSourceShiftSeconds: audioSourceShiftSeconds
 +        )
 +    }
-+
+ 
      @Test("store then fetch round-trips; count and totalBytes track")
      func storeFetch() {
-         let c = SegmentCache(forwardWindow: 5, backwardWindow: 5)
-@@ -59,6 +75,128 @@ struct SegmentCacheTests {
+@@ -57,6 +73,128 @@
+         #expect(!FileManager.default.fileExists(atPath: second.path))
+         #expect(c.peek(index: 3)?.first == 0x03)
          #expect(c.totalBytes == 40)
-     }
- 
++    }
++
 +    @Test("fingerprint mapping restores source time from the segment audio shift")
 +    func fingerprintSourceTimeMapping() {
 +        let sourceTime = FingerprintAudioTimeline.sourceTime(
@@ -720,8 +719,6 @@ index 74011795..b4015b6d 100644
 +        c.endAnalysisDemand(demand)
 +        #expect(c.targetIndex == 60)
 +        #expect(!c.awaitFetchHighWater(reaching: 61, timeout: 0.001))
-+    }
-+
+     }
+ 
      @Test("Backward refetch does not evict already-produced forward segments")
-     func backwardRefetchKeepsForward() {
-         // forwardWindow small, backwardWindow wide so production never prunes the trailing end.

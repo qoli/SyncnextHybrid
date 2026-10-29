@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-25
+更新日期：2026-10-30
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -88,8 +88,8 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
 5. `0008-http-disc-mime-recognition.patch`
    - 依使用者 2026-10-24 明確要求，修復無副檔名 HTTP ISO 被當成一般媒體的缺陷；
      上游 issue：[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
-   - 從既有取流回應或相容的 prewarm 保存／取得 `Content-Type`，以 ISO MIME
-     啟動既有 DiscReader 結構辨識。依使用者 2026-10-25 要求，無副檔名加
+   - ISO MIME、prewarm metadata 及已識別光碟 URL 的處理由 7.48.0 起交還上游。
+     依使用者 2026-10-25 要求，無副檔名加
      `application/octet-stream` 時，從同一回應的 AVIO buffer 檢查 sector 16
      的 ISO9660／UDF volume descriptor，再由 DiscReader 確認結構；一般媒體
      讀後回到原始位置，不新增 HEAD／Range 探測。
@@ -103,6 +103,9 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 同日再次獲明確授權，增加 `installAudioTap(lossless: Bool = false)`，僅音樂
      辨識啟用無損佇列；其他使用者維持預設 64-buffer 有損入口。不改版本、
      取樣來源或音樂辨識門檻。範圍與退出條件見第 8 節。
+   - 2026-10-30 升級時移除已由上游取代的 pacing／held-buffer 實作，只保留
+     opt-in `lossless`。預設使用上游 256-buffer 及 overflow discontinuity 契約，
+     同時保留上游新增的 `channels` 參數。
 7. `0010-subtitle-bitmap-storage.patch`
    - 依使用者 2026-10-25 明確批准的最小 Patch，將 bitmap 字幕的歷史圖像以
      無損 PNG provider 保留，按繪製需求展開像素；不縮短 cue 保留時間、不刪字幕。
@@ -288,6 +291,32 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### AetherEngine 7.52.0 的最小相容重整（2026-10-30）
+
+決定：`Approved minimal Patch`。使用者在得知 7.47.0 至 7.52.0 的逐項
+Patch 預檢衝突及保留責任後，明確回覆「批准最小 Patch 重整並繼續實測」。
+
+- 候選為官方 Latest [7.52.0](https://github.com/superuser404notfound/AetherEngine/releases/tag/7.52.0)，
+  完整 SHA `db35d50e5c3d5b617551ca27ec7ef4a3d4e534e3`；依其原始 manifest
+  配套 FFmpegBuild 3.11.0，SHA `ef0b7f0bd4620fb0dcd204c47db575da9a2236ab`。
+- `0001`、`0002`、`0007` 只適配現有 dependency、獨立音訊介面與媒體請求
+  觀測；不改 transport、route、取消或 recovery。上游新增的 diagnostics
+  沒有 cancel-requested／取消後交付的位元組邊界，不能直接取代 `0007`。
+- `0008` 移除已原生提供的 MIME／prewarm 實作，只保留從同一回應讀取
+  octet-stream ISO/UDF volume descriptor 的既有責任及其回歸測試。
+- `0009` 移除上游已提供的 pacing 修復，只保留音樂辨識 opt-in 無損交付；
+  預設 overflow 行為與 dialogue channel 由上游擁有。
+- `0004`、`0010` 保留既有責任。上游的 bitmap 歷史 byte budget 與 sidecar
+  packet drain 不等同無損 PNG provider，不能僅憑記憶體改善宣告取代 `0010`。
+  `0004` 的 collector 對上游新的 Bool 回呼明確回傳已接受，不改 PCM 內容。
+- 不新增產品策略。Hybrid-only 實作無法更換 SDK 私有 reader／tap 佇列或
+  bitmap provider；等待上游會阻擋本次新版實機驗證。每次升級仍需重播、
+  focused 回歸、Hybrid／tvOS build 及書房電視的正式播放驗收。
+- 書房回歸另重現原生純音訊 paused seek 的狀態誤報：AVPlayer 保持 rate 0，
+  但 SDK 的 AVPlayer-backed audio 分支在落點發布 `.playing`（7.47.0 已有）。
+  Hybrid 在既有 native navigation 保存實際的初始暫停意圖，透過既有
+  `restoreRate(0)`／公開 `pause()` 同步落點狀態；不改上游或增加播放路徑。
 
 ### 盤迷 REMUX 的字幕圖像記憶體（2026-10-25）
 

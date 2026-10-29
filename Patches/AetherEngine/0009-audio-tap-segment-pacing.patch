@@ -1,41 +1,37 @@
 diff --git a/Sources/AetherEngine/AetherEngine+AudioTap.swift b/Sources/AetherEngine/AetherEngine+AudioTap.swift
-index b337ec37..3384d504 100644
 --- a/Sources/AetherEngine/AetherEngine+AudioTap.swift
 +++ b/Sources/AetherEngine/AetherEngine+AudioTap.swift
-@@ -6,7 +6,9 @@ extension AetherEngine {
- 
-     /// Install the tap on the currently loaded item and return its buffer stream.
-     /// Mono Float32 48 kHz (`AetherEngine.audioTapFormat`), source-PTS timestamps, lossy under
--    /// pressure, never stalls playback. One tap per engine: installing again finishes the
-+    /// pressure by default, never stalls playback. `lossless` prevents queue eviction for
-+    /// consumers that pace input to the media clock. They must drain or cancel their stream;
-+    /// source discontinuities remain explicit. One tap per engine: installing again finishes the
-     /// previous stream. `load()` and `stop()` finish it too (opt-in is per load). With no
-     /// active playback session (or a video-only source) the returned stream finishes
-     /// immediately.
-@@ -24,7 +26,7 @@ extension AetherEngine {
+@@ -25,12 +25,15 @@
      /// rejects outright (`SFSpeechErrorDomain Code=17`, the reason the filter exists). A stream
      /// that ends is a boundary a host can act on; a stitched one is not.
+     ///
++    /// `lossless` prevents queue eviction for consumers that pace input to the media clock.
++    /// They must drain or cancel their stream; source discontinuities remain explicit.
++    ///
+     /// `channels` picks what the mono output is folded from (#908). `.downmix` sums every channel;
+     /// `.dialogue` takes the front-centre channel alone, which keeps a recognizer off the score
+     /// and effects of a 5.1 or 7.1 mix, and falls back to the downmix on a source without one.
+     /// Each buffer's `channels` reports which it carries. The output format is the same either way.
      @MainActor
--    public func installAudioTap() -> AsyncStream<AudioTapBuffer> {
-+    public func installAudioTap(lossless: Bool = false) -> AsyncStream<AudioTapBuffer> {
+-    public func installAudioTap(channels: AudioTapChannels = .downmix) -> AsyncStream<AudioTapBuffer> {
++    public func installAudioTap(channels: AudioTapChannels = .downmix, lossless: Bool = false) -> AsyncStream<AudioTapBuffer> {
          removeAudioTap()
          let controller = AudioTapController()
          audioTapController = controller
-@@ -37,25 +39,25 @@ extension AetherEngine {
+@@ -43,25 +46,25 @@
              hasLoadedURL: loadedURL != nil)
          switch kind {
          case .loopback:
 -            stream = controller.makeStream { onStop in
 +            stream = controller.makeStream(lossless: lossless) { onStop in
-                 guard let reader = makeNativeTapReader(controller: controller) else { return }
+                 guard let reader = makeNativeTapReader(controller: controller, channels: channels) else { return }
                  reader.start()
                  onStop { reader.stop() }
              }
          case .remoteHLS:
 -            stream = controller.makeStream { onStop in
 +            stream = controller.makeStream(lossless: lossless) { onStop in
-                 guard let reader = makeRemoteHLSTapReader(controller: controller) else { return }
+                 guard let reader = makeRemoteHLSTapReader(controller: controller, channels: channels) else { return }
                  reader.start()
                  onStop { reader.stop() }
              }
@@ -43,7 +39,7 @@ index b337ec37..3384d504 100644
 -            stream = controller.makeStream { onStop in
 +            stream = controller.makeStream(lossless: lossless) { onStop in
                  guard softwareHost != nil else { return }
-                 installSoftwareTapSink(controller: controller)
+                 installSoftwareTapSink(controller: controller, channels: channels)
                  onStop { [weak self] in self?.softwareHost?.audioTapSink = nil }
              }
          case .none:
@@ -53,91 +49,24 @@ index b337ec37..3384d504 100644
          // No session / no audio track / backend .none: nothing will ever yield, finish now.
          if !controller.hasDeliverySource { controller.teardown() }
 diff --git a/Sources/AetherEngine/Audio/Tap/AudioTapController.swift b/Sources/AetherEngine/Audio/Tap/AudioTapController.swift
-index 7d546faa..939c5489 100644
 --- a/Sources/AetherEngine/Audio/Tap/AudioTapController.swift
 +++ b/Sources/AetherEngine/Audio/Tap/AudioTapController.swift
-@@ -17,9 +17,9 @@ final class AudioTapController {
+@@ -25,9 +25,9 @@
  
      /// Build the stream and let the caller start its delivery source. `startReader` runs
      /// synchronously; it registers a stop closure via its callback.
 -    func makeStream(startReader: StartReader) -> AsyncStream<AudioTapBuffer> {
 +    func makeStream(lossless: Bool = false, startReader: StartReader) -> AsyncStream<AudioTapBuffer> {
          let (stream, cont) = AsyncStream.makeStream(of: AudioTapBuffer.self,
--                                                    bufferingPolicy: .bufferingNewest(64))
-+                                                    bufferingPolicy: lossless ? .unbounded : .bufferingNewest(64))
+-                                                    bufferingPolicy: .bufferingOldest(Self.streamCapacity))
++                                                    bufferingPolicy: lossless ? .unbounded : .bufferingOldest(Self.streamCapacity))
          continuation = cont
-         filter = AudioTapMonotonicFilter(downstream: { buf in _ = cont.yield(buf) })
-         startReader { [weak self] stop in self?.stopReader = stop }
-diff --git a/Sources/AetherEngine/Audio/Tap/AudioTapHLSReader.swift b/Sources/AetherEngine/Audio/Tap/AudioTapHLSReader.swift
-index 91647acf..15ccca0f 100644
---- a/Sources/AetherEngine/Audio/Tap/AudioTapHLSReader.swift
-+++ b/Sources/AetherEngine/Audio/Tap/AudioTapHLSReader.swift
-@@ -32,6 +32,7 @@ final class AudioTapHLSReader: @unchecked Sendable {
-     private var tracker = HLSPlaylistTracker()
-     private var nextIndex: Int?
-     private var lastDecodedEndPTS: Double?
-+    private var previousPlayhead: Double?
-     private var pendingDiscontinuity = true
- 
-     init(deps: Dependencies) { self.deps = deps }
-@@ -76,7 +77,9 @@ final class AudioTapHLSReader: @unchecked Sendable {
-     func stepVOD() async -> StepResult {
-         guard let media = playlist else { return .finished }
-         let playhead = deps.playhead() ?? 0
-+        defer { previousPlayhead = playhead }
-         switch AudioTapPacing.decide(lastDecodedEndPTS: lastDecodedEndPTS, playhead: playhead,
-+                                     previousPlayhead: previousPlayhead,
-                                      leadSeconds: AudioTapDefaults.leadSeconds,
-                                      toleranceSeconds: AudioTapDefaults.toleranceSeconds) {
-         case .sleep:
-diff --git a/Sources/AetherEngine/Audio/Tap/AudioTapTypes.swift b/Sources/AetherEngine/Audio/Tap/AudioTapTypes.swift
-index 0894f57f..9b30543b 100644
---- a/Sources/AetherEngine/Audio/Tap/AudioTapTypes.swift
-+++ b/Sources/AetherEngine/Audio/Tap/AudioTapTypes.swift
-@@ -42,11 +42,13 @@ enum AudioTapPacing {
-         case reanchor     // playhead moved away; jump to the playhead's segment
-     }
- 
--    static func decide(lastDecodedEndPTS: Double?, playhead: Double,
-+    static func decide(lastDecodedEndPTS: Double?, playhead: Double, previousPlayhead: Double?,
-                        leadSeconds: Double, toleranceSeconds: Double) -> Decision {
-         guard let last = lastDecodedEndPTS else { return .decodeNext }
-+        if let previousPlayhead, playhead < previousPlayhead - toleranceSeconds { return .reanchor }
-         if last < playhead - toleranceSeconds { return .reanchor }
--        if last - playhead > leadSeconds + toleranceSeconds { return .reanchor }
-+        // A complete segment can overshoot the preferred lead. Only movement
-+        // of the playhead proves a backward seek; decoded lead alone does not.
-         if last - playhead >= leadSeconds { return .sleep }
-         return .decodeNext
-     }
-diff --git a/Sources/AetherEngine/Audio/Tap/LoopbackAudioReader.swift b/Sources/AetherEngine/Audio/Tap/LoopbackAudioReader.swift
-index 9b8ee191..0a814eb8 100644
---- a/Sources/AetherEngine/Audio/Tap/LoopbackAudioReader.swift
-+++ b/Sources/AetherEngine/Audio/Tap/LoopbackAudioReader.swift
-@@ -41,6 +41,7 @@ final class LoopbackAudioReader: @unchecked Sendable {
-     // Worker-thread state (only touched from the loop / runOnce).
-     private var nextIndex: Int?
-     private var lastDecodedEndPTS: Double?
-+    private var previousPlayhead: Double?
-     private var pendingDiscontinuity = true
-     private var missStreak = 0
- 
-@@ -79,8 +80,10 @@ final class LoopbackAudioReader: @unchecked Sendable {
-     /// One loop iteration. Internal (not private) so tests drive it directly.
-     func runOnce() -> StepResult {
-         let playhead = deps.playhead() ?? 0
-+        defer { previousPlayhead = playhead }
- 
-         switch AudioTapPacing.decide(lastDecodedEndPTS: lastDecodedEndPTS, playhead: playhead,
-+                                     previousPlayhead: previousPlayhead,
-                                      leadSeconds: AudioTapDefaults.leadSeconds,
-                                      toleranceSeconds: AudioTapDefaults.toleranceSeconds) {
-         case .sleep:
+         filter = AudioTapMonotonicFilter(downstream: { buf in
+             if case .dropped = cont.yield(buf) { return false }
 diff --git a/Tests/AetherEngineTests/AudioTapControllerTests.swift b/Tests/AetherEngineTests/AudioTapControllerTests.swift
-index 232b0093..64179324 100644
 --- a/Tests/AetherEngineTests/AudioTapControllerTests.swift
 +++ b/Tests/AetherEngineTests/AudioTapControllerTests.swift
-@@ -8,10 +8,10 @@ import AVFAudio
+@@ -8,10 +8,10 @@
  @MainActor
  final class AudioTapControllerTests: XCTestCase {
  
@@ -150,7 +79,7 @@ index 232b0093..64179324 100644
      }
  
      func testYieldReachesConsumerAndTeardownFinishes() async {
-@@ -44,4 +44,30 @@ final class AudioTapControllerTests: XCTestCase {
+@@ -76,4 +76,21 @@
          _ = controller.makeStream(startReader: { _ in })
          XCTAssertFalse(controller.hasDeliverySource)
      }
@@ -159,191 +88,16 @@ index 232b0093..64179324 100644
 +        let controller = AudioTapController()
 +        let stream = controller.makeStream(lossless: true, startReader: { onStop in onStop {} })
 +        let yield = controller.makeYield()!
-+        for index in 0..<200 { yield(makeBuffer(sourceTime: Double(index) / 100)) }
++        let count = AudioTapController.streamCapacity * 2
++        for index in 0..<count { yield(makeBuffer(sourceTime: Double(index) / 100)) }
 +        controller.teardown()
 +        var times: [Double] = []
 +        for await buffer in stream { times.append(buffer.sourceTime) }
-+        XCTAssertEqual(times.count, 200)
++        XCTAssertEqual(times.count, count)
 +        for (index, time) in times.enumerated() {
 +            XCTAssertEqual(time, Double(index) / 100, accuracy: 0.00001)
 +        }
 +        XCTAssertNil(controller.makeYield())
 +    }
 +
-+    func testDefaultDeliveryRetainsExistingNewest64Policy() async {
-+        let controller = AudioTapController()
-+        let stream = controller.makeStream(startReader: { onStop in onStop {} })
-+        let yield = controller.makeYield()!
-+        for index in 0..<200 { yield(makeBuffer(sourceTime: Double(index) / 100)) }
-+        controller.teardown()
-+        var received = 0
-+        for await _ in stream { received += 1 }
-+        XCTAssertEqual(received, 64)
-+    }
- }
-diff --git a/Tests/AetherEngineTests/AudioTapHLSReaderTests.swift b/Tests/AetherEngineTests/AudioTapHLSReaderTests.swift
-index 96f35250..1f1eabbc 100644
---- a/Tests/AetherEngineTests/AudioTapHLSReaderTests.swift
-+++ b/Tests/AetherEngineTests/AudioTapHLSReaderTests.swift
-@@ -75,4 +75,51 @@ final class AudioTapHLSReaderTests: XCTestCase {
-         XCTAssertFalse(seg3.isEmpty)                // seg 3 audio present
-         XCTAssertTrue(seg3.first?.discontinuity ?? false) // first buffer after reanchor flagged
-     }
-+
-+    func testLongVODSegmentsWaitWithoutRefetchingAndBackwardSeekStillReanchors() async {
-+        let playhead = Box<Double>(1)
-+        let fetched = Box<[Int]>([])
-+        let emitted = Box<[AudioTapBuffer]>([])
-+        let playlist = HLSMediaPlaylist(targetDuration: 15, mediaSequence: 0,
-+            segments: (0..<4).map { HLSMediaSegment(uri: "s\($0).ts", duration: 15, discontinuityBefore: false) },
-+            hasEndList: true, isEncrypted: false, hasUnsupportedEncryption: false, hasMap: false)
-+        let deps = AudioTapHLSReader.Dependencies(
-+            playhead: { playhead.value },
-+            mediaURL: URL(string: "https://h/media.m3u8")!,
-+            fetchPlaylist: { _ in playlist },
-+            fetchSegment: { uri, _ in
-+                fetched.value.append(Int(uri.dropFirst().prefix(1))!)
-+                return Data([1])
-+            },
-+            decodeSegment: { _ in
-+                let buffer = AVAudioPCMBuffer(pcmFormat: AetherEngine.audioTapFormat, frameCapacity: 720_000)!
-+                buffer.frameLength = 720_000
-+                return [AudioTapChunk(buffer: buffer, ptsSeconds: 0)]
-+            },
-+            emit: { emitted.value.append($0) })
-+        let reader = AudioTapHLSReader(deps: deps)
-+        reader.primeForTest(playlist: playlist)
-+        let first = await reader.stepVOD()
-+        XCTAssertEqual(first, .decoded)
-+        for _ in 0..<10 {
-+            let step = await reader.stepVOD()
-+            XCTAssertEqual(step, .slept)
-+        }
-+        XCTAssertEqual(fetched.value, [0])
-+        playhead.value = 6
-+        let next = await reader.stepVOD()
-+        XCTAssertEqual(next, .decoded)
-+        let wait = await reader.stepVOD()
-+        XCTAssertEqual(wait, .slept)
-+        XCTAssertEqual(fetched.value, [0, 1])
-+        XCTAssertFalse(emitted.value[1].discontinuity)
-+        playhead.value = 1
-+        let reanchor = await reader.stepVOD()
-+        XCTAssertEqual(reanchor, .reanchored)
-+        let afterSeek = await reader.stepVOD()
-+        XCTAssertEqual(afterSeek, .decoded)
-+        XCTAssertEqual(fetched.value, [0, 1, 0])
-+        XCTAssertTrue(emitted.value.last!.discontinuity)
-+        XCTAssertEqual(emitted.value.last!.sourceTime, 0, accuracy: 0.001)
-+    }
- }
-diff --git a/Tests/AetherEngineTests/AudioTapPacingTests.swift b/Tests/AetherEngineTests/AudioTapPacingTests.swift
-index 6f2cefad..716a8167 100644
---- a/Tests/AetherEngineTests/AudioTapPacingTests.swift
-+++ b/Tests/AetherEngineTests/AudioTapPacingTests.swift
-@@ -6,8 +6,9 @@ import XCTest
- /// to decode the next segment, idle, or re-anchor after the playhead moved away.
- final class AudioTapPacingTests: XCTestCase {
- 
--    private func decide(_ last: Double?, _ playhead: Double) -> AudioTapPacing.Decision {
-+    private func decide(_ last: Double?, _ playhead: Double, previous: Double? = nil) -> AudioTapPacing.Decision {
-         AudioTapPacing.decide(lastDecodedEndPTS: last, playhead: playhead,
-+                              previousPlayhead: previous,
-                               leadSeconds: 10, toleranceSeconds: 2)
-     }
- 
-@@ -39,7 +40,15 @@ final class AudioTapPacingTests: XCTestCase {
- 
-     func testPlayheadJumpedBackReanchors() {
-         // Backward seek: decoded position is far ahead of the new playhead.
--        XCTAssertEqual(decide(300.0, 100.0), .reanchor)
--        XCTAssertEqual(decide(112.5, 100.0), .reanchor)     // > lead + tolerance
-+        XCTAssertEqual(decide(300.0, 100.0, previous: 290.0), .reanchor)
-+        XCTAssertEqual(decide(112.5, 100.0, previous: 105.0), .reanchor)
-+        XCTAssertEqual(decide(106.0, 100.0, previous: 105.0), .reanchor)
-+    }
-+
-+    func testWholeSegmentOvershootWaitsForPlayback() {
-+        XCTAssertEqual(decide(120.0, 95.1, previous: 95.1), .sleep)
-+        XCTAssertEqual(decide(120.0, 95.1), .sleep)
-+        XCTAssertEqual(decide(120.0, 95.0, previous: 95.1), .sleep)
-+        XCTAssertEqual(decide(120.0, 110.1, previous: 95.1), .decodeNext)
-     }
- }
-diff --git a/Tests/AetherEngineTests/LoopbackAudioReaderTests.swift b/Tests/AetherEngineTests/LoopbackAudioReaderTests.swift
-index 2cc0dce3..21c523ac 100644
---- a/Tests/AetherEngineTests/LoopbackAudioReaderTests.swift
-+++ b/Tests/AetherEngineTests/LoopbackAudioReaderTests.swift
-@@ -3,7 +3,7 @@ import AVFAudio
- @testable import AetherEngine
- 
- /// #95: loop logic of the loopback reader, driven step-by-step with stubbed dependencies.
--/// No media involved; decode is stubbed to return one 1 s chunk per decode call.
-+/// No media involved; decode returns the requested segment's duration and timestamp.
- final class LoopbackAudioReaderTests: XCTestCase {
- 
-     /// Mutable stub world shared with the closures. Single-threaded in these tests.
-@@ -23,15 +23,16 @@ final class LoopbackAudioReaderTests: XCTestCase {
-             shiftSeconds: { w.shift },
-             anchorIndex: { Int($0 / w.segmentSeconds) },
-             initData: { _ in Data([0]) },
--            segmentData: { w.segments.contains($0) ? Data([1]) : nil },
-+            segmentData: { w.segments.contains($0) ? Data(String($0).utf8) : nil },
-             highestStoredIndex: { w.highestStored },
--            decodeSegment: { _, _ in
--                w.decoded.append(w.decoded.count)
--                let idx = Double(w.decoded.count - 1)
-+            decodeSegment: { _, data in
-+                let idx = Int(String(decoding: data, as: UTF8.self))!
-+                w.decoded.append(idx)
-+                let frames = AVAudioFrameCount(w.segmentSeconds * 48_000)
-                 let buf = AVAudioPCMBuffer(pcmFormat: AetherEngine.audioTapFormat,
--                                           frameCapacity: 48_000)!
--                buf.frameLength = 48_000
--                return [AudioTapChunk(buffer: buf, ptsSeconds: idx * w.segmentSeconds)]
-+                                           frameCapacity: frames)!
-+                buf.frameLength = frames
-+                return [AudioTapChunk(buffer: buf, ptsSeconds: Double(idx) * w.segmentSeconds)]
-             },
-             emit: { w.emitted.append($0) }
-         )
-@@ -90,4 +91,39 @@ final class LoopbackAudioReaderTests: XCTestCase {
-         XCTAssertEqual(reader.runOnce(), .decoded)
-         XCTAssertTrue(w.emitted.last!.discontinuity)
-     }
-+
-+    func testLongSegmentsDoNotDecodeAgainWhilePlayheadIsUnchanged() {
-+        let w = World()
-+        w.segmentSeconds = 15
-+        w.playhead = 95.1
-+        w.segments = Set(0...30); w.highestStored = 30
-+        let reader = makeReader(w)
-+        XCTAssertEqual(reader.runOnce(), .decoded) // 90..105
-+        XCTAssertEqual(reader.runOnce(), .decoded) // 105..120 overshoots the 10 s lead
-+        for _ in 0..<10 { XCTAssertEqual(reader.runOnce(), .slept) }
-+        XCTAssertEqual(w.decoded, [6, 7])
-+        XCTAssertEqual(w.emitted.count, 2)
-+        XCTAssertFalse(w.emitted[1].discontinuity)
-+        w.playhead = 110.1
-+        XCTAssertEqual(reader.runOnce(), .decoded)
-+        XCTAssertEqual(reader.runOnce(), .slept)
-+        XCTAssertEqual(w.decoded, [6, 7, 8])
-+        XCTAssertFalse(w.emitted[2].discontinuity)
-+    }
-+
-+    func testLongSegmentsStillReanchorOnBackwardSeek() {
-+        let w = World()
-+        w.segmentSeconds = 15
-+        w.playhead = 95.1
-+        w.segments = Set(0...30); w.highestStored = 30
-+        let reader = makeReader(w)
-+        XCTAssertEqual(reader.runOnce(), .decoded)
-+        XCTAssertEqual(reader.runOnce(), .decoded)
-+        w.playhead = 50.1
-+        XCTAssertEqual(reader.runOnce(), .reanchored)
-+        XCTAssertEqual(reader.runOnce(), .decoded)
-+        XCTAssertEqual(w.decoded, [6, 7, 3])
-+        XCTAssertEqual(w.emitted.last!.sourceTime, 45, accuracy: 0.001)
-+        XCTAssertTrue(w.emitted.last!.discontinuity)
-+    }
  }

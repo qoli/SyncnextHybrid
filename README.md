@@ -98,12 +98,15 @@ Syncnext 在「設定 → 播放器」提供空間音訊與 Dolby Vision FEL 兩
 APAC 需要 OS 26 以上；喇叭配置必須對應接收器實際配置，音訊會經過有損重新編碼。
 來源、解碼能力與有效路由仍由 Aether 決定；傳入選項不代表該來源已使用該能力。
 `session.supportsCacheBackedStills` 與 `session.scrubThumbnail(atSeconds:)` 暴露
-播放快取縮圖，包含 DV 靜態圖 reshaping；未支援或尚無素材時回傳 nil，不另開來源連線。
+播放快取縮圖，包含 DV 靜態圖 reshaping；未支援或尚無素材時回傳 nil，查詢本身不讀源。
+7.51.0 起上游可在來源閒置時，以同一 request budget 預取 keyframe still ladder；
+此排程與連線上限由上游擁有。
 
 這些選項不更換既有 fingerprint／音樂辨識 provider。正式 release 的 FEL 路徑
 沒有 native SegmentCache，APAC 也不是 FFmpeg 音訊分析可解碼的格式，因此不能
-把一般 HLS 的 PCM 驗收當作 FEL／APAC 的分析相容證據。FEL 與物件音訊同時保留
-的後續上游改動不屬於此正式 release。HDMI Atmos 與實際 FEL 畫面仍需書房電視驗收。
+把一般 HLS 的 PCM 驗收當作 FEL／APAC 的分析相容證據。HDMI 輸出與實際 FEL
+畫面仍需書房電視驗收。7.50.0 的 `.render`／`.lpcm` 與 7.52.0 的 audio shaping
+尚未暴露為 Hybrid 產品選項；現有 App 空間音訊開關仍明確選擇 `.apac(.l714)`。
 
 ## 來源地址更新的宿主邊界
 

@@ -1,93 +1,17 @@
-Subject: [PATCH] Recognize extensionless HTTP ISO sources from response MIME and bytes
-
-Upstream: https://github.com/superuser404notfound/AetherEngine/issues/860
-Base: AetherEngine 7.45.0 (52802afaaf035a7f729bba1043b640ad4d9ebb3e)
-Apply after the existing SyncnextHybrid AetherEngine patch series.
-
-diff --git a/Sources/AetherEngine/Demuxer/AVIOReader.swift b/Sources/AetherEngine/Demuxer/AVIOReader.swift
-index 930f9c7643815fd5b28b726f73add0e4fe66f00d..691840211da9b35c6407d08286aa6fa960b6b796 100644
---- a/Sources/AetherEngine/Demuxer/AVIOReader.swift
-+++ b/Sources/AetherEngine/Demuxer/AVIOReader.swift
-@@ -149,6 +149,22 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-     private var position: Int64 = 0
-     private var fileSize: Int64 = -1
- 
-+    // AE#860: metadata from an accepted response, shared by URLSession and held HTTP/1.1.
-+    // The demuxer reads it after open() returns; delegate writes remain under winCond.
-+    private var receivedContentType: String?
-+    var responseContentType: String? {
-+        winCond.lock()
-+        defer { winCond.unlock() }
-+        return receivedContentType
-+    }
-+
-+    private func recordContentType(_ response: URLResponse) {
-+        guard let http = response as? HTTPURLResponse else { return }
-+        winCond.lock()
-+        receivedContentType = http.value(forHTTPHeaderField: "Content-Type")
-+        winCond.unlock()
-+    }
-+
-     /// Typed source-fetch network phase, pushed on every stall/reconnect/recovery transition (#85).
-     /// Mirrors `HLSVideoEngine.onSeekStateChanged`. `@Sendable`: invoked from the demux thread, the
-     /// consumer hops to the main actor. Set only on the MAIN playback reader, never the subtitle side reader.
-@@ -3090,6 +3106,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-         }
-         winCond.lock()
-         headSpan = warm.head.data
-+        receivedContentType = warm.contentType
-         if let tail = warm.tail { tailSpan = tail }
-         fileSize = warm.contentLength
-         adoptedWarmSize = warm.contentLength
-@@ -3942,6 +3959,11 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-         }
- 
-         if isOK {
-+            winCond.lock()
-+            if generation == connGeneration {
-+                receivedContentType = http.value(forHTTPHeaderField: "Content-Type")
-+            }
-+            winCond.unlock()
-             recordResolvedURL(respondedBy)
-             return true
-         }
-@@ -4039,6 +4061,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-                 // Advisory length for the EOF/EIO distinction; -1 (chunked / unknown) leaves the
-                 // clean-end path as the only EOF source.
-                 guard let self else { return }
-+                self.recordContentType(response)
-                 let expected = response.expectedContentLength
-                 guard expected > 0 else { return }
-                 self.streamLock.lock()
-@@ -4663,6 +4686,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
-                         return nil
-                     }
-                 }
-+                recordContentType(response)
-                 addBytesFetched(data.count)
-                 return data
-             } catch {
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 1f93d111407ef13cc4259c8e79deb02968dd711a..8dd004616f0baf95cdf820142984d983710d7721 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -766,45 +766,109 @@ public final class Demuxer: @unchecked Sendable {
-         ["iso", "img", "udf"].contains(url.pathExtension.lowercased())
+@@ -791,6 +791,32 @@
+             || DiscImageMediaType.isKnownDiscImage(url)
      }
  
-+    /// A response type is a probe hint; DiscReader still validates the actual filesystem.
-+    static func isDiscImageContentType(_ value: String?) -> Bool {
-+        normalizedContentType(value) == "application/x-iso9660-image"
-+    }
-+
 +    private static func normalizedContentType(_ value: String?) -> String? {
 +        value?.split(separator: ";", maxSplits: 1).first?
 +            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 +    }
 +
 +    private func hasHTTPDiscHint(_ reader: AVIOReader) throws -> Bool {
-+        if Self.isDiscImageContentType(reader.responseContentType) { return true }
-+        guard Self.normalizedContentType(reader.responseContentType) == "application/octet-stream",
++        guard Self.normalizedContentType(reader.openResponseContentType) == "application/octet-stream",
 +              let context = reader.context, context.pointee.seekable != 0 else { return false }
 +
 +        // A generic MIME carries no format evidence. Read the first volume descriptor from the
@@ -108,119 +32,39 @@ index 1f93d111407ef13cc4259c8e79deb02968dd711a..8dd004616f0baf95cdf820142984d983
 +    }
 +
      private func openHTTP(url: URL, extraHeaders: [String: String], isLive: Bool = false, selectTitleID: Int? = nil) throws {
--        // A remote disc image goes through the same disc adapter as a local ISO (a raw .iso handed
--        // straight to libavformat fails to probe; it is a filesystem, not a media container, #64).
--        // Gated on the disc-image extension so normal media URLs skip the range-probe entirely; if
--        // the source is not a recognizable disc, fall through to the streaming reader.
--        if !isLive, Self.isDiscImageURL(url) {
-+        let discHint = !isLive && (Self.isDiscImageURL(url)
-+            || (!openProfile.avioSequentialOnly && Self.isDiscImageContentType(
-+                SourcePrewarmStore.shared.contentType(for: url, requestHeaders: extraHeaders))))
-+        if discHint {
-             let warm = HTTPDiscIOReader.takePrewarm(for: url, extraHeaders: extraHeaders)
--            if let discReader = try HTTPDiscIOReader.open(url: url, extraHeaders: extraHeaders, prewarmed: warm) {
--                adoptOwnedSourceReader(discReader)
--                if isCloseRequested {
--                    releaseOwnedSourceReader()
--                    throw DemuxerError.openFailed(code: -1)
--                }
--                let discInfo: DiscInfo?
-+            if try openHTTPDisc(url: url, extraHeaders: extraHeaders,
-+                                selectTitleID: selectTitleID, warm: warm) {
-+                return
-+            }
-+            if let warm { SourcePrewarmStore.shared.store(warm, for: url) }
-+        }
-+
-+        let reader = makeHTTPReader(url: url, extraHeaders: extraHeaders, isLive: isLive)
-+        try connectProvider(reader)
-+        // AE#860: opaque proxy URLs carry no suffix. Inspect the response already received by
-+        // either HTTP transport, and ISO/UDF bytes when that response has a generic MIME,
-+        // before libavformat sees the raw disc image as a media container.
-+        // A declared sequential origin must never acquire a random-access disc reader.
-+        if !discHint, !isLive, !openProfile.avioSequentialOnly,
-+           try hasHTTPDiscHint(reader) {
-+            EngineLog.emit("[Demuxer] AE#860: HTTP representation requests disc recognition", category: .demux)
-+            abandonProvider(reader)
-+            if try openHTTPDisc(url: url, extraHeaders: extraHeaders,
-+                                selectTitleID: selectTitleID, warm: nil) {
-+                return
-+            }
-+            // A mislabelled media response keeps the existing non-disc behavior. The probe
-+            // has finished, so this replacement is opened once without repeating classification.
-+            try openWithProvider(makeHTTPReader(url: url, extraHeaders: extraHeaders, isLive: false))
-+            return
-+        }
-+        try openConnectedProvider(reader, isLive: isLive)
-+    }
-+
-+    private func openHTTPDisc(url: URL, extraHeaders: [String: String],
-+                              selectTitleID: Int?, warm: PrewarmedSource?) throws -> Bool {
-+        if isCloseRequested { throw DemuxerError.openFailed(code: -1) }
-+        if let discReader = try HTTPDiscIOReader.open(url: url, extraHeaders: extraHeaders, prewarmed: warm) {
-+            adoptOwnedSourceReader(discReader)
-+            if isCloseRequested {
-+                releaseOwnedSourceReader()
-+                throw DemuxerError.openFailed(code: -1)
-+            }
-+            let discInfo: DiscInfo?
-+            do {
-+                discInfo = try DiscReader.wrap(discReader, selectTitleID: selectTitleID, cacheKey: url.absoluteString)
-+            } catch {
-+                releaseOwnedSourceReader()
-+                if let warm { SourcePrewarmStore.shared.store(warm, for: url) }
-+                throw error
-+            }
-+            if let discInfo {
-+                adoptDiscInfo(discInfo)
-+                auditSource = nil
-+                let bridge = CustomIOReaderBridge(reader: discInfo.reader)
-+                let inputFormat = av_find_input_format(discInfo.formatHint)
-                 do {
--                    discInfo = try DiscReader.wrap(discReader, selectTitleID: selectTitleID, cacheKey: url.absoluteString)
-+                    try openWithProvider(bridge, inputFormat: inputFormat, isLive: false)
-                 } catch {
-                     releaseOwnedSourceReader()
--                    if let warm { SourcePrewarmStore.shared.store(warm, for: url) }
-                     throw error
-                 }
--                if let discInfo {
--                    adoptDiscInfo(discInfo)
--                    auditSource = nil
--                    let bridge = CustomIOReaderBridge(reader: discInfo.reader)
--                    let inputFormat = av_find_input_format(discInfo.formatHint)
--                    do {
--                        try openWithProvider(bridge, inputFormat: inputFormat, isLive: false)
--                    } catch {
--                        releaseOwnedSourceReader()
--                        throw error
--                    }
--                    return
--                }
--                releaseOwnedSourceReader()
-+                return true
-             }
--            // Not a disc: hand the warm back so the streaming reader below adopts it (#647).
--            if let warm { SourcePrewarmStore.shared.store(warm, for: url) }
-+            releaseOwnedSourceReader()
-         }
-+        return false
-+    }
-+
-+    private func makeHTTPReader(url: URL, extraHeaders: [String: String], isLive: Bool) -> AVIOReader {
-         let reader = AVIOReader(
-             url: url,
-             extraHeaders: extraHeaders,
-@@ -822,7 +886,7 @@ public final class Demuxer: @unchecked Sendable {
-         )
+         // A remote disc image goes through the same disc adapter as a local ISO (a raw .iso handed
+         // straight to libavformat fails to probe; it is a filesystem, not a media container, #64).
+@@ -811,7 +837,7 @@
+         } catch AVIOReaderError.discImageMediaType {
+             // AE#860: an extensionless URL whose opening response declared a disc image. The type is
+             // only a hint; the disc readers confirm it, and a mislabelled body streams as before.
+-            EngineLog.emit("[Demuxer] AE#860: the source declared a disc image type; trying the disc adapter", category: .demux)
++            EngineLog.emit("[Demuxer] AE#860: the source indicates a disc image; trying the disc adapter", category: .demux)
+             if try openHTTPDiscImage(url: url, extraHeaders: extraHeaders, selectTitleID: selectTitleID) {
+                 DiscImageMediaType.noteDiscImage(url)
+                 return
+@@ -880,7 +906,19 @@
          reader.onNetworkPhaseChanged = onNetworkPhaseChanged
          reader.playIntentProvider = playIntentProvider
--        try openWithProvider(reader, isLive: isLive)
-+        return reader
-     }
- 
-     /// A provider that connected (or tried to) for an open that is not going to finish.
-@@ -840,6 +904,11 @@ public final class Demuxer: @unchecked Sendable {
+         do {
+-            try openWithProvider(reader, isLive: isLive)
++            try connectProvider(reader)
++            if isCloseRequested {
++                abandonProvider(reader)
++                throw DemuxerError.openFailed(code: -1)
++            }
++            // MIME classification belongs to the upstream reader. Only the generic MIME case
++            // still needs the volume descriptor from the same opening response.
++            if routesDiscMediaType, !isLive, !openProfile.avioSequentialOnly,
++               try hasHTTPDiscHint(reader) {
++                abandonProvider(reader)
++                throw AVIOReaderError.discImageMediaType
++            }
++            try openConnectedProvider(reader, isLive: isLive)
+         } catch AVIOReaderError.dashManifest {
+             try openDASH(manifestURL: url, extraHeaders: extraHeaders)
+         }
+@@ -938,6 +976,11 @@
          inputFormat: UnsafePointer<AVInputFormat>? = nil,
          isLive: Bool = false
      ) throws {
@@ -232,12 +76,26 @@ index 1f93d111407ef13cc4259c8e79deb02968dd711a..8dd004616f0baf95cdf820142984d983
          // Audit DMX-102: the provider is published BEFORE it connects, under the same lock that
          // decides "already closed", so a `markClosed()` that lands during the connect (up to 15 s on
          // a live source, longer for a remote disc probe) reaches the provider instead of finding
-@@ -860,7 +929,17 @@ public final class Demuxer: @unchecked Sendable {
+@@ -952,6 +995,12 @@
+         } catch {
+             openTransportFailureCode = (provider as? AVIOReader)?.lastTransportFailureCode
+             abandonProvider(provider)
++            if case AVIOReaderError.discImageMediaType = error {
++                // The response is open even though upstream handed off before container open.
++                // Preserve the existing cancellation checkpoint before starting the disc probe.
++                reportOpenStage(.sourceOpened)
++                if isCloseRequested { throw DemuxerError.openFailed(code: -1) }
++            }
+             throw error
+         }
+         if isCloseRequested {
+@@ -959,7 +1008,17 @@
              throw DemuxerError.openFailed(code: -1)
          }
          reportOpenStage(.sourceOpened)   // #361
+-
 +    }
- 
++
 +    private func openConnectedProvider(
 +        _ provider: AVIOProvider,
 +        inputFormat: UnsafePointer<AVInputFormat>? = nil,
@@ -250,94 +108,8 @@ index 1f93d111407ef13cc4259c8e79deb02968dd711a..8dd004616f0baf95cdf820142984d983
          // AE#460 follow-up: a live source rebuilt on a RETAINED reader resumes where that reader
          // is, not at the host's base. A fresh AVIOContext starts its byte axis at 0 regardless, so
          // without this the rebuild reads the spool from the beginning: the playhead jumps back to
-diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift b/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
-index 4f3bd41f9c6426b7a2d3628fdfefe2e1b767d8f8..148bd5bc1f035fd94638256b3ba1d2ad028ee3c1 100644
---- a/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
-+++ b/Sources/AetherEngine/Demuxer/SourcePrewarmFetcher.swift
-@@ -106,7 +106,8 @@ enum SourcePrewarmFetcher {
-                                      tail: tail,
-                                      contentLength: head.total,
-                                      requestHeaders: extraHeaders,
--                                     resolvedURL: head.respondedURL)
-+                                     resolvedURL: head.respondedURL,
-+                                     contentType: head.contentType)
-         guard store.store(warmed, for: url) else {
-             return decline(url, "\(warmed.byteCount) bytes exceed the prewarm store's cap")
-         }
-@@ -166,6 +167,7 @@ enum RangeFetch {
-         /// The URL that actually answered, redirects followed. A warm that resolved a 302 knows the
-         /// target the session would otherwise resolve again (#551 round 2).
-         let respondedURL: URL?
-+        let contentType: String?
-     }
- 
-     static func run(url: URL,
-@@ -223,6 +225,7 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
-     private var contentRange: (start: Int64, end: Int64, total: Int64)?
-     private var rejection: String?
-     private var respondedURL: URL?
-+    private var contentType: String?
- 
-     /// Guards the handoff between the caller's thread, which installs the handler, and the
-     /// session's delegate queue, which produces the outcome. Either can be first.
-@@ -330,6 +333,7 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
-         // `http.url` is the URL that answered, redirects followed, which is the one a later load
-         // should start at instead of resolving the chain again (#551 round 2).
-         respondedURL = http.url
-+        contentType = http.value(forHTTPHeaderField: "Content-Type")
-         completionHandler(.allow)
-     }
- 
-@@ -360,7 +364,8 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
-         return .body(RangeFetch.Result(body: buffer,
-                                        range: (start: range.start, end: range.end),
-                                        total: range.total,
--                                       respondedURL: respondedURL))
-+                                       respondedURL: respondedURL,
-+                                       contentType: contentType))
-     }
- 
-     /// `bytes <start>-<end>/<total>`. A `*` total is a range the origin will not size, which is
-diff --git a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift b/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
-index 9866487411d747f29eca4821513d2c18126bc959..5cd9403f2674fff41f9ca854c585dd5bafef69ea 100644
---- a/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
-+++ b/Sources/AetherEngine/Demuxer/SourcePrewarmStore.swift
-@@ -28,6 +28,18 @@ struct PrewarmedSource: Sendable {
-     /// paid. The session adopts it as its pinned target (#12), so the existing expiry ladder is
-     /// what handles a lease that has since run out.
-     let resolvedURL: URL?
-+    /// AE#860: keep the representation hint even when a fully warmed open issues no HTTP request.
-+    let contentType: String?
-+
-+    init(head: ResidentSpan, tail: ResidentSpan?, contentLength: Int64,
-+         requestHeaders: [String: String], resolvedURL: URL?, contentType: String? = nil) {
-+        self.head = head
-+        self.tail = tail
-+        self.contentLength = contentLength
-+        self.requestHeaders = requestHeaders
-+        self.resolvedURL = resolvedURL
-+        self.contentType = contentType
-+    }
- 
-     var byteCount: Int { head.data.count + (tail?.data.count ?? 0) }
- }
-@@ -92,6 +104,13 @@ final class SourcePrewarmStore: @unchecked Sendable {
-         return _retainedBytes
-     }
- 
-+    /// Inspect compatible representation metadata without taking another reader's warm bytes.
-+    func contentType(for url: URL, requestHeaders: [String: String]) -> String? {
-+        lock.lock(); defer { lock.unlock() }
-+        guard let source = entries[url.absoluteString], source.requestHeaders == requestHeaders else { return nil }
-+        return source.contentType
-+    }
-+
-     /// Returns whether the entry was accepted. An entry larger than the whole cap is refused rather
-     /// than made room for: evicting every other source for one that still does not fit would spend
-     /// the store to hold nothing.
 diff --git a/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift b/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..1af330a8c2ebf5aad6df4bb1e2e605d5f562dbaf
 --- /dev/null
 +++ b/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift
 @@ -0,0 +1,203 @@
@@ -545,10 +317,9 @@ index 0000000000000000000000000000000000000000..1af330a8c2ebf5aad6df4bb1e2e605d5
 +    }
 +}
 diff --git a/Tests/AetherEngineTests/ISO9660Fixture.swift b/Tests/AetherEngineTests/ISO9660Fixture.swift
-index 7dfed2d02102bda858923dc58356f869b1370f08..4c9396f46f240b52ea3164b32755fe1bf954dfb2 100644
 --- a/Tests/AetherEngineTests/ISO9660Fixture.swift
 +++ b/Tests/AetherEngineTests/ISO9660Fixture.swift
-@@ -49,10 +49,10 @@ enum ISO9660Fixture {
+@@ -49,10 +49,10 @@
      }
  
      /// Build a complete fixture image. Returns the bytes; wrap in DataIOReader.
@@ -561,50 +332,27 @@ index 7dfed2d02102bda858923dc58356f869b1370f08..4c9396f46f240b52ea3164b32755fe1b
          var fileExtents: [(spec: FileSpec, lba: Int)] = []
          for f in files { fileExtents.append((f, fileLBA)); fileLBA += 1 }
  
-diff --git a/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift b/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
-index 78067e021ffbd28f430b64d07e17ba9bbadc513b..f5591a7c1c839c786d080d41ea93a78f96114a47 100644
---- a/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
-+++ b/Tests/AetherEngineTests/RemoteDiscSessionReleaseTests.swift
-@@ -16,7 +16,7 @@ extension PrewarmStoreSuites {
- 
-         /// 0.5 s of 64x64 MPEG-2 video in an MPEG-PS pack stream (ffmpeg `-f vob`), 4096 bytes: the
-         /// smallest title the DVD adapter can hand to `mpegps` and have it open.
--        private static let vob = Data(base64Encoded: """
-+        static let vob = Data(base64Encoded: """
-             AAABukQABAAEAYZmz/gAAAG7AAnDM2cAIf/g4OYAAAHgB92AwQ4xAAO3dREAA1+REGDm/wAAAbMEAEAS///gEAAAAbUUigAB
-             AAIAAAG4AAgAQAAAAQAAD//4AAABtY//80GAAAABARv4ffSQDMAzAoAPgKJAqBVIxGVtiSWkxCMangd7bXiwAvAC8AeABAAP
-             CaAPwB6TQMEwMCEIQ3JoFSb9xhCIRX+JYaW3bPttulPQhH+vvoBmAZgVAH4FUgVAqkanq2xIKQYhGMRgO9/4SANQQQEyYWMK
 diff --git a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
-index c6d8c32690f93d7fe1bb8b71d5550f9d7e7e1dd0..bd860b1ec759fa2b6eb51fae39f409a0ca4877a6 100644
 --- a/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
 +++ b/Tests/AetherEngineTests/Support/KeepAliveRangeOrigin.swift
-@@ -9,13 +9,16 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
-     let port: UInt16
-     private let listener: LoopbackListener
-     private let data: Data
-+    private let contentType: String?
-     private let lock = NSLock()
+@@ -14,6 +14,7 @@
      private var connections: Set<Int32> = []
      private var stopped = false
      private var accepted = 0
 +    private var requestHeads: [String] = []
  
--    init?(data: Data) {
-+    init?(data: Data, contentType: String? = nil) {
+     init?(data: Data, contentType: String? = nil) {
          self.data = data
-+        self.contentType = contentType
-         guard let listener = LoopbackListener(backlog: 16) else { return nil }
-         self.listener = listener
+@@ -23,6 +24,8 @@
          port = listener.port
-@@ -24,6 +27,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+         listener.start { [self] fd in admit(fd) }
+     }
++
++    var requests: [String] { lock.withLock { requestHeads } }
  
      var openConnectionCount: Int { lock.withLock { connections.count } }
      var acceptedConnectionCount: Int { lock.withLock { accepted } }
-+    var requests: [String] { lock.withLock { requestHeads } }
- 
-     func stop() {
-         lock.lock()
-@@ -58,6 +62,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
+@@ -60,6 +63,7 @@
              lock.unlock()
          }
          while let head = readRequestHead(fd) {
@@ -612,11 +360,3 @@ index c6d8c32690f93d7fe1bb8b71d5550f9d7e7e1dd0..bd860b1ec759fa2b6eb51fae39f409a0
              var start = 0
              var end = data.count - 1
              if let range = Self.range(in: head) {
-@@ -70,6 +75,7 @@ final class KeepAliveRangeOrigin: @unchecked Sendable {
-                 continue
-             }
-             let header = "HTTP/1.1 206 Partial Content\r\n"
-+                + (contentType.map { "Content-Type: \($0)\r\n" } ?? "")
-                 + "Content-Length: \(end - start + 1)\r\n"
-                 + "Content-Range: bytes \(start)-\(end)/\(data.count)\r\n"
-                 + "Accept-Ranges: bytes\r\nConnection: keep-alive\r\n\r\n"

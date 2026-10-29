@@ -85,6 +85,12 @@ public final class HybridPlaybackSession:
         )
     }
 
+    /// Reads upstream presentation evidence for the mounted acceptance surface.
+    @_spi(SmokeTesting)
+    public func hasRenderedVideoFrame() async -> Bool {
+        await engine.hasRenderedVideoFrame()
+    }
+
     public var hlsProxyServerObservation:
         HybridHLSProxyServerObservation?
     {
@@ -669,7 +675,9 @@ public final class HybridPlaybackSession:
             nativeSeekGeneration &+= 1
             let generation = nativeSeekGeneration
             nativeSeekInFlight = true
-            nativePendingRate = replayRate
+            // AVPlayer-backed audio preserves its paused player on seek, but Aether
+            // publishes .playing at the landing. Reassert the actual paused intent.
+            nativePendingRate = replayRate ?? (avPlayer.timeControlStatus == .paused ? 0 : nil)
             defer {
                 if generation == nativeSeekGeneration {
                     nativeSeekInFlight = false
