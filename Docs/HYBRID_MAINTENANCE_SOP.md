@@ -89,6 +89,8 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 依使用者 2026-10-24 明確要求，修復無副檔名 HTTP ISO 被當成一般媒體的缺陷；
      上游 issue：[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
    - ISO MIME、prewarm metadata 及已識別光碟 URL 的處理由 7.48.0 起交還上游。
+     2026-10-30 已在 [#860 補報 7.52.0 的 octet-stream 缺口](https://github.com/superuser404notfound/AetherEngine/issues/860#issuecomment-6507440925)，
+     區分未修改上游的 routing 檢查與本地 Patch 的合成回歸證據。
      依使用者 2026-10-25 要求，無副檔名加
      `application/octet-stream` 時，從同一回應的 AVIO buffer 檢查 sector 16
      的 ISO9660／UDF volume descriptor，再由 DiscReader 確認結構；一般媒體
@@ -112,6 +114,12 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 保留原 crop、位置、時間、forced 標記及 interpolation。公開圖像只承諾
      CGImage 的繪製內容，不假設 provider 固定為 premultiplied RGBA；增加已知
      encoded backing bytes 觀測值。範圍與退出條件見第 8 節。
+   - 上游問題與驗收追蹤：[issue #929](https://github.com/superuser404notfound/AetherEngine/issues/929)；
+     實作沿用既有 [PR #879](https://github.com/superuser404notfound/AetherEngine/pull/879)，
+     2026-10-30 已補上完整本地 Patch 組合的 7.52.0 實機證據，沒有新增重複 PR。
+     上游尚未接受 PNG 方案，已選擇 raw RGBA byte budget；純上游十分鐘 footprint、
+     支援的 offset 範圍與可見 backward-seek 重建仍待比較驗收。Core Animation
+     直接顯示 lazy PNG 可在 main 解碼並保留展開像素，encoded bytes 不能當成程序 RAM 上限。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
