@@ -131,15 +131,27 @@ public enum HybridFingerprintAudioError: Error, Sendable, Equatable {
 }
 
 enum HybridFingerprintAudioProviderResolver {
-    /// EBML playback already owns the source cursor and remux cache. A second
-    /// ranged cursor can invalidate a cloud-source proxy's active transfer.
-    static func requiresPlaybackCache(admission: HybridRemoteSourceAdmission) -> Bool {
-        admission == .aetherDefault(.confirmedFiniteEBML)
+    /// EBML and MP4 tails use material from playback's existing cursor/cache.
+    /// Another ranged cursor can exhaust or invalidate a cloud proxy transfer.
+    static func requiresPlaybackCache(
+        admission: HybridRemoteSourceAdmission,
+        region: HybridFingerprintAudioRegion = .front,
+        containerFormat: String? = nil
+    ) -> Bool {
+        if admission == .aetherDefault(.confirmedFiniteEBML) { return true }
+        guard case .aetherDefault = admission, region == .back else { return false }
+        // Use the loaded demuxer's format, not a filename or a source label.
+        // Reopening a cloud MP4 starts another header/Range transfer before
+        // seeking to the tail and can exhaust the origin's request allowance.
+        return containerFormat?.split(separator: ",").contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "mp4"
+        } == true
     }
 
     static func resolve(
         admission: HybridRemoteSourceAdmission,
-        region: HybridFingerprintAudioRegion = .front
+        region: HybridFingerprintAudioRegion = .front,
+        containerFormat: String? = nil
     ) throws -> HybridFingerprintAudioPlan {
         switch admission {
         case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster:
@@ -157,6 +169,9 @@ enum HybridFingerprintAudioProviderResolver {
                 timing: region == .front ? .afterPlaybackSeek : .whenPlaybackReachesRange
             )
         case .aetherDefault:
+            if requiresPlaybackCache(admission: admission, region: region, containerFormat: containerFormat) {
+                return HybridFingerprintAudioPlan(provider: .segmentCache, timing: .whenPlaybackReachesRange)
+            }
             return HybridFingerprintAudioPlan(provider: .independentDemuxer, timing: .immediate)
         }
     }

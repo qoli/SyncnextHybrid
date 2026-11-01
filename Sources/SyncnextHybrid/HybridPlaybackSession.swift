@@ -935,7 +935,10 @@ public final class HybridPlaybackSession:
     /// Cache-backed sources share playback's cursor. Other providers retain
     /// their bounded input. Stop and audio-selection changes revoke the work.
     public func fingerprintAudioPlan(for region: HybridFingerprintAudioRegion) throws -> HybridFingerprintAudioPlan {
-        try HybridFingerprintAudioProviderResolver.resolve(admission: sourceAdmission, region: region)
+        try HybridFingerprintAudioProviderResolver.resolve(
+            admission: sourceAdmission, region: region,
+            containerFormat: engine.isLive ? nil : engine.sourceContainerFormat
+        )
     }
 
     public func fingerprintAudio(
@@ -1128,7 +1131,10 @@ public final class HybridPlaybackSession:
             )
         } catch let error as HybridFingerprintAudioError
             where error.canUseIntroAudioExtraction
-                && !HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: sourceAdmission) {
+                && !HybridFingerprintAudioProviderResolver.requiresPlaybackCache(
+                    admission: sourceAdmission, region: fingerprintRequest.region,
+                    containerFormat: engine.isLive ? nil : engine.sourceContainerFormat
+                ) {
             try Task.checkCancellation()
             guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
             guard ProcessInfo.processInfo.systemUptime < deadline else {
