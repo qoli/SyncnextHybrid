@@ -1154,8 +1154,8 @@ public final class HybridPlaybackSession:
                     }
                     let range = extraction.sourceRange
                     // Same leading/trailing coverage tolerances as the PCM provider.
-                    guard audio.sourceStartSeconds <= range.lowerBound + 0.05,
-                          audio.sourceStartSeconds + audio.sourceDuration >= range.upperBound - 0.25 else {
+                    guard audio.sourceStartSeconds <= range.lowerBound + HybridFingerprintAudioCoverage.leadingTolerance,
+                          audio.sourceStartSeconds + audio.sourceDuration >= range.upperBound - HybridFingerprintAudioCoverage.trailingTolerance else {
                         throw HybridFingerprintAudioError.incompleteRange
                     }
                     return try RepeatedSegmentFingerprint.compute(

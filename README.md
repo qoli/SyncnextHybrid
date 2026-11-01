@@ -54,6 +54,10 @@ Fingerprint V2 的 bounded PCM、明確 source／coverage 失敗下的既有 AAC
 與 matcher 入口，由 session 與
 [RepeatedSegmentFingerprint.swift](Sources/SyncnextHybrid/RepeatedSegmentFingerprint.swift)
 定義。分析失敗不改變播放 route 或音軌；失敗分類與 coverage 以當前測試為準。
+PCM 取樣、AAC extraction 與指紋計算共用起點 0.05 秒／尾端 0.25 秒的 coverage
+容差；尾端缺額只使用實際樣本，不補音訊，也不放寬中間連續性檢查。
+`swift test --filter RepeatedSegmentFingerprintCoverageTests` 驗證此正式 PCM 邊界，
+涵蓋 0.232104 秒尾端缺額、容差邊界及起點／內部中斷的拒絕。
 Session 的 `fingerprintAudioPlan(for:)` 依已確認的媒體能力提供 provider 與取樣時機：
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。

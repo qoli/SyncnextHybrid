@@ -22,12 +22,6 @@ enum HybridIndependentFingerprintAudioSource: Sendable {
 }
 
 enum HybridIndependentFingerprintAudio {
-    private static let leadingCoverageTolerance = 0.05
-    /// Container duration can exceed the selected audio track because of codec
-    /// padding or edit-list rounding. This remains negligible for a 180-second
-    /// fingerprint window and is emitted as a structured diagnostic below.
-    private static let trailingCoverageTolerance = 0.25
-
     static func decode(
         source: HybridIndependentFingerprintAudioSource,
         range: Range<Double>,
@@ -388,9 +382,9 @@ enum HybridIndependentFingerprintAudio {
         let lastEnd = last.sourceTime
             + Double(last.buffer.frameLength) / last.buffer.format.sampleRate
         let coversStart =
-            first.sourceTime <= range.lowerBound + leadingCoverageTolerance
+            first.sourceTime <= range.lowerBound + HybridFingerprintAudioCoverage.leadingTolerance
         let trailingShortfall = max(0, range.upperBound - lastEnd)
-        let coversEnd = trailingShortfall <= trailingCoverageTolerance
+        let coversEnd = trailingShortfall <= HybridFingerprintAudioCoverage.trailingTolerance
         guard coversStart, coversEnd else {
             let requestedStart = String(
                 format: "%.6f",
@@ -416,7 +410,7 @@ enum HybridIndependentFingerprintAudio {
             )
             throw HybridFingerprintAudioError.incompleteRange
         }
-        if trailingShortfall > leadingCoverageTolerance {
+        if trailingShortfall > HybridFingerprintAudioCoverage.leadingTolerance {
             let requestedEnd = String(format: "%.6f", range.upperBound)
             let actualEnd = String(format: "%.6f", lastEnd)
             let acceptedShortfall = String(
@@ -425,7 +419,7 @@ enum HybridIndependentFingerprintAudio {
             )
             let acceptedTolerance = String(
                 format: "%.6f",
-                trailingCoverageTolerance
+                HybridFingerprintAudioCoverage.trailingTolerance
             )
             HybridDiagnosticEmitter.emit(
                 "SYNCNEXT_HYBRID_FINGERPRINT_COVERAGE "

@@ -296,7 +296,7 @@ public enum RepeatedSegmentFingerprint {
 
     /// Build the same format-v1 artifact directly from Aether's cache-backed
     /// PCM batch. This removes the intermediate AAC/WAV artifact and preserves
-    /// the requested source-time range exactly.
+    /// source timing without padding an accepted trailing shortfall.
     public static func compute(
         audioBatch: HybridFingerprintAudioBatch,
         label: String,
@@ -317,7 +317,7 @@ public enum RepeatedSegmentFingerprint {
         }
 
         let sourceRange = audioBatch.sourceRange
-        let tolerance = 0.05
+        let tolerance = HybridFingerprintAudioCoverage.leadingTolerance
         var coveredThrough = sourceRange.lowerBound
         var relevantBufferCount = 0
         var samples: [Float] = []
@@ -414,7 +414,9 @@ public enum RepeatedSegmentFingerprint {
                 break
             }
         }
-        guard coveredThrough >= sourceRange.upperBound - tolerance else {
+        // The trailing allowance applies only after consuming the batch; it
+        // must not relax gap checks or stop conversion earlier.
+        guard coveredThrough >= sourceRange.upperBound - HybridFingerprintAudioCoverage.trailingTolerance else {
             throw RepeatedSegmentFingerprintError.discontinuousAudio
         }
         return try compute(

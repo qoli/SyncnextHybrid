@@ -80,6 +80,15 @@ public struct HybridFingerprintAudioBatch: @unchecked Sendable {
     public let decodeSeconds: Double
 }
 
+/// Shared by audio acquisition and fingerprint computation. A small tail
+/// shortfall does not relax leading coverage or internal continuity checks.
+enum HybridFingerprintAudioCoverage {
+    static let leadingTolerance = 0.05
+    /// Container duration can exceed the selected audio track because of codec
+    /// padding or edit-list rounding. Use the available samples without padding.
+    static let trailingTolerance = 0.25
+}
+
 public struct HybridFingerprintAudioProgress: Sendable, Equatable {
     public enum Phase: String, Sendable, Equatable {
         case waitingForPlayback
