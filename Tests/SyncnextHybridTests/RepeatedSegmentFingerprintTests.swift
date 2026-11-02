@@ -141,6 +141,60 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
         XCTAssertEqual(match.leftRange.upperBound, 100.1, accuracy: 0.4)
     }
 
+    func testPairwiseMatchTracksLinearClockDriftInBothDirections() throws {
+        for scale in [0.996, 1.004] {
+            var generator = Generator(state: 0xD21F_70A3_91BC_650E)
+            let previousValues = (0..<1_800).map { _ in generator.next() }
+            var currentValues = (0..<1_800).map { _ in generator.next() }
+            for right in 100..<950 {
+                let left = Int((scale * Double(right - 100) + 50).rounded())
+                currentValues[right] = previousValues[left] ^ 0xFFF
+            }
+            let previous = RepeatedSegmentFingerprintArtifact(
+                label: "drift-previous-\(scale)", sourceStartSeconds: 0,
+                fingerprints: previousValues,
+                validity: [Bool](repeating: true, count: previousValues.count)
+            )
+            let current = RepeatedSegmentFingerprintArtifact(
+                label: "drift-current-\(scale)", sourceStartSeconds: 0,
+                fingerprints: currentValues,
+                validity: [Bool](repeating: true, count: currentValues.count)
+            )
+            let match = try XCTUnwrap(RepeatedSegmentFingerprint.findBestPairwiseMatch(
+                previous: previous, current: current
+            ))
+            XCTAssertEqual(match.rightRange.lowerBound, 10, accuracy: 0.4)
+            XCTAssertEqual(match.rightRange.upperBound, 95, accuracy: 0.4)
+            XCTAssertEqual(match.alignmentTimeScale, scale, accuracy: 0.001)
+        }
+    }
+
+    func testDriftAlignmentDoesNotBridgeDifferentAudioBetweenRepeatedSections() throws {
+        var generator = Generator(state: 0x814E_720F_6A93_C50B)
+        let previousValues = (0..<1_800).map { _ in generator.next() }
+        var currentValues = (0..<1_800).map { _ in generator.next() }
+        for right in Array(0..<300) + Array(400..<900) {
+            let left = Int((0.996 * Double(right) + 10).rounded())
+            currentValues[right] = previousValues[left] ^ 0xFFF
+        }
+        let previous = RepeatedSegmentFingerprintArtifact(
+            label: "drift-gap-previous", sourceStartSeconds: 2_500,
+            fingerprints: previousValues,
+            validity: [Bool](repeating: true, count: previousValues.count)
+        )
+        let current = RepeatedSegmentFingerprintArtifact(
+            label: "drift-gap-current", sourceStartSeconds: 2_600,
+            fingerprints: currentValues,
+            validity: [Bool](repeating: true, count: currentValues.count)
+        )
+        let match = try XCTUnwrap(RepeatedSegmentFingerprint.findBestPairwiseMatch(
+            previous: previous, current: current
+        ))
+        XCTAssertEqual(match.rightRange.lowerBound, 2_640, accuracy: 0.4)
+        XCTAssertEqual(match.rightRange.upperBound, 2_690, accuracy: 0.4)
+        XCTAssertGreaterThanOrEqual(match.leftRange.lowerBound, 2_500)
+    }
+
     func testPulledEpisode20And21EnvelopesWhenProvided() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let previousPath = environment["FINGERPRINT_EP20_ENVELOPE"],

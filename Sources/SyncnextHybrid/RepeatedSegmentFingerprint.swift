@@ -57,6 +57,10 @@ public struct RepeatedSegmentFingerprintArtifact: Codable, Sendable, Equatable {
 public struct RepeatedSegmentMatch: Sendable, Equatable {
     public let score: Double
     public let nullThreshold: Double
+    public let meanSimilarity: Double
+    public let aggregateEvidence: Double
+    /// Reference time per unit of current time; 1 is a fixed-offset match.
+    public let alignmentTimeScale: Double
     public let leftRange: Range<Double>
     public let rightRange: Range<Double>
     public let seedDuration: Double
@@ -72,7 +76,8 @@ public enum RepeatedSegmentFingerprintError: Error, Sendable, Equatable {
 }
 
 /// Production port of AudioFingerprintExplorer's format-v1 fingerprint and
-/// pairwise diagonal matcher. A match always has exactly two inputs; cycle
+/// pairwise matcher with seed-supported linear clock alignment. A match always
+/// has exactly two inputs; cycle
 /// consistency from the research harness is deliberately not part of this API.
 public enum RepeatedSegmentFingerprint {
     public static func compute(
@@ -474,6 +479,10 @@ public enum RepeatedSegmentFingerprint {
         var validity = [Bool](repeating: false, count: maximumLength)
         var prefixSums = [Double](repeating: 0, count: maximumLength + 1)
         var prefixCounts = [Int](repeating: 0, count: maximumLength + 1)
+        var anchors = [AlignmentAnchor?](
+            repeating: nil,
+            count: (current.fingerprints.count - windowFrames) / windowFrames + 1
+        )
 
         for offset in minimumOffset...maximumOffset {
             let leftStart = max(0, -offset)
@@ -514,6 +523,20 @@ public enum RepeatedSegmentFingerprint {
                     prefixSums[local + windowFrames] - prefixSums[local]
                 ) / Double(validCount)
                 guard score >= null.threshold else { continue }
+                let currentStart = rightStart + local
+                if currentStart.isMultiple(of: windowFrames) {
+                    let anchorIndex = currentStart / windowFrames
+                    if score > (anchors[anchorIndex]?.score ?? -.infinity) {
+                        // A constant-offset seed measures alignment at the
+                        // window's center, not at its leading sample.
+                        let center = Double(windowFrames - 1) / 2
+                        anchors[anchorIndex] = AlignmentAnchor(
+                            left: Double(leftStart + local) + center,
+                            right: Double(currentStart) + center,
+                            score: score
+                        )
+                    }
+                }
                 if let lastQualifyingStart,
                    local - lastQualifyingStart > maximumSeedGapFrames,
                    let completedCluster = clusterBest {
@@ -569,24 +592,39 @@ public enum RepeatedSegmentFingerprint {
                     meanSimilarity: meanSimilarity,
                     aggregateEvidence: aggregateEvidence,
                     leftStart: leftStart + supportedRange.lowerBound,
+                    leftEnd: leftStart + supportedRange.upperBound,
                     rightStart: rightStart + supportedRange.lowerBound,
                     frameCount: frameCount,
-                    validFraction: Double(seed.validCount) / Double(windowFrames)
+                    validFraction: Double(seed.validCount) / Double(windowFrames),
+                    alignmentTimeScale: 1
                 )
                 if isBetter(candidate, than: bestCandidate) {
                     bestCandidate = candidate
                 }
             }
         }
+        if let alignment = fitLinearAlignment(anchors.compactMap { $0 }, null: null),
+           let candidate = alignedCandidate(
+               previous: previous,
+               current: current,
+               alignment: alignment,
+               windowFrames: windowFrames,
+               null: null
+           ), isBetter(candidate, than: bestCandidate) {
+            bestCandidate = candidate
+        }
         guard let best = bestCandidate else { return nil }
         return RepeatedSegmentMatch(
             score: best.score,
             nullThreshold: null.threshold,
+            meanSimilarity: best.meanSimilarity,
+            aggregateEvidence: best.aggregateEvidence,
+            alignmentTimeScale: best.alignmentTimeScale,
             leftRange: (
                 previous.sourceStartSeconds + Double(best.leftStart) * hop
             )..<(
                 previous.sourceStartSeconds
-                    + Double(best.leftStart + best.frameCount) * hop
+                    + Double(best.leftEnd) * hop
             ),
             rightRange: (
                 current.sourceStartSeconds + Double(best.rightStart) * hop
@@ -610,9 +648,155 @@ public enum RepeatedSegmentFingerprint {
         let meanSimilarity: Double
         let aggregateEvidence: Double
         let leftStart: Int
+        let leftEnd: Int
         let rightStart: Int
         let frameCount: Int
         let validFraction: Double
+        let alignmentTimeScale: Double
+    }
+
+    private struct AlignmentAnchor {
+        let left: Double
+        let right: Double
+        let score: Double
+    }
+
+    private struct LinearAlignment {
+        let scale: Double
+        let offset: Double
+
+        func leftIndex(for rightIndex: Int) -> Int {
+            Int((scale * Double(rightIndex) + offset).rounded())
+        }
+    }
+
+    /// Fit drift from independently admitted, non-overlapping seed windows.
+    /// A third anchor makes the model overdetermined; one frame of residual
+    /// accounts for the timestamp quantization of two fingerprint grids.
+    private static func fitLinearAlignment(
+        _ anchors: [AlignmentAnchor],
+        null: NullDistribution
+    ) -> LinearAlignment? {
+        guard anchors.count >= 3 else { return nil }
+        var bestInliers: [AlignmentAnchor] = []
+        var bestWeight = 0.0
+        for first in 0..<(anchors.count - 1) {
+            for second in (first + 1)..<anchors.count {
+                let a = anchors[first]
+                let b = anchors[second]
+                let scale = (b.left - a.left) / (b.right - a.right)
+                guard scale > 0 else { continue }
+                let offset = a.left - scale * a.right
+                let inliers = anchors.filter {
+                    abs(scale * $0.right + offset - $0.left) <= 1
+                }
+                guard inliers.count >= 3 else { continue }
+                let weight = inliers.reduce(0) { $0 + $1.score - null.mean }
+                if weight > bestWeight {
+                    bestWeight = weight
+                    bestInliers = inliers
+                }
+            }
+        }
+        guard !bestInliers.isEmpty else { return nil }
+        let meanRight = bestInliers.reduce(0) {
+            $0 + $1.right * ($1.score - null.mean)
+        } / bestWeight
+        let meanLeft = bestInliers.reduce(0) {
+            $0 + $1.left * ($1.score - null.mean)
+        } / bestWeight
+        var covariance = 0.0
+        var variance = 0.0
+        for anchor in bestInliers {
+            let weight = anchor.score - null.mean
+            let right = anchor.right - meanRight
+            covariance += weight * right * (anchor.left - meanLeft)
+            variance += weight * right * right
+        }
+        guard variance > 0 else { return nil }
+        let scale = covariance / variance
+        guard scale > 0,
+              let first = bestInliers.first,
+              let last = bestInliers.last,
+              // A change smaller than a grid frame is not measurable drift.
+              abs(scale - 1) * (last.right - first.right) >= 1 else {
+            return nil
+        }
+        return LinearAlignment(scale: scale, offset: meanLeft - scale * meanRight)
+    }
+
+    private static func alignedCandidate(
+        previous: RepeatedSegmentFingerprintArtifact,
+        current: RepeatedSegmentFingerprintArtifact,
+        alignment: LinearAlignment,
+        windowFrames: Int,
+        null: NullDistribution
+    ) -> Candidate? {
+        let count = current.fingerprints.count
+        let minimumValid = Int(ceil(Double(windowFrames) * 0.8))
+        var similarities = [Double](repeating: 0, count: count)
+        var validity = [Bool](repeating: false, count: count)
+        var sums = [Double](repeating: 0, count: count + 1)
+        var counts = [Int](repeating: 0, count: count + 1)
+        for right in 0..<count {
+            let left = alignment.leftIndex(for: right)
+            if previous.fingerprints.indices.contains(left),
+               previous.validity[left], current.validity[right] {
+                validity[right] = true
+                similarities[right] = 1 - Double(
+                    (previous.fingerprints[left] ^ current.fingerprints[right]).nonzeroBitCount
+                ) / 64
+            }
+            sums[right + 1] = sums[right] + similarities[right]
+            counts[right + 1] = counts[right] + (validity[right] ? 1 : 0)
+        }
+        // Keep one best seed per seed-width block. Qualifying ten-second
+        // windows can overlap across a real audio break, so a single best seed
+        // for the whole cluster would hide a later, longer supported interval.
+        var seeds = [SeedCandidate?](
+            repeating: nil, count: (count - windowFrames) / windowFrames + 1
+        )
+        for start in 0...(count - windowFrames) {
+            let validCount = counts[start + windowFrames] - counts[start]
+            guard validCount >= minimumValid else { continue }
+            let score = (sums[start + windowFrames] - sums[start]) / Double(validCount)
+            guard score >= null.threshold else { continue }
+            let bucket = start / windowFrames
+            if score > (seeds[bucket]?.score ?? -.infinity) {
+                seeds[bucket] = SeedCandidate(score: score, localStart: start, validCount: validCount)
+            }
+        }
+        var best: Candidate?
+        for seed in seeds.compactMap({ $0 }) {
+            guard let range = refineSupportedRange(
+                similarities: similarities,
+                validity: validity,
+                seedStart: seed.localStart,
+                seedWindowFrames: windowFrames,
+                seedScore: seed.score,
+                hop: current.configuration.hopSeconds,
+                null: null
+            ), range.count >= windowFrames else { continue }
+            let leftStart = alignment.leftIndex(for: range.lowerBound)
+            let leftEnd = alignment.leftIndex(for: range.upperBound - 1) + 1
+            guard leftEnd - leftStart >= windowFrames else { continue }
+            let validCount = counts[range.upperBound] - counts[range.lowerBound]
+            guard validCount >= minimumValid else { continue }
+            let mean = (sums[range.upperBound] - sums[range.lowerBound]) / Double(validCount)
+            let candidate = Candidate(
+                score: seed.score,
+                meanSimilarity: mean,
+                aggregateEvidence: (mean - null.mean) * sqrt(Double(validCount)),
+                leftStart: leftStart,
+                leftEnd: leftEnd,
+                rightStart: range.lowerBound,
+                frameCount: range.count,
+                validFraction: Double(seed.validCount) / Double(windowFrames),
+                alignmentTimeScale: alignment.scale
+            )
+            if isBetter(candidate, than: best) { best = candidate }
+        }
+        return best
     }
 
     private static func isBetter(

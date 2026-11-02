@@ -58,6 +58,14 @@ PCM 取樣、AAC extraction 與指紋計算共用起點 0.05 秒／尾端 0.25 �
 容差；尾端缺額只使用實際樣本，不補音訊，也不放寬中間連續性檢查。
 `swift test --filter RepeatedSegmentFingerprintCoverageTests` 驗證此正式 PCM 邊界，
 涵蓋 0.232104 秒尾端缺額、容差邊界及起點／內部中斷的拒絕。
+matcher 從通過既有統計門檻的非重疊種子視窗估計線性時間漂移，
+在原有指紋格點上重新對齊；固定偏移與漂移候選按完整區間的支持證據比較。
+不補長、跨過真正的音訊中斷或設定固定片頭秒數。回傳值另保留整段相似度、
+累積證據與 `alignmentTimeScale`，供 App 比較 N−1／N−2 參考及記錄判定。
+`swift test --filter RepeatedSegmentFingerprintTests` 包含雙向時間漂移與中斷回歸；
+設定 `FINGERPRINT_INTRO_FIXTURES` 為 App 凍結的 MDD 片頭目錄後，
+`swift test --filter RepeatedSegmentIntroOfflineTests` 會經正式 HLS decoder、PCM 與 matcher
+核對已人工確認的片頭音樂案例，輸出 `production-analysis.json`。
 Session 的 `fingerprintAudioPlan(for:)` 依已確認的媒體能力提供 provider 與取樣時機：
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。
