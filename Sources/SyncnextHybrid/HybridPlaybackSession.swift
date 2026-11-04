@@ -17,6 +17,13 @@ public final class HybridPlaybackSession:
     public let request: HybridPlaybackRequest
     public let events: AsyncStream<HybridPlaybackEvent>
 
+    private let userAudioSelectionSubject = PassthroughSubject<HybridMediaTrack, Never>()
+
+    /// Explicit Audio menu actions only; programmatic restoration never emits.
+    public var userAudioSelections: AnyPublisher<HybridMediaTrack, Never> {
+        userAudioSelectionSubject.eraseToAnyPublisher()
+    }
+
     private let userSubtitleSelectionSubject = PassthroughSubject<HybridMediaTrack?, Never>()
 
     /// Explicit UI actions only, including selecting Off when already off.
@@ -857,7 +864,7 @@ public final class HybridPlaybackSession:
         }
     }
 
-    public func selectAudioTrack(id: Int) {
+    public func selectAudioTrack(id: Int, origin: HybridAudioSelectionOrigin = .programmatic) {
         let operation = UUID().uuidString
         let trackExists = engine.audioTracks.contains(where: { $0.id == id })
         HybridDiagnosticEmitter.emit(
@@ -868,6 +875,11 @@ public final class HybridPlaybackSession:
         )
         guard !stopped, trackExists else {
             return
+        }
+        // Notify before engine publishers can race the host's saved choice.
+        if case .user = origin,
+           let track = Self.mapTracks(engine.audioTracks, kind: .audio).first(where: { $0.id == id }) {
+            userAudioSelectionSubject.send(track)
         }
         HybridAudioReloadDiagnostics.install()
         logPlaybackClock("audio-selection-requested", operation: operation)
@@ -2348,7 +2360,7 @@ public final class HybridPlaybackSession:
                             + "event=menu-invoked targetTrack=\(track.id)"
                     )
                     Task { @MainActor in
-                        self?.selectAudioTrack(id: track.id)
+                        self?.selectAudioTrack(id: track.id, origin: .user)
                     }
                 }
             }
@@ -2555,7 +2567,8 @@ public final class HybridPlaybackSession:
                 isForced: $0.isForced,
                 isHearingImpaired: $0.isHearingImpaired,
                 isCommentary: $0.isCommentary,
-                isExternal: $0.isExternal
+                isExternal: $0.isExternal,
+                isVisualImpaired: $0.isVisualImpaired
             )
         }
     }

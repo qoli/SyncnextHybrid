@@ -108,6 +108,11 @@ public struct HybridPlaybackRequest: Sendable, Equatable {
     }
 }
 
+public enum HybridAudioSelectionOrigin: Sendable {
+    case programmatic
+    case user
+}
+
 public enum HybridSubtitleSelectionOrigin: Sendable {
     case programmatic
     case user
@@ -130,6 +135,7 @@ public struct HybridMediaTrack: Identifiable, Sendable, Equatable {
     public let isHearingImpaired: Bool
     public let isCommentary: Bool
     public let isExternal: Bool
+    public let isVisualImpaired: Bool
 
     public init(
         id: Int,
@@ -142,7 +148,8 @@ public struct HybridMediaTrack: Identifiable, Sendable, Equatable {
         isForced: Bool,
         isHearingImpaired: Bool,
         isCommentary: Bool,
-        isExternal: Bool = false
+        isExternal: Bool = false,
+        isVisualImpaired: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -155,6 +162,7 @@ public struct HybridMediaTrack: Identifiable, Sendable, Equatable {
         self.isHearingImpaired = isHearingImpaired
         self.isCommentary = isCommentary
         self.isExternal = isExternal
+        self.isVisualImpaired = isVisualImpaired
     }
 }
 
