@@ -119,9 +119,11 @@ Server 的 rate、playhead 或 seek generation。
        -> HLS Proxy 建立權威 generation 與 waitingToPlay
        -> 同一個 AVKit callback 直接把 seek 發送給 AetherEngine
   -> AVKit 對 Proxy AVPlayer 執行 client seek
-  -> HLS Proxy 暫扣目標 segment，等待相同 generation 的 Aether 回應
+  -> HLS Proxy 暫扣新供應的目標 segment，等待相同 generation 的 Aether 回應
   -> AetherEngine seek 返回
   -> HLS Proxy acknowledge generation 並恢復 segment 供應
+  -> Server 收齊本代 Aether 回應與落點證據後解除 seek 等待：
+       本代 HTTP segment resolved，或已完成 client seek 的實際快取落點
   -> HLS Proxy 依權威 rate 決定 Aether 應恢復 Play 或維持 Pause
   -> AVKit 自動離開 waitingToPlay
 ```
@@ -158,13 +160,18 @@ AVKit UI seek 呼叫 `prepareSeek(..., emitsSeekRequest: false)`：
 
 ### 4.4 `willResumePlaybackAfterUserNavigatedFrom` 的責任
 
-此 callback 只作為 AVKit client seek 已完成的觀測點，主要服務 diagnostics 與
-UI 截圖驗收。它不得：
+此 callback 是 AVKit client seek 已完成的觀測點。與程式式 seek completion
+共用同一入口，向 Server 轉交 generation、實際 client 位置與 `loadedTimeRanges`；
+是否足以確認快取落點由 Server 判定。它不得：
 
 - 再建立一次 Server seek；
 - 再向 Aether 發送 seek；
 - 強制 Play；
-- 清除或偽造 `waitingToPlay`。
+- 直接清除或偽造 `waitingToPlay`。
+
+`seek(to:)` 返回表示 renderer 操作已回應，並不保證 AVPlayer client seek 已完成。
+暫停中的關鍵幀落點可能尚無前向材料；明確 Play 後才有材料讓 client 完成定位。
+驗收不得將診斷用的 client completion 當成發送使用者 Play 意圖的前提。
 
 ### 4.5 片尾 seek、完成與重播
 
@@ -219,9 +226,16 @@ AVKit 的 transport UI 只能從它自己的 `AVPlayer`／HLS 狀態推導。Pro
 
 不得在 App layer 偽造一套與 AVPlayer 不一致的 waiting state。
 
-### 5.1 已知問題：重複 seek 命中載體快取
+AVPlayer 已持有的載體分片不會重新經過 HTTP gate。此時 Server 另接受已完成
+client seek 的落點證據：目前 generation、實際位置仍在既有的一個分片落點窗口內，
+而且 `loadedTimeRanges` 覆蓋該位置。它仍須等到同 generation 的 Aether 回應，
+兩個事件可任意先後；舊代證據、未載入區域或錯誤位置不能解除等待。
+確認只解除 Server 的 pending seek，不抄寫 AVPlayer 時間、不偽造 resolved
+segment、不改 rate，也不越過 material 的 waiting／failed／ended 狀態。
 
-[Hybrid #1](https://github.com/qoli/SyncnextHybrid/issues/1)（2026-11-05，已確認、未修復）：
+### 5.1 重複 seek 命中載體快取（Hybrid #1）
+
+[Hybrid #1](https://github.com/qoli/SyncnextHybrid/issues/1) 的原始問題（2026-11-05 確認）：
 AVPlayer 已快取目標附近的 Proxy 分片時，連續 seek 到相同位置可能令影片繼續
 前進，但 AVKit 控制列停住並顯示等待。相同 App／Hybrid authority 與 AV1 軟解
 fixture 在 tvOS 26.6.1 HDMI 實機的 Aether 7.52.0、7.56.0 都可重現；單次 seek
@@ -230,15 +244,26 @@ fixture 在 tvOS 26.6.1 HDMI 實機的 Aether 7.52.0、7.56.0 都可重現；單
 每次 seek 都建立新 generation 並清空 resolved segments；pending landing 只接受
 目前 generation、目標附近一個分片內的新請求。AVPlayer 重用快取後可能不再請求
 這個窗口，較遠的新請求又不能確認落點，令 authority 維持 `waitingToPlay`。
-後續供應受凍結的 authority playhead 加 3 秒限制，形成循環等待。client seek
-completion 目前只恢復 rate，未向 Server 確認 cached landing。
+後續供應受凍結的 authority playhead 加 3 秒限制，形成循環等待。原先 client seek
+completion 只恢復 rate，未向 Server 確認 cached landing。
 
 實機同位置快取 case 觀察 10 秒，7.52 renderer／AVKit 分別前進 10.500／0.228 秒，
 7.56 為 10.250／0.526 秒。原始連續 seek 情境受快取時序影響，偶爾通過不代表修復。
-修復須由 Server 處理可驗證、同 generation 的 cached landing，保留 engine
-acknowledge 與 stale-generation 拒絕；不得只放寬窗口或以 renderer clock 覆寫
-authority。具體重現、版本對照及完成條件由上述 issue 追蹤。AirPlay 與其他 codec
-的受影響範圍未驗。Aether 版本更新不改變這項已知問題的狀態。
+修復由 Server 處理上節定義的 cached landing，並保留 engine acknowledge 與
+stale-generation 拒絕；供應窗口及 clock authority 不變。回歸入口為
+`HybridHLSProxyCachedSeekTests`（事件先後、舊代拒絕、缺少快取、暫停及片尾），
+及 App `ProxySeekCause` 的 `original`／`repeat`／`single`／`distinct`／`sequence`
+實機 case；`sequence` 以 `--proxy-seek-targets` 接收明確目標，不改原有進度斷言。
+上游版本對照與原始失敗由上述 issue 追蹤；本次修復只在 Hybrid，不新增 upstream Patch。
+
+2026-11-05 書房電視 tvOS 26.6.1 實測：同位置快取 seek 的控制列在 10 秒內
+由修復前的 0.528 秒提升至 9.119 秒，renderer 同期前進 10.250 秒；原有
+「兩端至少前進 8 秒」斷言不變。原始連續 seek、單次／不同位置對照、短片六步
+及 20 分鐘 AV1 的六步前後 seek 均通過；長片涵蓋向前逾 15 分鐘、向後逾
+10 分鐘及同位置重複定位，每步另驗暫停意圖與 8／10 秒進度。native H.264／PGS、
+音訊 tap、fingerprint PCM 及停止回歸亦通過。完整 Hybrid 測試 173 項（4 項外部
+fixture 略過）、Device／Simulator 建置通過。AirPlay 未驗，不由時鐘或 PCM
+推定實際可聞輸出。原始失敗、驗收順序修正與本輪 Log／報告留在私人 artifacts。
 
 ## 6. 已證明錯誤的方案
 

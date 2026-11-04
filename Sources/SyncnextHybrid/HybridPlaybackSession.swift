@@ -1927,6 +1927,7 @@ public final class HybridPlaybackSession:
             completedProxyClientSeekGenerations.remove(oldest)
         }
         guard generation == proxyTimeline.state.seekGeneration else { return }
+        proxyTimeline.recordClientSeekLanding(generation: generation)
         if pendingProxyClientSeekGeneration == generation {
             pendingProxyClientSeekGeneration = nil
         }

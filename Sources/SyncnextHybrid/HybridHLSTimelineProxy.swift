@@ -125,6 +125,8 @@ struct HybridHLSTimelineAuthority {
     private(set) var seekGeneration: UInt64 = 0
     private var resolvedSegmentIndices: [Int] = []
     private var pendingSeekGeneration: UInt64?
+    private var seekResponseGeneration: UInt64?
+    private var clientLandingGeneration: UInt64?
     private var materialPhase: HybridHLSProxySupplyPhase = .flowing
     private var ready = false
     private var lastUptime: TimeInterval
@@ -159,6 +161,8 @@ struct HybridHLSTimelineAuthority {
         advance(to: uptime)
         seekGeneration &+= 1
         pendingSeekGeneration = seekGeneration
+        seekResponseGeneration = nil
+        clientLandingGeneration = nil
         resolvedSegmentIndices.removeAll(keepingCapacity: true)
         currentTime = min(duration, max(0, seconds))
         if materialPhase == .ended {
@@ -166,6 +170,45 @@ struct HybridHLSTimelineAuthority {
         }
         lastUptime = uptime
         return seekGeneration
+    }
+
+    @discardableResult
+    mutating func acknowledgeSeekResponse(
+        generation: UInt64,
+        uptime: TimeInterval
+    ) -> Bool {
+        advance(to: uptime)
+        guard generation == seekGeneration else { return false }
+        seekResponseGeneration = generation
+        if pendingSeekGeneration == generation,
+           clientLandingGeneration == generation {
+            pendingSeekGeneration = nil
+        }
+        return true
+    }
+
+    /// AVPlayer can finish a seek using carrier data it already holds. This
+    /// is landing evidence for the Server, not a replacement playback clock.
+    @discardableResult
+    mutating func recordClientSeekLanding(
+        generation: UInt64,
+        position: Double,
+        loadedRanges: [Range<Double>],
+        uptime: TimeInterval
+    ) -> Bool {
+        advance(to: uptime)
+        guard pendingSeekGeneration == generation,
+              position.isFinite,
+              abs(position - currentTime)
+                <= HybridHLSProxyPlaylist.segmentDuration,
+              loadedRanges.contains(where: { $0.contains(position) }) else {
+            return false
+        }
+        clientLandingGeneration = generation
+        if seekResponseGeneration == generation {
+            pendingSeekGeneration = nil
+        }
+        return true
     }
 
     @discardableResult
@@ -618,7 +661,7 @@ final class HybridHLSTimelineProxy {
 
     /// Allows destination material to leave the Server only when Aether
     /// answers the same operation. The authoritative clock stays waiting
-    /// until the Server resolves that generation's first segment.
+    /// until the Server has HTTP or verified cached-client landing evidence.
     @discardableResult
     func acknowledgeSeekResponse(generation: UInt64) -> Bool {
         let acknowledged = server.acknowledgeSeekResponse(
@@ -631,6 +674,32 @@ final class HybridHLSTimelineProxy {
         )
         emitStateIfChanged()
         return acknowledged
+    }
+
+    @discardableResult
+    func recordClientSeekLanding(generation: UInt64) -> Bool {
+        let position = player.currentTime().seconds
+        let ranges = player.currentItem?.loadedTimeRanges.compactMap {
+            value -> Range<Double>? in
+            let range = value.timeRangeValue
+            let start = range.start.seconds
+            let end = CMTimeRangeGetEnd(range).seconds
+            guard start.isFinite, end.isFinite, start < end else { return nil }
+            return start..<end
+        } ?? []
+        let accepted = server.recordClientSeekLanding(
+            generation: generation,
+            position: position,
+            loadedRanges: ranges
+        )
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_PROXY_DEMAND "
+                + "event=client-landing generation=\(generation) "
+                + "accepted=\(accepted) position=\(position) "
+                + "loadedRanges=\(ranges)"
+        )
+        emitStateIfChanged()
+        return accepted
     }
 
     @discardableResult
@@ -880,6 +949,32 @@ private final class HybridHLSTimelineAuthorityStore:
         return completed
     }
 
+    func acknowledgeSeekResponse(generation: UInt64) -> Bool {
+        lock.lock()
+        let accepted = authority.acknowledgeSeekResponse(
+            generation: generation,
+            uptime: ProcessInfo.processInfo.systemUptime
+        )
+        lock.unlock()
+        return accepted
+    }
+
+    func recordClientSeekLanding(
+        generation: UInt64,
+        position: Double,
+        loadedRanges: [Range<Double>]
+    ) -> Bool {
+        lock.lock()
+        let accepted = authority.recordClientSeekLanding(
+            generation: generation,
+            position: position,
+            loadedRanges: loadedRanges,
+            uptime: ProcessInfo.processInfo.systemUptime
+        )
+        lock.unlock()
+        return accepted
+    }
+
     func update(material: HybridHLSProxyMaterial) {
         lock.lock()
         authority.update(
@@ -1052,9 +1147,24 @@ private final class HybridHLSProxyServer: @unchecked Sendable {
 
     func acknowledgeSeekResponse(generation: UInt64) -> Bool {
         // Aether's response makes the destination material eligible for
-        // release. The authoritative clock remains waiting until this Server
-        // actually resolves the first segment for the same generation.
-        return supply.acknowledgeSeekResponse(generation: generation)
+        // release. Landing can already be confirmed from AVPlayer's cache;
+        // otherwise the Server still waits for its first resolved segment.
+        guard supply.acknowledgeSeekResponse(generation: generation) else {
+            return false
+        }
+        return authority.acknowledgeSeekResponse(generation: generation)
+    }
+
+    func recordClientSeekLanding(
+        generation: UInt64,
+        position: Double,
+        loadedRanges: [Range<Double>]
+    ) -> Bool {
+        authority.recordClientSeekLanding(
+            generation: generation,
+            position: position,
+            loadedRanges: loadedRanges
+        )
     }
 
     func completeSeek(generation: UInt64) -> Bool {
