@@ -1,5 +1,4 @@
 diff --git a/Sources/AetherEngine/Decoder/EmbeddedSubtitleDecoder.swift b/Sources/AetherEngine/Decoder/EmbeddedSubtitleDecoder.swift
-index 6cb4293f..0adcc4e9 100644
 --- a/Sources/AetherEngine/Decoder/EmbeddedSubtitleDecoder.swift
 +++ b/Sources/AetherEngine/Decoder/EmbeddedSubtitleDecoder.swift
 @@ -1,5 +1,7 @@
@@ -10,17 +9,17 @@ index 6cb4293f..0adcc4e9 100644
  import Compression
  import AetherLibavcodec
  import AetherLibavformat
-@@ -622,7 +624,8 @@ final class EmbeddedSubtitleDecoder {
+@@ -637,7 +639,8 @@
  
      /// Render a PGS/DVB/HDMV bitmap rect into a CGImage with normalised position.
      /// Palette from libavcodec is 32-bit with alpha in the high byte and BGR below ([B,G,R,A] on little-endian);
 -    /// rewritten to RGBA for CGImage's premultipliedLast. Internal for unit tests (#146).
 +    /// rewritten to premultiplied RGBA, then retained losslessly with deferred pixel decoding.
 +    /// Internal for unit tests (#146).
+     /// `reportedCanvas` replaces `canvasSize` when the plane's shape differs from its pixel grid (AE#971, DVB).
      static func imageForSubtitleRect(
          _ rect: UnsafeMutablePointer<AVSubtitleRect>,
-         videoWidth: Int,
-@@ -724,8 +727,40 @@ final class EmbeddedSubtitleDecoder {
+@@ -741,8 +744,40 @@
              position = CGRect(x: 0.1, y: 0.8, width: 0.8, height: 0.15)
          }
  
@@ -30,7 +29,7 @@ index 6cb4293f..0adcc4e9 100644
 +            return nil
 +        }
 +        return SubtitleImage(cgImage: retained.image, position: position,
-                              canvasSize: CGSize(width: Int(videoWidth), height: Int(videoHeight)),
+                              canvasSize: reportedCanvas ?? CGSize(width: Int(videoWidth), height: Int(videoHeight)),
 -                             isForced: (r.flags & AV_SUBTITLE_FLAG_FORCED) != 0)
 +                             isForced: (r.flags & AV_SUBTITLE_FLAG_FORCED) != 0,
 +                             encodedBackingBytes: retained.encodedByteCount)
@@ -64,10 +63,9 @@ index 6cb4293f..0adcc4e9 100644
      }
  }
 diff --git a/Sources/AetherEngine/PlayerState.swift b/Sources/AetherEngine/PlayerState.swift
-index 18ddee64..a4844428 100644
 --- a/Sources/AetherEngine/PlayerState.swift
 +++ b/Sources/AetherEngine/PlayerState.swift
-@@ -1606,7 +1606,9 @@ extension SubtitleCue: Equatable {
+@@ -1727,7 +1727,9 @@
      }
  }
  
@@ -78,15 +76,16 @@ index 18ddee64..a4844428 100644
  public struct SubtitleImage: @unchecked Sendable {
      public let cgImage: CGImage
      public let position: CGRect
-@@ -1619,12 +1621,17 @@ public struct SubtitleImage: @unchecked Sendable {
+@@ -1743,12 +1745,17 @@
      /// AV_SUBTITLE_FLAG_FORCED from the decoded rect (#146): the disc authored this object as a
      /// forced caption (sign / foreign-dialogue overlay shown even with subtitles off).
      public let isForced: Bool
+-
+-    public init(cgImage: CGImage, position: CGRect, canvasSize: CGSize = .zero, isForced: Bool = false) {
 +    /// Known compressed provider storage, when the decoder retains a lossless encoded image.
 +    /// This excludes ImageIO/CGImage overhead and temporary pixels used while drawing.
 +    public let encodedBackingBytes: Int?
- 
--    public init(cgImage: CGImage, position: CGRect, canvasSize: CGSize = .zero, isForced: Bool = false) {
++
 +    public init(cgImage: CGImage, position: CGRect, canvasSize: CGSize = .zero, isForced: Bool = false,
 +                encodedBackingBytes: Int? = nil) {
          self.cgImage = cgImage
@@ -98,10 +97,9 @@ index 18ddee64..a4844428 100644
  }
  
 diff --git a/Tests/AetherEngineTests/Issue628PGSOffMainDecodeTests.swift b/Tests/AetherEngineTests/Issue628PGSOffMainDecodeTests.swift
-index f167fea5..f59e3db1 100644
 --- a/Tests/AetherEngineTests/Issue628PGSOffMainDecodeTests.swift
 +++ b/Tests/AetherEngineTests/Issue628PGSOffMainDecodeTests.swift
-@@ -47,11 +47,15 @@ struct Issue628PGSOffMainDecodeTests {
+@@ -47,11 +47,15 @@
      }
  
      private static func bytes(of image: CGImage) -> [UInt8] {
@@ -124,7 +122,6 @@ index f167fea5..f59e3db1 100644
      }
 diff --git a/Tests/AetherEngineTests/SubtitleBitmapStorageTests.swift b/Tests/AetherEngineTests/SubtitleBitmapStorageTests.swift
 new file mode 100644
-index 00000000..6274dff3
 --- /dev/null
 +++ b/Tests/AetherEngineTests/SubtitleBitmapStorageTests.swift
 @@ -0,0 +1,76 @@

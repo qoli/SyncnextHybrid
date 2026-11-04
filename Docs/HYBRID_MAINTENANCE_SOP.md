@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-10-30
+更新日期：2026-11-05
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -91,10 +91,10 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - ISO MIME、prewarm metadata 及已識別光碟 URL 的處理由 7.48.0 起交還上游。
      2026-10-30 已在 [#860 補報 7.52.0 的 octet-stream 缺口](https://github.com/superuser404notfound/AetherEngine/issues/860#issuecomment-6507440925)，
      區分未修改上游的 routing 檢查與本地 Patch 的合成回歸證據。
-     依使用者 2026-10-25 要求，無副檔名加
-     `application/octet-stream` 時，從同一回應的 AVIO buffer 檢查 sector 16
-     的 ISO9660／UDF volume descriptor，再由 DiscReader 確認結構；一般媒體
-     讀後回到原始位置，不新增 HEAD／Range 探測。
+     依使用者 2026-10-25 要求補上的同回應 octet-stream ISO9660／UDF 判斷，
+     在 7.56.0 已交還上游。原有對等測試在純上游仍有兩個取消交接 case 失敗，
+     因此目前 Patch 只保留交接 DiscReader 前的 `sourceOpened`／close 檢查
+     及原測試；不保留重複 sniffing，也不新增 HEAD／Range 探測。
    - MIME 不作為有效光碟的證明；不改變 live、宣告 sequential origin、其他
      媒體格式或 Hybrid presentation。範圍與退出條件見第 8 節。
 6. `0009-audio-tap-segment-pacing.patch`
@@ -299,6 +299,35 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### AetherEngine 7.56.0 的最小相容重整（2026-11-05）
+
+決定：`Approved minimal Patch`。使用者已批准「最小 Patch 重整並繼續實測」，
+並在確認連續 seek 是 Hybrid 既有問題後，要求登記已知問題並更新最新版。
+
+- 2026-11-05 重新查核官方 Latest 為
+  [7.56.0](https://github.com/superuser404notfound/AetherEngine/releases/tag/7.56.0)，
+  從官方 remote 解析為 `76ad51a7a0a13d4844c48a90db98d6ca6abcb458`；其未修改
+  manifest 要求 FFmpegBuild 3.12.1，官方 tag 為
+  `9c87af0231fd1403654c14a0e867fe8aa43c5bea`。
+- `0001`、`0002`、`0004`、`0010` 只重定位既有責任，保留上游新增的 cache
+  parked-store reset 與 DVB `reportedCanvas`。`0007`、`0009` 內容不變。
+- `0008` 移除已由上游提供的 ISO／UDF 判斷；原測試在純上游的兩個取消 case
+  仍失敗，故只保留六行取消交接檢查及原對等測試。待上游連取消契約也通過
+  同組測試才完整退出，不以辨識功能相似推定可刪。
+- 自動跳片精度由 Hybrid 的 `.automaticSkip` 呼叫公開 `seek(to:exact: true)`
+  保證；一般 `.position` 傳 `exact: false`，保留上游普通 seek 語意。兩者不增加
+  上游 Patch，並共用原有 native／proxy transport 與片尾意圖處理。
+- `apply-patches.sh` 只在 submodule 未初始化時執行 `submodule update`；已存在
+  的 checkout 直接依 `Versions.env` 重設。這修復了更新尚未提交時，第二次重播
+  先按 index 舊 gitlink 退版而撞上 patched worktree 的實際失敗。
+- 重複 seek 命中 AVPlayer 載體快取的時鐘停滯已在 7.52／7.56 同源實機對照
+  重現，登記為 [Hybrid #1](https://github.com/qoli/SyncnextHybrid/issues/1)。
+  此次升級不修復該問題，也不把失敗驗收改記通過；成因與完成條件見
+  [Proxy 模型第 5.1 節](AVKIT_UI_PROXY_TIMELINE_MODEL.md#51-已知問題重複-seek-命中載體快取)。
+- 書房驗收使用 HDMI。AirPlay 依使用者指示保留待驗；引擎時鐘前進不代表實際
+  聲音正常。隔離候選的 PGS、慢速來源及 native 音訊分析證據與正式 checkout
+  更新後的測試／建置／實機結果分開保存於本機 artifacts。
 
 ### AetherEngine 7.52.0 的最小相容重整（2026-10-30）
 

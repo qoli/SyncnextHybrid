@@ -44,7 +44,14 @@ validate_submodule_registration() {
 validate_submodule_registration AetherEngine "$AETHERENGINE_REMOTE"
 validate_submodule_registration FFmpegBuild "$FFMPEGBUILD_REMOTE"
 
-git -C "$ROOT" submodule update --init --recursive -- AetherEngine FFmpegBuild
+# Initialize missing checkouts only. During an uncommitted pin update the index
+# still names the previous release; updating an initialized submodule here would
+# try to roll its patched worktree back before reset_checkout selects Versions.env.
+for name in AetherEngine FFmpegBuild; do
+    case "$(git -C "$ROOT" submodule status -- "$name")" in
+        -*) git -C "$ROOT" submodule update --init --recursive -- "$name" ;;
+    esac
+done
 
 validate_checkout() {
     name=$1

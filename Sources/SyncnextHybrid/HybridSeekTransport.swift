@@ -65,7 +65,7 @@ protocol HybridSeekEngine: AnyObject {
     var duration: Double { get }
     var isLive: Bool { get }
     var hybridHasEnded: Bool { get }
-    func seek(to seconds: Double) async
+    func seek(to seconds: Double, exact: Bool) async
     func reloadAtCurrentPosition() async throws
     func pause()
     func play()
@@ -105,7 +105,9 @@ enum HybridSeekTransport {
             guard isCurrent() else { return nil }
         }
         try Task.checkCancellation()
-        await engine.seek(to: target)
+        // Segment boundaries must retain their authored position. Ordinary
+        // navigation keeps Aether's keyframe-snapped AV1 seek behavior.
+        await engine.seek(to: target, exact: intent == .automaticSkip)
         try Task.checkCancellation()
         guard isCurrent() else { return nil }
 

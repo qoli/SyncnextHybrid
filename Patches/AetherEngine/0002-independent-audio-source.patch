@@ -1,7 +1,7 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -406,7 +406,9 @@
+@@ -422,7 +422,9 @@
      var avioBytesFetched: Int64 { avioProvider?.cumulativeBytesFetched ?? 0 }
  
      // Forward-only custom sources report false.
@@ -10,9 +10,9 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
 +
 +    public init() {}
  
-     /// True when the source is a UHD Blu-ray clip whose Dolby Vision RPUs are folded in from the enhancement-layer
-     /// PID (`BluRayDolbyVisionLayers`): the video packets carry the RPU but not the enhancement layer itself.
-@@ -718,6 +720,11 @@
+     /// True when the source carries its Dolby Vision enhancement layer as a stream of its own, a UHD Blu-ray clip's
+     /// second PID (`BluRayDolbyVisionLayers`) or a second video track (`SeparateDolbyVisionLayers`): the video packets
+@@ -763,6 +765,11 @@
          }
      }
  
@@ -24,7 +24,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
      // MARK: - Open Strategies
  
      private func openLocal(url: URL) throws {
-@@ -769,6 +776,11 @@
+@@ -814,6 +821,11 @@
          let bridge = CustomIOReaderBridge(reader: reader, preservesSourcePosition: isLive)
          let inputFormat: UnsafePointer<AVInputFormat>? = formatHint.flatMap { av_find_input_format($0) }
          try openWithProvider(bridge, inputFormat: inputFormat, isLive: isLive)
@@ -36,7 +36,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
      }
  
      /// A remote disc image (ISO 9660 / UDF / BDMV) by URL extension, or an extensionless URL this
-@@ -1555,6 +1567,13 @@
+@@ -1792,6 +1804,13 @@
          return ctx.pointee.start_time
      }
  
@@ -50,7 +50,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
      /// Index of the best video stream, or -1.
      /// Clamped: av_find_best_stream returns AVERROR_STREAM_NOT_FOUND (-1381258232)
      /// on failure, not -1; normalize to -1 to avoid garbage in logs.
-@@ -1586,7 +1605,7 @@
+@@ -1823,7 +1842,7 @@
          answeredFromStreams(\.firstAudioStreamIndexByType) { Self.firstAudioStreamIndexByType($0) }
      }
  
@@ -59,7 +59,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          answeredFromStreams(\.audioTracks) { trackInfos(in: $0, ofType: AVMEDIA_TYPE_AUDIO) }
      }
  
-@@ -2105,7 +2124,7 @@
+@@ -2350,7 +2369,7 @@
      /// here is counted, `close()` waits for the count to drain before it frees anything, and once
      /// `close()` has started no new caller gets a stream. Never waits on `accessLock`, so it cannot
      /// wait out a network read either. `body` must be short and must not call back into the demuxer.
@@ -68,7 +68,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          guard index >= 0 else { return nil }
          streamTableLock.lock()
          guard Int(index) < streamTable.count else {
-@@ -2131,7 +2150,7 @@
+@@ -2376,7 +2395,7 @@
      /// `pacing`, when >= 0 and not already in `keep`, is delivered at `AVDISCARD_NONKEY` instead of
      /// being dropped: keyframes only, enough to give a side reader a read-position control point
      /// between sparse target packets (#230). -1 keeps the original all-or-nothing behavior.
@@ -77,7 +77,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext else { return }
-@@ -2204,7 +2223,7 @@
+@@ -2449,7 +2468,7 @@
          return compositionRepair?.keyframeAdvanceTicks ?? 0
      }
  
@@ -86,7 +86,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          accessLock.lock()
          defer { accessLock.unlock() }
          if !peekedPackets.isEmpty {
-@@ -2549,7 +2568,7 @@
+@@ -2794,7 +2813,7 @@
      /// from regardless, so the result is discardable; a caller that would otherwise read the wrong
      /// region on a forward-only source (AE#366's prime hunt) has to be able to ask.
      @discardableResult
@@ -95,7 +95,7 @@ diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/D
          accessLock.lock()
          defer { accessLock.unlock() }
          guard let ctx = formatContext,
-@@ -3221,7 +3240,7 @@
+@@ -3510,7 +3529,7 @@
          return (avioProvider?.readByteBudgetExhausted ?? false) || interrupt.inputCeilingHit
      }
  

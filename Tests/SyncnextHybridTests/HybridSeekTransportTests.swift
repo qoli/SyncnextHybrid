@@ -56,6 +56,18 @@ final class HybridSeekEndPolicyTests: XCTestCase {
 
 @MainActor
 final class HybridSeekTransportTests: XCTestCase {
+    func testAutomaticSkipRequiresExactLandingWhilePositionKeepsOrdinarySeek() async throws {
+        for intent in [HybridPlaybackSeekIntent.position, .automaticSkip] {
+            let engine = RecordingSeekEngine()
+            try await HybridSeekTransport.perform(
+                engine: engine, target: 23, intent: intent,
+                isCurrent: { true }, acceptLanding: { _ in .preserveTransport }
+            )
+            XCTAssertEqual(engine.exactSeeks, [intent == .automaticSkip])
+            XCTAssertEqual(engine.currentTime, 23)
+        }
+    }
+
     func testLogReproductionParksBothClocksWithoutEngineReplay() async throws {
         let engine = RecordingSeekEngine()
         let timeline = SeekTimeline()
@@ -352,6 +364,7 @@ private final class RecordingSeekEngine: HybridSeekEngine {
     var reloadFails = false
     var suspendSeeks = false
     var landingOffset = 0.0
+    var exactSeeks: [Bool] = []
     let seekStarts: AsyncStream<Double>
     private let starts: AsyncStream<Double>.Continuation
     private var seeks: [Double: CheckedContinuation<Void, Never>] = [:]
@@ -361,8 +374,9 @@ private final class RecordingSeekEngine: HybridSeekEngine {
         (seekStarts, starts) = AsyncStream<Double>.makeStream()
     }
 
-    func seek(to seconds: Double) async {
+    func seek(to seconds: Double, exact: Bool) async {
         commands.append(.seek(seconds))
+        exactSeeks.append(exact)
         generation += 1
         let operation = generation
         if suspendSeeks {

@@ -1,113 +1,19 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -791,6 +791,32 @@
-             || DiscImageMediaType.isKnownDiscImage(url)
-     }
- 
-+    private static func normalizedContentType(_ value: String?) -> String? {
-+        value?.split(separator: ";", maxSplits: 1).first?
-+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-+    }
-+
-+    private func hasHTTPDiscHint(_ reader: AVIOReader) throws -> Bool {
-+        guard Self.normalizedContentType(reader.openResponseContentType) == "application/octet-stream",
-+              let context = reader.context, context.pointee.seekable != 0 else { return false }
-+
-+        // A generic MIME carries no format evidence. Read the first volume descriptor from the
-+        // existing response, then rewind inside AVIO's opening buffer so ordinary media keeps
-+        // its original bytes and incurs no separate HEAD or Range request. ISO9660 and UDF's
-+        // volume-recognition sequence begin after the 16-sector system area.
-+        let descriptorOffset = 16 * 2048
-+        var prefix = [UInt8](repeating: 0, count: descriptorOffset + 7)
-+        let count = prefix.withUnsafeMutableBufferPointer {
-+            avio_read(context, $0.baseAddress, Int32($0.count))
-+        }
-+        guard count >= 0 else { throw DemuxerError.openFailed(code: count) }
-+        let rewound = avio_seek(context, 0, SEEK_SET)
-+        guard rewound == 0 else { throw DemuxerError.openFailed(code: Int32(rewound)) }
-+        guard count == prefix.count, prefix[descriptorOffset + 6] == 1 else { return false }
-+        let identifier = String(decoding: prefix[(descriptorOffset + 1)..<(descriptorOffset + 6)], as: UTF8.self)
-+        return ["CD001", "BEA01", "NSR02", "NSR03"].contains(identifier)
-+    }
-+
-     private func openHTTP(url: URL, extraHeaders: [String: String], isLive: Bool = false, selectTitleID: Int? = nil) throws {
-         // A remote disc image goes through the same disc adapter as a local ISO (a raw .iso handed
-         // straight to libavformat fails to probe; it is a filesystem, not a media container, #64).
-@@ -811,7 +837,7 @@
-         } catch AVIOReaderError.discImageMediaType {
-             // AE#860: an extensionless URL whose opening response declared a disc image. The type is
-             // only a hint; the disc readers confirm it, and a mislabelled body streams as before.
--            EngineLog.emit("[Demuxer] AE#860: the source declared a disc image type; trying the disc adapter", category: .demux)
-+            EngineLog.emit("[Demuxer] AE#860: the source indicates a disc image; trying the disc adapter", category: .demux)
-             if try openHTTPDiscImage(url: url, extraHeaders: extraHeaders, selectTitleID: selectTitleID) {
-                 DiscImageMediaType.noteDiscImage(url)
-                 return
-@@ -880,7 +906,19 @@
-         reader.onNetworkPhaseChanged = onNetworkPhaseChanged
-         reader.playIntentProvider = playIntentProvider
-         do {
--            try openWithProvider(reader, isLive: isLive)
-+            try connectProvider(reader)
-+            if isCloseRequested {
-+                abandonProvider(reader)
-+                throw DemuxerError.openFailed(code: -1)
-+            }
-+            // MIME classification belongs to the upstream reader. Only the generic MIME case
-+            // still needs the volume descriptor from the same opening response.
-+            if routesDiscMediaType, !isLive, !openProfile.avioSequentialOnly,
-+               try hasHTTPDiscHint(reader) {
-+                abandonProvider(reader)
-+                throw AVIOReaderError.discImageMediaType
-+            }
-+            try openConnectedProvider(reader, isLive: isLive)
-         } catch AVIOReaderError.dashManifest {
-             try openDASH(manifestURL: url, extraHeaders: extraHeaders)
-         }
-@@ -938,6 +976,11 @@
-         inputFormat: UnsafePointer<AVInputFormat>? = nil,
-         isLive: Bool = false
-     ) throws {
-+        try connectProvider(provider)
-+        try openConnectedProvider(provider, inputFormat: inputFormat, isLive: isLive)
-+    }
-+
-+    private func connectProvider(_ provider: AVIOProvider) throws {
-         // Audit DMX-102: the provider is published BEFORE it connects, under the same lock that
-         // decides "already closed", so a `markClosed()` that lands during the connect (up to 15 s on
-         // a live source, longer for a remote disc probe) reaches the provider instead of finding
-@@ -952,6 +995,12 @@
+@@ -1007,6 +1007,12 @@
          } catch {
              openTransportFailureCode = (provider as? AVIOReader)?.lastTransportFailureCode
              abandonProvider(provider)
 +            if case AVIOReaderError.discImageMediaType = error {
-+                // The response is open even though upstream handed off before container open.
-+                // Preserve the existing cancellation checkpoint before starting the disc probe.
++                // Preserve cancellation at the already-open response before
++                // handing the source to the disc adapter (AE#860).
 +                reportOpenStage(.sourceOpened)
 +                if isCloseRequested { throw DemuxerError.openFailed(code: -1) }
 +            }
              throw error
          }
          if isCloseRequested {
-@@ -959,7 +1008,17 @@
-             throw DemuxerError.openFailed(code: -1)
-         }
-         reportOpenStage(.sourceOpened)   // #361
--
-+    }
-+
-+    private func openConnectedProvider(
-+        _ provider: AVIOProvider,
-+        inputFormat: UnsafePointer<AVInputFormat>? = nil,
-+        isLive: Bool = false
-+    ) throws {
-+        if isCloseRequested {
-+            abandonProvider(provider)
-+            throw DemuxerError.openFailed(code: -1)
-+        }
-         // AE#460 follow-up: a live source rebuilt on a RETAINED reader resumes where that reader
-         // is, not at the host's base. A fresh AVIOContext starts its byte axis at 0 regardless, so
-         // without this the rebuild reads the spool from the beginning: the playhead jumps back to
 diff --git a/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift b/Tests/AetherEngineTests/HTTPDiscMIMERecognitionTests.swift
 new file mode 100644
 --- /dev/null
