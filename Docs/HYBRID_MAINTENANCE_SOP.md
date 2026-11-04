@@ -85,19 +85,7 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      讓停止播放後的晚到資料仍可追蹤；不記錄原始 URL、headers 或媒體內容。
    - App 日誌轉送與 session 停止事件留在 Hybrid；不改變 transport、route、
      取消、背壓、重試或既有 drain 行為。範圍與退出條件見第 8 節。
-5. `0008-http-disc-mime-recognition.patch`
-   - 依使用者 2026-10-24 明確要求，修復無副檔名 HTTP ISO 被當成一般媒體的缺陷；
-     上游 issue：[AetherEngine #860](https://github.com/superuser404notfound/AetherEngine/issues/860)。
-   - ISO MIME、prewarm metadata 及已識別光碟 URL 的處理由 7.48.0 起交還上游。
-     2026-10-30 已在 [#860 補報 7.52.0 的 octet-stream 缺口](https://github.com/superuser404notfound/AetherEngine/issues/860#issuecomment-6507440925)，
-     區分未修改上游的 routing 檢查與本地 Patch 的合成回歸證據。
-     依使用者 2026-10-25 要求補上的同回應 octet-stream ISO9660／UDF 判斷，
-     在 7.56.0 已交還上游。原有對等測試在純上游仍有兩個取消交接 case 失敗，
-     因此目前 Patch 只保留交接 DiscReader 前的 `sourceOpened`／close 檢查
-     及原測試；不保留重複 sniffing，也不新增 HEAD／Range 探測。
-   - MIME 不作為有效光碟的證明；不改變 live、宣告 sequential origin、其他
-     媒體格式或 Hybrid presentation。範圍與退出條件見第 8 節。
-6. `0009-audio-tap-segment-pacing.patch`
+5. `0009-audio-tap-segment-pacing.patch`
    - 依使用者 2026-10-25 明確授權，修復長分片的正常預解碼被誤判為向後 seek，
      導致 tap 重複解碼、丟樣與辨識確認重置的缺陷。
    - 只以實際 playhead 倒退及既有 tolerance 判斷向後重新定位；完整分片超出
@@ -108,7 +96,7 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 2026-10-30 升級時移除已由上游取代的 pacing／held-buffer 實作，只保留
      opt-in `lossless`。預設使用上游 256-buffer 及 overflow discontinuity 契約，
      同時保留上游新增的 `channels` 參數。
-7. `0010-subtitle-bitmap-storage.patch`
+6. `0010-subtitle-bitmap-storage.patch`
    - 依使用者 2026-10-25 明確批准的最小 Patch，將 bitmap 字幕的歷史圖像以
      無損 PNG provider 保留，按繪製需求展開像素；不縮短 cue 保留時間、不刪字幕。
    - 保留原 crop、位置、時間、forced 標記及 interpolation。公開圖像只承諾
@@ -138,6 +126,11 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 
 原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已被上游正式能力取代並移除；
 不得把它重新加入現行 `series`。退出紀錄見 Git 歷史。
+
+`0008-http-disc-mime-recognition.patch` 已於 2026-11-05 退役。宣告光碟 MIME／prewarm
+由 7.48.0 擁有，octet-stream ISO9660／UDF 辨識由 7.53.0 擁有；舊取消測試要求的
+`sourceOpened` 時序不再作為維持生產 Patch 的理由。辨識及實際取消回歸保留在
+root 擁有的 `Tests/UpstreamDiscRetirement/`，由隔離快照執行，詳見第 8 節。
 
 ## 3. 新需求的上游侵入 Gate
 
@@ -300,6 +293,34 @@ root commit 只允許包含：
 
 ## 8. 決策摘要
 
+### 0008 退役與取消契約重驗（2026-11-05）
+
+決定：使用者明確要求「安排 0008 的退役」，採用上游原生實作並移除整份 Patch、
+`series` entry 與 manifest entry。Aether 7.56.0／FFmpegBuild 3.12.1 pins、其他六份
+Patch 的內容不變；不另建取消 Patch。
+
+- 上游已在 [7.53.0 發布 #860 的 octet-stream 修復](https://github.com/superuser404notfound/AetherEngine/issues/860#issuecomment-6528673468)。
+  7.56 初次整合時留下的六行處理，只為將 `sourceOpened` 提前到光碟交接之前。
+  舊測試在此回呼取消，再要求 `isDiscSource == false` 及沒有先前的探測請求，
+  實際上將內部進度回呼的位置當成取消契約；當時 `open` 拋錯的斷言仍通過。
+- 回歸改為在原有上游回呼時序下確認取消確實發生、open 失敗且取消後沒有新請求；
+  另在實際 HTTP response 到達時取消，覆蓋兩種 MIME 與 ordinary／held transports，
+  要求不進入後續光碟探測且實際傳輸完成。AVIO 共用連線池可保留 idle keep-alive
+  socket，不以整個 origin 的 socket 數歸零代替傳輸取消。
+- 其餘 ISO9660／UDF、4 MiB title、prewarm、參數／大小寫、誤標、signature-only、
+  一般媒體、suffix、seekable extraction 與 sequential-origin 回歸移到 root 測試目錄。
+  原有測試 fixture helpers 只覆蓋到臨時 SDK 測試目錄，不進入生產 source 或 Patch。
+- `Scripts/verify-disc-retirement.py` 從官方 pin 以臨時 index 重播剩餘 Patch 兩次，
+  比對 tree，再執行辨識／取消及 Hybrid tests。使用 committed Hybrid source，避免
+  混入其他任務的工作；不 reset／clean 現有 checkout。`--resume` 僅刷新同一來源
+  快照並保留建置 cache。正式 SDK worktree 只反向移除已核對的 0008，並比對測試 tree。
+- 上游 focused 測試 61 項及 Hybrid 167 項（4 項外部 fixture 略過）通過。依使用者
+  指示，App 播放／seek／開啟中取消使用既有 `SyncNext Data` tvOS 27.0 Simulator；
+  45 秒 ISO9660／UDF DVD fixtures 由 `Scripts/prepare-disc-retirement-fixtures.py`
+  產生，來源無副檔名、MIME 為 octet-stream。兩種檔案系統的播放及 seek 均通過，
+  UDF 補證畫面確認影片與控制列均持續前進；真實 GET 到達後取消在 0.028 秒返回，
+  SDK 記錄 `errorCode=-999`、`afterCancelBytes=0`。此證據不代表原始遠端 ISO 或真機驗收。
+
 ### AetherEngine 7.56.0 的最小相容重整（2026-11-05）
 
 決定：`Approved minimal Patch`。使用者已批准「最小 Patch 重整並繼續實測」，
@@ -312,9 +333,9 @@ root commit 只允許包含：
   `9c87af0231fd1403654c14a0e867fe8aa43c5bea`。
 - `0001`、`0002`、`0004`、`0010` 只重定位既有責任，保留上游新增的 cache
   parked-store reset 與 DVB `reportedCanvas`。`0007`、`0009` 內容不變。
-- `0008` 移除已由上游提供的 ISO／UDF 判斷；原測試在純上游的兩個取消 case
-  仍失敗，故只保留六行取消交接檢查及原對等測試。待上游連取消契約也通過
-  同組測試才完整退出，不以辨識功能相似推定可刪。
+- 初次整合時，`0008` 移除已由上游提供的 ISO／UDF 判斷，因兩個舊取消 case
+  保留六行交接檢查。其後核對發現失敗涉及進度回呼時序，已由本日退役決定及
+  實際取消回歸取代；不再保留這六行。
 - 自動跳片精度由 Hybrid 的 `.automaticSkip` 呼叫公開 `seek(to:exact: true)`
   保證；一般 `.position` 傳 `exact: false`，保留上游普通 seek 語意。兩者不增加
   上游 Patch，並共用原有 native／proxy transport 與片尾意圖處理。
@@ -439,7 +460,8 @@ Patch 預檢衝突及保留責任後，明確回覆「批准最小 Patch 重整�
   邊界。當正式 release 原生支援此辨識、且同組回歸通過時，移除 `0008` 並同步
   更新 `series`／manifest，不保留重複路由判斷。
 
-focused 回歸入口：`swift test --package-path AetherEngine --filter HTTPDiscMIMERecognitionTests`。
+退役後的 focused 回歸入口為 `python3 Scripts/verify-disc-retirement.py --output-dir <新的隔離目錄>`；
+案例及 fixture helpers 由 `Tests/UpstreamDiscRetirement/` 擁有，不再依賴 Patch 注入。
 使用本機 Range origin 與可開啟 MPEG-2 影片的 DVD
 ISO fixture，覆蓋兩種 HTTP transport、MIME 大小寫／參數、prewarm、一般與誤標
 媒體、既有副檔名、seekable extraction、取消交接及 sequential origin。通用 MIME
