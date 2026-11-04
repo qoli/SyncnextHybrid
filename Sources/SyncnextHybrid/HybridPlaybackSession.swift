@@ -2408,7 +2408,7 @@ public final class HybridPlaybackSession:
             menus.append(
                 UIMenu(
                     title: "Subtitles",
-                    image: UIImage(systemName: "captions.bubble"),
+                    image: UIImage(systemName: "text.bubble"),
                     identifier: UIMenu.Identifier(
                         "com.qoli.SyncnextHybrid.subtitles"
                     ),
