@@ -235,7 +235,7 @@ public struct HybridPlaybackDiagnostics: Sendable, Equatable {
         averageBitrateMbps: Double?,
         sourceVideoBitrate: Int64 = 0,
         bufferedPosition: Double,
-        sourceTime: Double
+        playbackPosition: Double
     ) {
         self.init(
             videoSize: CGSize(
@@ -244,8 +244,8 @@ public struct HybridPlaybackDiagnostics: Sendable, Equatable {
             ),
             averageBitrateMbps: averageBitrateMbps,
             declaredVideoBitrateMbps: Double(sourceVideoBitrate) / 1_000_000,
-            bufferSeconds: bufferedPosition.isFinite && sourceTime.isFinite
-                ? max(0, bufferedPosition - sourceTime) : nil
+            bufferSeconds: bufferedPosition.isFinite && playbackPosition.isFinite
+                ? max(0, bufferedPosition - playbackPosition) : nil
         )
     }
 }

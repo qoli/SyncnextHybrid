@@ -15,17 +15,15 @@ struct HybridHLSProxyMaterial: Equatable {
 enum HybridHLSProxyMaterialPolicy {
     static func bufferedThrough(
         bufferedPosition: Double,
-        renderedSourceTime: Double
+        renderedPlaybackTime: Double
     ) -> Double {
         guard bufferedPosition.isFinite,
-              renderedSourceTime.isFinite else {
+              renderedPlaybackTime.isFinite else {
             return 0
         }
-        // Aether declares both values on the source axis and guarantees that
-        // the buffer frontier never trails the rendered frame. During 6.4.0
-        // seek recovery the published frontier can briefly regress; preserve
-        // the declared invariant at the integration boundary.
-        return max(bufferedPosition, renderedSourceTime)
+        // Both bounds are on the Proxy's playback axis. Raw source PTS can
+        // have an offset, such as the 600-second start of a Blu-ray stream.
+        return max(bufferedPosition, renderedPlaybackTime)
     }
 }
 
@@ -63,8 +61,7 @@ enum HybridHLSProxyPlaylist {
 }
 
 /// Pure release policy for Aether material entering the authoritative HLS
-/// timeline. The Proxy chooses the demand window; Aether only bounds which
-/// requested segments have enough backing material to be released.
+/// timeline. Real material at the playhead admits the bounded carrier lead.
 enum HybridHLSProxyReleasePolicy {
     static func canRelease(
         segmentStart: Double,
@@ -73,7 +70,11 @@ enum HybridHLSProxyReleasePolicy {
         duration: Double,
         lead: Double
     ) -> Bool {
-        segmentStart < min(bufferedThrough, authoritativePlayhead + lead)
+        // AVPlayer needs several carrier segments before it will run. A
+        // ready renderer can have less real material ahead than that.
+        let requiredMaterial = min(segmentStart, authoritativePlayhead)
+        return (requiredMaterial < bufferedThrough
+            && segmentStart < authoritativePlayhead + lead)
             || segmentStart >= duration - 0.001
     }
 }

@@ -108,6 +108,9 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      上游尚未接受 PNG 方案，已選擇 raw RGBA byte budget；純上游十分鐘 footprint、
      支援的 offset 範圍與可見 backward-seek 重建仍待比較驗收。Core Animation
      直接顯示 lazy PNG 可在 main 解碼並保留展開像素，encoded bytes 不能當成程序 RAM 上限。
+7. `0011-progressive-http-disc-range.patch`
+   - 依使用者 2026-11-09 明確授權，讓播放 demuxer 在打開遠端 ISO 後，連續補讀
+     使用長 Range，回應通過驗證後即可逐段交付。範圍與退出條件見第 8 節。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
@@ -495,6 +498,33 @@ ISO fixture，覆蓋兩種 HTTP transport、MIME 大小寫／參數、prewarm、
   現有工作。focused transport cancellation／keep-alive／drain 測試、Hybrid
   tests、App lifecycle harness 與 generic tvOS Simulator build 分開驗證；
   這些結果不代表已完成書房電視的實機播放驗收。
+
+### 已批准的遠端 ISO 漸進式 HTTP Range（2026-11-09）
+
+本次使用者決定為 `Approved minimal Patch`，將連續 Range 交付留在
+`0011-progressive-http-disc-range.patch`。Proxy 供片使用 Hybrid 的公開整合層。
+
+書房電視重播同一份 61.2 GB《馬達加斯加》4K ISO 時，逐次讀取 8 MiB 的實測
+約 60 Mb/s，同一媒體 URL 的 64 MiB Range 約 110 Mb/s。舊版播放期間的
+來源入流約 67 Mb/s，開場瞬時媒體碼率曾超過 100 Mb/s。原先以整段回應完成
+為交付條件，demuxer 的讀取等待持續造成代理畫面掉幀。
+
+- 主播放 demuxer 完成光碟結構與串流探測後，連續補讀使用最多 64 MiB 的有限請求。
+  跳轉後先讀一段小 Range 確認落點，下一次順序補讀即可接上長 Range。
+  通過既有 HTTP 驗證及起始位元組檢查的資料立即交付，佇列達原有 8 MiB 上限
+  即暫停 URLSession task，消費至一半以下再恢復。探測、warm、獨立 reader 和
+  隨機定位沿用原本的請求方式。
+- 短回應沿用既有有限重試，從第一個尚未交付的位元組續讀。非連續 seek、停止
+  或關閉會取消舊請求並喚醒正在等待資料的 reader。
+- 以固定版本隔離重播，覆蓋可早於回應尾端讀取、錯位和短回應、seek 及取消；
+  裝置驗收以同一份 ISO 的前置緩衝、實際掉幀及前後跳轉為準。上游具備等效的
+  漸進式光碟讀取與取消契約後，重跑同一組驗收再退出本 Patch。
+- 書房電視 tvOS 26.6.1 使用 `RemoteISOBuffer` 重播 210 秒。前置緩衝中位數
+  由 0 增至 4.95 秒，新增顯示層掉幀由 2,194 降至 36，最後約 137 秒無新增
+  掉幀。開場 45 秒內仍有兩次 renderer 重新緩衝，AVPlayer 回報一次 stall。
+- 同源五次 AVKit 前後定位均正確，四次通過落點後雙時鐘推進檢查。25 分鐘落點
+  在 2.55 秒開始播放，接下來 8 秒新增 57 個顯示層掉幀，AVKit 前進 6.87 秒。
+  開場與該落點的連播條件仍未通過。
 
 ### 已接受的原生 held-source 與 App DoH（2026-10-22）
 

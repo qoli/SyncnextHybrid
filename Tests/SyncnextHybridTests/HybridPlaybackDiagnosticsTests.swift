@@ -3,14 +3,14 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridPlaybackDiagnosticsTests: XCTestCase {
-    func testProxySnapshotCarriesMediaMeasurementsOnTheSourceAxis() {
+    func testProxySnapshotCarriesMediaMeasurementsOnTheRendererPlaybackAxis() throws {
         let diagnostics = HybridPlaybackDiagnostics(
             sourceVideoWidth: 1_920,
             sourceVideoHeight: 1_080,
             averageBitrateMbps: 12.5,
             sourceVideoBitrate: 15_000_000,
-            bufferedPosition: 225,
-            sourceTime: 200
+            bufferedPosition: 174.63,
+            playbackPosition: 173.57
         )
         let snapshot = makeProxySnapshot(diagnostics: diagnostics)
 
@@ -18,7 +18,8 @@ final class HybridPlaybackDiagnosticsTests: XCTestCase {
         XCTAssertEqual(snapshot.diagnostics.averageBitrateMbps, 12.5)
         XCTAssertEqual(snapshot.diagnostics.declaredVideoBitrateMbps, 15)
         XCTAssertEqual(snapshot.diagnostics.bitrateMbps, 12.5)
-        XCTAssertEqual(snapshot.diagnostics.bufferSeconds, 25)
+        // This disc's raw PTS is 773.57 on the separate subtitle axis.
+        XCTAssertEqual(try XCTUnwrap(snapshot.diagnostics.bufferSeconds), 1.06, accuracy: 0.001)
         // The proxy clock may be held at a different position during navigation.
         XCTAssertEqual(snapshot.currentTime, 50)
         XCTAssertEqual(snapshot.rate, 0)
@@ -39,7 +40,7 @@ final class HybridPlaybackDiagnosticsTests: XCTestCase {
                 sourceVideoHeight: 0,
                 averageBitrateMbps: invalid,
                 bufferedPosition: invalid,
-                sourceTime: 50
+                playbackPosition: 50
             )
             XCTAssertNil(diagnostics.videoSize)
             XCTAssertNil(diagnostics.averageBitrateMbps)
@@ -53,7 +54,7 @@ final class HybridPlaybackDiagnosticsTests: XCTestCase {
             sourceVideoHeight: 1_080,
             averageBitrateMbps: nil,
             bufferedPosition: 100,
-            sourceTime: 200
+            playbackPosition: 200
         )
         XCTAssertEqual(diagnostics.bufferSeconds, 0)
         XCTAssertNil(diagnostics.averageBitrateMbps)
@@ -66,7 +67,7 @@ final class HybridPlaybackDiagnosticsTests: XCTestCase {
             averageBitrateMbps: nil,
             sourceVideoBitrate: 56_902_286,
             bufferedPosition: 200,
-            sourceTime: 200
+            playbackPosition: 200
         )
         XCTAssertEqual(diagnostics.declaredVideoBitrateMbps, 56.902286)
         XCTAssertNil(diagnostics.averageBitrateMbps)

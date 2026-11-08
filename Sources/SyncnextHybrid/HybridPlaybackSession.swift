@@ -383,7 +383,7 @@ public final class HybridPlaybackSession:
                 initialBufferedThrough:
                     HybridHLSProxyMaterialPolicy.bufferedThrough(
                         bufferedPosition: engine.bufferedPosition,
-                        renderedSourceTime: engine.sourceTime
+                        renderedPlaybackTime: engine.currentTime
                     )
             )
             let context = ProxyContext(
@@ -1443,6 +1443,12 @@ public final class HybridPlaybackSession:
             }
             .store(in: &observations)
 
+        engine.$isClockHeld
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.applyAetherMaterial() }
+            }
+            .store(in: &observations)
+
         engine.$duration
             .sink { [weak self] _ in
                 Task { @MainActor in
@@ -1777,6 +1783,10 @@ public final class HybridPlaybackSession:
             supplyPhase = .waiting
         case (.ended, _):
             supplyPhase = .ended
+        case _ where engine.isClockHeld:
+            // A software seek can acknowledge while the decoder is still
+            // priming the target. The hold is material readiness only.
+            supplyPhase = .waiting
         case (.idle, _), (.playing, _), (.paused, _), (.seeking, _):
             // These Aether transport states cannot drive the authoritative
             // HLS timeline. They are consequences of Server commands.
@@ -1785,7 +1795,7 @@ public final class HybridPlaybackSession:
         let effectiveBufferedThrough =
             HybridHLSProxyMaterialPolicy.bufferedThrough(
                 bufferedPosition: engine.bufferedPosition,
-                renderedSourceTime: engine.sourceTime
+                renderedPlaybackTime: engine.currentTime
             )
         let material = HybridHLSProxyMaterial(
             phase: supplyPhase,
@@ -1810,6 +1820,7 @@ public final class HybridPlaybackSession:
             "hls-material-updated",
             "enginePhase=\(engine.playbackPhase)",
             "supplyPhase=\(supplyPhase)",
+            "rendererClockHeld=\(engine.isClockHeld)",
             "bufferedPosition=\(engine.bufferedPosition)",
             "effectiveBufferedThrough=\(effectiveBufferedThrough)",
             "engineTime=\(engine.currentTime)",
@@ -2523,7 +2534,9 @@ public final class HybridPlaybackSession:
             averageBitrateMbps: engine.liveTelemetry?.averageBitrateMbps,
             sourceVideoBitrate: engine.sourceVideoBitrate,
             bufferedPosition: engine.bufferedPosition,
-            sourceTime: engine.sourceTime
+            // The buffer frontier follows the playback axis. Raw source PTS
+            // is used for subtitles and can have a nonzero start.
+            playbackPosition: engine.currentTime
         )
     }
 

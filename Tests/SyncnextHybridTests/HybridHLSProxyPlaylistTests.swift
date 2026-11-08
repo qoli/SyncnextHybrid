@@ -102,20 +102,50 @@ final class HybridHLSProxyPlaylistTests: XCTestCase {
         )
     }
 
-    func testMaterialFrontierNeverTrailsRenderedSourceTime() {
+    func testMaterialFrontierStaysOnThePlaybackAxis() {
         XCTAssertEqual(
             HybridHLSProxyMaterialPolicy.bufferedThrough(
-                bufferedPosition: 1_059.823222,
-                renderedSourceTime: 1_061.28
+                bufferedPosition: 45.879,
+                renderedPlaybackTime: 45.594
             ),
-            1_061.28
+            45.879
         )
         XCTAssertEqual(
             HybridHLSProxyMaterialPolicy.bufferedThrough(
-                bufferedPosition: 1_100,
-                renderedSourceTime: 1_061.28
+                bufferedPosition: 43,
+                renderedPlaybackTime: 45.594
             ),
-            1_100
+            45.594
+        )
+    }
+
+    func testMaterialAtPlayheadAdmitsOnlyTheBoundedCarrierLead() {
+        XCTAssertTrue(
+            HybridHLSProxyReleasePolicy.canRelease(
+                segmentStart: 242,
+                authoritativePlayhead: 240,
+                bufferedThrough: 240.32,
+                duration: 300,
+                lead: 3
+            )
+        )
+        XCTAssertFalse(
+            HybridHLSProxyReleasePolicy.canRelease(
+                segmentStart: 242,
+                authoritativePlayhead: 240,
+                bufferedThrough: 240,
+                duration: 300,
+                lead: 3
+            )
+        )
+        XCTAssertFalse(
+            HybridHLSProxyReleasePolicy.canRelease(
+                segmentStart: 243,
+                authoritativePlayhead: 240,
+                bufferedThrough: 240.32,
+                duration: 300,
+                lead: 3
+            )
         )
     }
 

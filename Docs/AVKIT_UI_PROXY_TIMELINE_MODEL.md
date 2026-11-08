@@ -1,6 +1,6 @@
 # AVKit UI Proxy 時間軸模型與微調指南
 
-更新日期：2026-10-22
+更新日期：2026-11-09
 狀態：Active
 Owner：SyncnextHybrid
 
@@ -72,15 +72,16 @@ App 的 `AudioTrackDiagnosis` case 使用同一 ISO 與正式選單 actions 驗�
 進階資訊由 `HybridPlaybackSnapshot.diagnostics` 傳遞實際媒體讀數：影片尺寸
 來自 Aether 的 source video dimensions，平均碼率來自
 `liveTelemetry.averageBitrateMbps`，宣告影片碼率獨立來自
-`sourceVideoBitrate`（bits/s 轉為 Mbps），緩衝秒數為同一 source 軸上的
-`max(0, bufferedPosition - sourceTime)`。尺寸、telemetry 與 buffer 更新會重新
+`sourceVideoBitrate`（bits/s 轉為 Mbps），緩衝秒數為同一播放時間軸上的
+`max(0, bufferedPosition - currentTime)`。原始 `sourceTime` 仍供字幕對齊，
+在 Blu-ray 等來源可以帶有非零 PTS 起點。尺寸、telemetry 與 buffer 更新會重新
 發布 snapshot；這些讀數不改寫 Proxy 的 playhead、rate 或 seek generation。
 App 的 proxy 面板不得讀黑色 Proxy item 的尺寸、access log 或 loaded ranges。
 未量到／非有限讀數保留 unavailable；下載速度仍由 App 的網絡監視器獨立量測。
 依使用者指定，面板碼率共用同一欄，`diagnostics.bitrateMbps` 優先選擇量測
 平均碼率，平均值不可用時才顯示影片宣告碼率；兩者皆不可用才顯示「—」。
 UI 只保留既有 SF Symbol 與數值，不增加文字標題。當前上游在部分 software
-播放中仍可能發布 nil 平均碼率，以及與 sourceTime 相同的 buffer frontier，
+播放中仍可能發布 nil 平均碼率，以及與 currentTime 相同的 buffer frontier，
 緩衝欄應如實顯示 0，而非使用 Proxy item 的讀數。
 
 | 時間軸 | 速度與角色 | 責任 | 不應負責 |
@@ -102,7 +103,8 @@ AVKit UI 比 HLS request/response 更早知道使用者最終選定的 seek targ
 
 AetherEngine 只有下列材料或終止狀態可以反向影響 HLS Proxy：
 
-- loading、rebuffering、stalled：停止供應材料並投影為 `waitingToPlay`；
+- loading、rebuffering、stalled 及軟解預捲持有時鐘（`isClockHeld`）：暫停
+  供片並投影為 `waitingToPlay`；
 - ended：投影為 ended；
 - error：投影為 failed。
 
@@ -219,12 +221,19 @@ AVKit 的 transport UI 只能從它自己的 `AVPlayer`／HLS 狀態推導。Pro
 真實的 HLS 供應 gate 表達等待：
 
 - seek 建立 pending generation；
-- 目的地 segment 在 Aether 回應前不釋放；
+- Aether 回應後，等預捲放開時鐘，再按目前播放位置與連續緩衝上界供應
+  segment；
 - AVPlayer 自然進入 `waitingToPlayAtSpecifiedRate`；
 - AVKit 自然顯示等待指示；
 - segment 可用後，AVKit 自然恢復播放。
 
 不得在 App layer 偽造一套與 AVPlayer 不一致的 waiting state。
+
+材料上界使用 `max(bufferedPosition, currentTime)`，與 HLS segment 共用播放
+時間軸。Blu-ray 的 `sourceTime` 可帶 600 秒 PTS 偏移，仍供字幕同步。材料覆蓋
+目前播放位置且預捲已釋放時，Proxy 可供應既有三秒窗口內的載體分片，讓
+AVPlayer 準備播放。進階資訊仍顯示實際的前置緩衝。AVPlayerItem 初始化亦使用
+同樣長度的載體啟動窗口。
 
 AVPlayer 已持有的載體分片不會重新經過 HTTP gate。此時 Server 另接受已完成
 client seek 的落點證據：目前 generation、實際位置仍在既有的一個分片落點窗口內，
