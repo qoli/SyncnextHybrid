@@ -605,12 +605,19 @@ final class SmokeViewModel: ObservableObject {
             objectAudioRendering: configuration.objectAudioRendering,
             preferDualLayerDolbyVision: configuration.preferDualLayerDolbyVision
         )
-        let components = HybridOptionalComponent.allCases
-        guard components.allSatisfy(\.isBuiltIn) else {
-            throw SmokeFailure.aetherContractViolation("All four optional components must be built in")
+        let requiredComponents: [HybridOptionalComponent] = [
+            .trueHDObjectAudio, .dtsxObjectAudio, .dualLayerDolbyVision, .dolbyVisionStillReshaping,
+        ]
+        let missingComponents = requiredComponents.filter { !$0.isBuiltIn }
+        guard missingComponents.isEmpty else {
+            throw SmokeFailure.aetherContractViolation(
+                "Missing configured optional components: "
+                    + missingComponents.map(\.traitName).joined(separator: ",")
+            )
         }
+        let compiledComponents = HybridOptionalComponent.allCases.filter(\.isBuiltIn)
         emitter.emit("optional_components", metrics: [
-            "compiled": components.map(\.traitName).joined(separator: ","),
+            "compiled": compiledComponents.map(\.traitName).joined(separator: ","),
             "object_audio_requested": String(describing: request.objectAudioRendering),
             "dual_layer_requested": String(request.preferDualLayerDolbyVision),
         ])

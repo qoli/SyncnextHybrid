@@ -211,8 +211,9 @@ phase, media time, duration, checkpoints, and the terminal result. Aether
 records also include `aether_backend` and `aether_current_avplayer`. Records do
 not include the source URL, query, or HTTP header values.
 
-Every Hybrid run asserts that all four optional components are built and emits
-`optional_components` with the compiled traits and requested playback options.
+Every Hybrid run requires the four optional components configured by
+SyncnextHybrid and emits `optional_components` with the traits actually built
+and the requested playback options.
 That event proves compilation and forwarding; ordinary H.264/AAC playback does
 not prove TrueHD Atmos, DTS:X, or FEL presentation. The hosted test target also
 runs the pinned upstream APAC encoder, object renderer, TrueHD/DTS:X metadata,
