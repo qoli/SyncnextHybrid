@@ -118,7 +118,7 @@ Server 的 rate、playhead 或 seek generation。
 ```text
 使用者在 AVKit UI 選定目標
   -> timeToSeekAfterUserNavigatedFrom
-       -> HLS Proxy 建立權威 generation 與 waitingToPlay
+       -> HLS Proxy 同時接受目標、復播速率與權威 generation，進入 waitingToPlay
        -> 同一個 AVKit callback 直接把 seek 發送給 AetherEngine
   -> AVKit 對 Proxy AVPlayer 執行 client seek
   -> HLS Proxy 暫扣新供應的目標 segment，等待相同 generation 的 Aether 回應
@@ -136,7 +136,7 @@ Server 的 rate、playhead 或 seek generation。
 `timeToSeekAfterUserNavigatedFrom:to:` 是 AVKit 在真正執行 client seek 前，同步
 詢問最終 target 的入口。此時：
 
-- 使用者意圖已確定；
+- 使用者已確認在目標位置恢復播放；
 - AVKit 尚未開始請求目的地 HLS segment；
 - Hybrid 可以先建立 Server generation；
 - Aether 可以立即開始相同 target 的 seek。
@@ -154,11 +154,18 @@ AVKit UI seek 呼叫 `prepareSeek(..., emitsSeekRequest: false)`：
 3. `HybridPlaybackSession` 直接以同一 generation 呼叫 Aether seek；
 4. Aether 回應仍必須由 Server acknowledge，不能繞過權威 gate。
 
-這條路徑只縮短操作轉發時間，不改變 Server authority。
+這條路徑讓 AVKit 直接提交操作，Server 仍擁有 seek generation 與復播速率。
 
 程式式 `HybridPlaybackSession.seek(to:)` 仍可走正常的 Server
 `.seekRequested` 搬運路徑。兩條入口必須產生相同的 generation／acknowledge
 語意。
+
+AVKit 導航提交把選定的 `AVPlayer.defaultRate` 與目標寫入同一代 Server seek。
+拖曳前後觀察到的 `AVPlayer.rate` 反映 client 當時的狀態。這次導航的復播意圖由
+AVKit delegate 提交。
+Aether 收到的第一個操作是 seek，同代落點被接受後才按當時的權威速率復播。
+程式式定位沿用既有播放／暫停意圖。導航提交後的明確暫停仍可改寫權威速率，
+片尾落點照常停在片尾。
 
 ### 4.4 `willResumePlaybackAfterUserNavigatedFrom` 的責任
 
@@ -286,8 +293,8 @@ Server 等 Aether、AVKit 等 Server，會形成循環等待或數秒延遲。
 Pause 會混淆「使用者暫停」與「seek 過渡」兩種 transport intent，也可能使
 Aether 不再產生預期的恢復事件，最終造成無限 `waitingToPlay`。
 
-Seek 必須保持 Server 的權威 rate，不應插入額外 Pause。Aether 返回後，由
-Server 當前 rate 決定恢復 Play 或維持 Pause。
+程式式 seek 沿用 Server 的權威 rate。AVKit 導航提交會寫入使用者選定的復播速率。
+兩條路徑先送出 seek。Aether 返回後，由 Server 當前 rate 決定恢復 Play 或維持 Pause。
 
 ### 6.3 建立凍結畫面
 
@@ -396,6 +403,11 @@ Proxy transport 不能只靠 unit test 或 AVPlayer callback 驗收。最低要�
 6. 每次 seek 後截取 AVKit UI，核對時間軸位置與 waiting indicator；
 7. 確認沒有 `pause-then-seek`，也沒有 AVKit seek 經 Server event 重複回送；
 8. 執行 `swift test`、HybridSmokePlayer tvOS build 與 Syncnext 實體裝置 build。
+
+App 的 Debug case `AVKitSeekResume` 以 `--avkit-seek-resume-url=<URL>` 掛載長片
+Proxy fixture。等 `waiting-for-pause` 後按暫停，等 `waiting-for-navigation` 後用
+方向鍵選定位置並按播放。每步核對單一 generation、AVKit 完成定位及兩個播放時鐘
+皆前進。共五步，長距離前後跳轉由遙控器選定。
 
 驗收結果只適用於當時的 exact App／package／來源與裝置；歷史紀錄由 Git 查閱。
 日誌與截圖可能包含本地裝置／路徑資訊，不應提交到公開 repository。

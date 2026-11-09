@@ -56,6 +56,28 @@ final class HybridSeekEndPolicyTests: XCTestCase {
 
 @MainActor
 final class HybridSeekTransportTests: XCTestCase {
+    func testAVKitNavigationResumesPausedTimelineAfterLanding() async throws {
+        let engine = RecordingSeekEngine()
+        let timeline = SeekTimeline(rate: 0)
+        let target = 39.765
+        let generation = timeline.begin(to: target, resumeRate: 1.5)
+
+        XCTAssertEqual(timeline.state.rate, 1.5)
+        XCTAssertEqual(timeline.state.phase, .waitingToPlay)
+
+        try await HybridSeekTransport.perform(
+            engine: engine, target: target, intent: .position,
+            isCurrent: { timeline.isCurrent(generation) },
+            acceptLanding: {
+                XCTAssertEqual(engine.commands, [.seek(target)])
+                return timeline.accept($0, generation: generation)
+            }
+        )
+
+        XCTAssertEqual(engine.commands, [.seek(target), .rate(1.5), .play])
+        XCTAssertEqual(timeline.state.phase, .playing)
+    }
+
     func testAutomaticSkipRequiresExactLandingWhilePositionKeepsOrdinarySeek() async throws {
         for intent in [HybridPlaybackSeekIntent.position, .automaticSkip] {
             let engine = RecordingSeekEngine()
@@ -319,8 +341,8 @@ private final class SeekTimeline {
 
     var state: HybridHLSTimelineState { authority.snapshot(uptime: 0) }
 
-    func begin(to target: Double) -> UInt64 {
-        authority.seek(to: target, uptime: 0)
+    func begin(to target: Double, resumeRate: Float? = nil) -> UInt64 {
+        authority.seek(to: target, resumeRate: resumeRate, uptime: 0)
     }
 
     func setRate(_ rate: Float) { authority.setRate(rate, uptime: 0) }

@@ -157,6 +157,7 @@ struct HybridHLSTimelineAuthority {
 
     mutating func seek(
         to seconds: Double,
+        resumeRate: Float? = nil,
         uptime: TimeInterval
     ) -> UInt64 {
         advance(to: uptime)
@@ -166,6 +167,9 @@ struct HybridHLSTimelineAuthority {
         clientLandingGeneration = nil
         resolvedSegmentIndices.removeAll(keepingCapacity: true)
         currentTime = min(duration, max(0, seconds))
+        if let resumeRate {
+            rate = resumeRate
+        }
         if materialPhase == .ended {
             materialPhase = .flowing
         }
@@ -641,10 +645,11 @@ final class HybridHLSTimelineProxy {
     @discardableResult
     func prepareSeek(
         to seconds: Double,
+        resumeRate: Float? = nil,
         emitsSeekRequest: Bool = true
     ) -> UInt64 {
         let target = min(state.duration, max(0, seconds))
-        let generation = server.seekTimeline(to: target)
+        let generation = server.seekTimeline(to: target, resumeRate: resumeRate)
         server.updatePlayhead(target)
         HybridDiagnosticEmitter.emit(
             "SYNCNEXT_HYBRID_PROXY_DEMAND "
@@ -930,10 +935,11 @@ private final class HybridHLSTimelineAuthorityStore:
         lock.unlock()
     }
 
-    func seek(to seconds: Double) -> UInt64 {
+    func seek(to seconds: Double, resumeRate: Float?) -> UInt64 {
         lock.lock()
         let generation = authority.seek(
             to: seconds,
+            resumeRate: resumeRate,
             uptime: ProcessInfo.processInfo.systemUptime
         )
         lock.unlock()
@@ -1140,8 +1146,8 @@ private final class HybridHLSProxyServer: @unchecked Sendable {
         authority.setRate(rate)
     }
 
-    func seekTimeline(to seconds: Double) -> UInt64 {
-        let generation = authority.seek(to: seconds)
+    func seekTimeline(to seconds: Double, resumeRate: Float?) -> UInt64 {
+        let generation = authority.seek(to: seconds, resumeRate: resumeRate)
         supply.beginSeek(generation: generation)
         return generation
     }

@@ -539,13 +539,14 @@ public final class HybridPlaybackSession:
             min(targetTime.seconds, proxyContext.duration)
         )
         endDisposition = .none
-        // AVKit asks for its final user-selected time before it performs the
-        // client seek. This is the deliberate fast path: establish the same
-        // authoritative Server generation and waitingToPlay state, but send
-        // Aether the operation directly from the AVKit UI callback instead of
-        // reflecting it back through the Server's seekRequested event.
+        // AVKit asks where to resume before it seeks the client. Its observed
+        // rate may already be zero while scrubbing. Capture the selected
+        // playback speed with the new generation and apply it after landing.
+        let resumeRate = min(proxyContext.player.defaultRate, engine.maxSupportedRate)
+        requestedRate = resumeRate
         let generation = proxyContext.timeline.prepareSeek(
             to: boundedTarget,
+            resumeRate: resumeRate,
             emitsSeekRequest: false
         )
         pendingProxyClientSeekGeneration = generation
@@ -553,6 +554,7 @@ public final class HybridPlaybackSession:
             "avkit-seek-projected",
             "generation=\(generation)",
             "target=\(boundedTarget)",
+            "resumeRate=\(resumeRate)",
             "serverPhase=\(proxyContext.timeline.state.phase)"
         )
         forwardProxySeekToAether(
