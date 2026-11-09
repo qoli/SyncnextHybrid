@@ -102,12 +102,13 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 保留原 crop、位置、時間、forced 標記及 interpolation。公開圖像只承諾
      CGImage 的繪製內容，不假設 provider 固定為 premultiplied RGBA；增加已知
      encoded backing bytes 觀測值。範圍與退出條件見第 8 節。
-   - 上游問題與驗收追蹤：[issue #929](https://github.com/superuser404notfound/AetherEngine/issues/929)；
-     實作沿用既有 [PR #879](https://github.com/superuser404notfound/AetherEngine/pull/879)，
-     2026-10-30 已補上完整本地 Patch 組合的 7.52.0 實機證據，沒有新增重複 PR。
-     上游尚未接受 PNG 方案，已選擇 raw RGBA byte budget；純上游十分鐘 footprint、
-     支援的 offset 範圍與可見 backward-seek 重建仍待比較驗收。Core Animation
-     直接顯示 lazy PNG 可在 main 解碼並保留展開像素，encoded bytes 不能當成程序 RAM 上限。
+   - 實作沿用既有 [PR #879](https://github.com/superuser404notfound/AetherEngine/pull/879)。
+     上游採用 raw RGBA byte budget，並於 7.59.0 加入 `maximumSubtitleOffsetSeconds`。
+     7.61.1 的 Release 實機對照確認 0 秒 RGBA 可重建回跳後的 PGS，現有 PNG 配置仍降低
+     程序 footprint，因此此次升級保留本 Patch。
+     [#929 實機對照](https://github.com/superuser404notfound/AetherEngine/issues/929#issuecomment-6731082228)
+   - Core Animation 直接顯示 lazy PNG 可在 main 解碼並保留展開像素。Encoded bytes
+     與程序 physical footprint 分別量測。
 7. `0011-progressive-http-disc-range.patch`
    - 依使用者 2026-11-09 明確授權，讓播放 demuxer 在打開遠端 ISO 後，連續補讀
      使用長 Range，回應通過驗證後即可逐段交付。範圍與退出條件見第 8 節。
@@ -323,8 +324,23 @@ root commit 只允許包含：
   兩輪來源入流中位數分別為 88.8 與 85.6 Mb/s；單輪對照無法將差異歸因於引擎版本。
 - 同源五次 AVKit 跳轉皆完成定位，續播檢查四次通過。25 分鐘落點本輪通過；10 分鐘落點
   之後 8 秒，renderer 前進 7.76 秒、AVKit 前進 6.88 秒，該項未通過。
-  遠端 ISO 連播與跳轉均未通過完整門檻，候選 Patch 及報告獨立保存，正式 pin 維持
+  遠端 ISO 連播與跳轉均未通過完整門檻。當時保存候選 Patch 與報告，並恢復
   AetherEngine 7.56.0／FFmpegBuild 3.12.1。
+
+### 套用 AetherEngine 7.61.1（2026-11-09）
+
+使用者在 DVB 與 PGS 驗收後指定將上述候選版套用到 Hybrid。官方兩個 tag 的完整 SHA
+與候選版一致，沿用實機驗收的 PNG 配置及 Patch 組合。
+
+- DVB 原案在書房電視逐筆核對 CHI 字幕的結束時間與畫面，16 筆字幕均顯示。
+  [#1001 實機結果](https://github.com/superuser404notfound/AetherEngine/issues/1001#issuecomment-6730455764)
+- PGS 原案以兩組簽章 Release 在書房電視各播放同一份 57.8 GB REMUX 十分鐘。
+  RGBA 組載入前將 `maximumSubtitleOffsetSeconds` 設為 0，PNG 組保留預設 60 秒。
+  程序記憶體取樣峰值分別為 462.34 MB 與 431.25 MB，末 120 秒中位數分別為
+  446.33 MB 與 403.93 MB。兩組回跳 120 秒到無保留 cue 的位置後都重新顯示 PGS。
+  [#929 實機結果](https://github.com/superuser404notfound/AetherEngine/issues/929#issuecomment-6731082228)
+- 遠端 ISO 的連播與跳轉門檻仍待通過。前一輪 7.56.0 與 7.61.1 各有未通過的項目，
+  量測條件與結果見本節候選版紀錄。
 
 ### 0008 退役與取消契約重驗（2026-11-05）
 

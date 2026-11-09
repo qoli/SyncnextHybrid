@@ -206,6 +206,7 @@ public final class HybridPlaybackSession:
         let telemetry = engine.liveTelemetry
         let audio = telemetry?.objectAudio
         return [
+            "aetherVersion": AetherEngine.version,
             "videoRoute": engine.videoRoute.rawValue,
             "videoDecoder": engine.activeVideoDecoder ?? "unavailable",
             "sourceVideoCodec": engine.sourceVideoCodecName ?? "unavailable",

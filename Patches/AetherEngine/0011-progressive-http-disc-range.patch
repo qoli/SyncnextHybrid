@@ -1,5 +1,5 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 14fc6a84..a75982eb 100644
+index cabc43bc3c2783e4b61895d06d947eaa49c9a1d7..85598a00eaf1d2f68165e799565cbd8898a4240d 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
 @@ -905,6 +905,9 @@ public final class Demuxer: @unchecked Sendable {
@@ -13,7 +13,7 @@ index 14fc6a84..a75982eb 100644
              }
              releaseOwnedSourceReader()
 diff --git a/Sources/AetherEngine/IO/HLSIngest/ByteFIFO.swift b/Sources/AetherEngine/IO/HLSIngest/ByteFIFO.swift
-index e9c55651..adc81351 100644
+index e9c55651d6c2e3d85c5b6f079ce81ec3826e4f4c..adc81351c33ec753e8be47dada4ad05b7d073fa7 100644
 --- a/Sources/AetherEngine/IO/HLSIngest/ByteFIFO.swift
 +++ b/Sources/AetherEngine/IO/HLSIngest/ByteFIFO.swift
 @@ -16,6 +16,12 @@ final class ByteFIFO: @unchecked Sendable {
@@ -30,7 +30,7 @@ index e9c55651..adc81351 100644
      /// thread only gets the lock while a caller sits in `wait()`, so a non-zero read proves the
      /// park: that is what a test needs before it feeds or cancels the queue, and a sleep long
 diff --git a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
-index e1cff9c6..e0dc0cdb 100644
+index 27ee9f6d0acceca47cbfd70685e64a17af891b99..25cae238bd841f40287cd53ca89b76a4dbc830b7 100644
 --- a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
 +++ b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
 @@ -10,7 +10,9 @@ import Foundation
@@ -224,7 +224,7 @@ index e1cff9c6..e0dc0cdb 100644
  
 +    private static func rangeRequest(url: URL, extraHeaders: [String: String], timeout: TimeInterval,
 +                                     offset: Int64, length: Int) -> URLRequest {
-+        var request = URLRequest(url: url, timeoutInterval: timeout)
++        var request = URLRequest(engineURL: url, timeoutInterval: timeout)
 +        request.httpMethod = "GET"
 +        request.setValue(rangeHeader(offset: offset, length: length), forHTTPHeaderField: "Range")
 +        for (name, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: name) }
@@ -238,7 +238,7 @@ index e1cff9c6..e0dc0cdb 100644
      private static func rangeGet(url: URL, extraHeaders: [String: String], session: URLSession,
                                   timeout: TimeInterval, offset: Int64, length: Int) -> RangeResponse? {
          autoreleasepool {
--            var req = URLRequest(url: url, timeoutInterval: timeout)
+-            var req = URLRequest(engineURL: url, timeoutInterval: timeout)
 -            req.httpMethod = "GET"
 -            req.setValue(rangeHeader(offset: offset, length: length), forHTTPHeaderField: "Range")
 -            for (k, v) in extraHeaders { req.setValue(v, forHTTPHeaderField: k) }
@@ -361,7 +361,7 @@ index e1cff9c6..e0dc0cdb 100644
      }
  }
 diff --git a/Tests/AetherEngineTests/DiscReaderRangeAnswerTests.swift b/Tests/AetherEngineTests/DiscReaderRangeAnswerTests.swift
-index f8344a15..7eceed8a 100644
+index f8344a15450fd38f31b50932e6ef3da21e80a0e4..7eceed8ae5ef8ec7730013ddb89b4ff7d9390a25 100644
 --- a/Tests/AetherEngineTests/DiscReaderRangeAnswerTests.swift
 +++ b/Tests/AetherEngineTests/DiscReaderRangeAnswerTests.swift
 @@ -108,4 +108,100 @@ struct DiscReaderRangeAnswerTests {

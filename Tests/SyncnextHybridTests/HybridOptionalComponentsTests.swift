@@ -3,11 +3,11 @@ import XCTest
 @testable import SyncnextHybrid
 
 final class HybridOptionalComponentsTests: XCTestCase {
-    func testAllFourComponentsAreCompiled() {
-        XCTAssertEqual(HybridOptionalComponent.allCases.count, 4)
-        for component in HybridOptionalComponent.allCases {
-            XCTAssertTrue(component.isBuiltIn, component.traitName)
-        }
+    func testOnlyTheConfiguredComponentsAreCompiled() {
+        let configured: Set<HybridOptionalComponent> = [
+            .trueHDObjectAudio, .dtsxObjectAudio, .dualLayerDolbyVision, .dolbyVisionStillReshaping,
+        ]
+        XCTAssertEqual(Set(HybridOptionalComponent.allCases.filter(\.isBuiltIn)), configured)
     }
 
     func testDefaultRequestPreservesExistingPlaybackOptions() throws {
