@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-11-05
+更新日期：2026-11-09
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -295,6 +295,36 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### AetherEngine 7.61.1 候選版的最小相容重整（2026-11-09）
+
+決定：`Approved minimal Patch`。使用者批准更新衝突的 Patch 並在書房電視驗證。
+
+- 官方 [7.61.1](https://github.com/superuser404notfound/AetherEngine/releases/tag/7.61.1)
+  對應 `5f225054770230c4d6231b145b95352782170113`；其原始 manifest 要求
+  [FFmpegBuild 3.13.0](https://github.com/superuser404notfound/FFmpegBuild/releases/tag/3.13.0)，
+  對應 `9282e592b81d9aa1d699dcc70d46cf6b4d66b55f`。LibDovi 與 LibTrueHD 分別解析至
+  2.2.0 與 3.2.0。Hybrid 仍編入原有四項可選元件；新的 `DolbyVisionFelCurves` 未啟用。
+- `0001` 仍只指定本機 FFmpegBuild；`0010` 保留 PNG 儲存和上游 DVD／DVB 字幕畫布；
+  `0011` 的一般及漸進式 Range 都使用上游 `URLRequest(engineURL:)`，保留停用內容嗅探。
+  其他 Patch 的內容及套用順序不變。本輪未比較上游 RGBA 保留方案的十分鐘記憶體用量。
+- 兩輪 `Scripts/apply-patches.sh` 的 SDK source tree 一致，依賴圖只有本機 FFmpegBuild。
+  Hybrid 174 項測試中 170 項通過，4 項缺外部 fixtures 略過；Aether 焦點測試 112 項通過，
+  包括字幕、Range／HTTP 拒絕回應和顯示切換。Hybrid generic tvOS、SyncNext generic tvOS
+  Simulator 及 SyncNext 簽章 Debug 建置通過。
+- 書房電視（tvOS 26.6.1，App 1.214 / 581）確認引擎為 7.61.1。`Aether761NativeAudio`
+  的原生播放、30 秒定位、續播與獨立 demuxer 讀取選中音軌通過，取得 144,000 個 PCM frame。
+  `Aether756Regression` 的 PGS 情境使用 AV1 軟解與 AVKit 代理，37 秒及 7.5 秒定位均
+  準確，倒跳後字幕重新顯示，兩個時鐘在 10 秒觀察窗各前進約 10 秒。
+- `RemoteISOBuffer` 重播同一份 61.2 GB《馬達加斯加》4K ISO、夸克原画線路，從原片
+  10:00 觀察 210 秒，前向緩衝偏好 12 秒。八筆 8 MiB 與一筆 64 MiB Range 均回正確
+  206。連播仍有 1 次 AVPlayer stall、3 筆 renderer 重新緩衝樣本，未通過門檻。
+  與 7.56.0 同片段的前置緩衝中位數 4.95 秒／36 個掉幀相比，本輪為 2.21 秒／81 個掉幀。
+  兩輪來源入流中位數分別為 88.8 與 85.6 Mb/s；單輪對照無法將差異歸因於引擎版本。
+- 同源五次 AVKit 跳轉皆完成定位，續播檢查四次通過。25 分鐘落點本輪通過；10 分鐘落點
+  之後 8 秒，renderer 前進 7.76 秒、AVKit 前進 6.88 秒，該項未通過。
+  遠端 ISO 連播與跳轉均未通過完整門檻，候選 Patch 及報告獨立保存，正式 pin 維持
+  AetherEngine 7.56.0／FFmpegBuild 3.12.1。
 
 ### 0008 退役與取消契約重驗（2026-11-05）
 
