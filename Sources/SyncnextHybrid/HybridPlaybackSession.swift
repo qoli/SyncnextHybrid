@@ -74,6 +74,13 @@ public final class HybridPlaybackSession:
         HybridMediaInformation.loaded(engine: engine, snapshot: snapshot)
     }
 
+    /// On native remote HLS, declared sidecars can arrive before the origin's
+    /// legible group. The engine publishes the group's native tracks together.
+    public var canReportMissingSubtitleTrack: Bool {
+        engine.videoRoute != .remoteBypass
+            || engine.subtitleTracks.contains(where: \.isNativelyRenderedSubtitle)
+    }
+
     /// Read-only renderer evidence for the standalone playback acceptance app.
     /// Proxy snapshots intentionally report the Server clock, so they cannot
     /// independently detect a renderer rewind behind an unchanged UI timeline.
