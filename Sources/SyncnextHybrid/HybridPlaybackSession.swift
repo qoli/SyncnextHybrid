@@ -169,6 +169,14 @@ public final class HybridPlaybackSession:
     private weak var previousControllerDelegate:
         (any AVPlayerViewControllerDelegate)?
     private var previousCustomMenuItems: [UIMenuElement] = []
+    private struct SubtitleMenuConfiguration {
+        let embeddedTitle: String
+        let onlineTitle: String
+        let offTitle: String
+        let onlineItems: (URL?) -> [UIMenuElement]
+    }
+    private var subtitleMenuConfiguration: SubtitleMenuConfiguration?
+    private var downloadedSubtitleTracks: [Int: HybridExternalSubtitle] = [:]
     private var observations = Set<AnyCancellable>()
     private var proxyRateObservation: NSKeyValueObservation?
     private var proxyNavigationTasks:
@@ -1324,6 +1332,54 @@ public final class HybridPlaybackSession:
         }
     }
 
+    public var selectedSubtitleTrack: HybridMediaTrack? {
+        let id = engine.activeSubtitleTrackIndex
+        return Self.mapTracks(engine.subtitleTracks, kind: .subtitle).first { $0.id == id }
+    }
+
+    public var selectedDownloadedSubtitle: HybridExternalSubtitle? {
+        engine.activeSubtitleTrackIndex.flatMap { downloadedSubtitleTracks[$0] }
+    }
+
+    /// The host retains the local file for the life of the session. Preparation
+    /// leaves the active subtitle intact until the decoded sidecar can be selected.
+    public func selectDownloadedSubtitle(_ subtitle: HybridExternalSubtitle) async throws {
+        guard !stopped else { throw HybridPlaybackError.sessionStopped }
+        let prepared: PreparedExternalSubtitle
+        if let id = downloadedSubtitleTracks.first(where: { $0.value.url == subtitle.url })?.key,
+           engine.subtitleTracks.contains(where: { $0.id == id }) {
+            prepared = try await engine.prepareExternalSubtitle(id: id)
+        } else {
+            let track = ExternalSubtitleTrack(
+                url: subtitle.url, name: subtitle.name, language: subtitle.language,
+                httpHeaders: [:], formatHint: subtitle.formatHint
+            )
+            prepared = try await engine.prepareExternalSubtitle(track)
+        }
+        // Remote HLS captions are rendered by AVPlayer rather than the Hybrid overlay.
+        // Resolve the group before committing so that both selections can change together.
+        let nativePlayer = engine.videoRoute == .remoteBypass ? engine.currentAVPlayer : nil
+        let nativeItem = nativePlayer?.currentItem
+        let legibleGroup = try await nativeItem?.asset.loadMediaSelectionGroup(for: .legible)
+        try Task.checkCancellation()
+        let track = try engine.commitExternalSubtitle(prepared)
+        downloadedSubtitleTracks[track.id] = subtitle
+        if let nativePlayer, let nativeItem, let legibleGroup, nativePlayer.currentItem === nativeItem {
+            nativePlayer.appliesMediaSelectionCriteriaAutomatically = false
+            nativeItem.select(nil, in: legibleGroup)
+        }
+    }
+
+    public func configureSubtitleMenu(
+        embeddedTitle: String, onlineTitle: String, offTitle: String,
+        onlineItems: @escaping (URL?) -> [UIMenuElement]
+    ) {
+        subtitleMenuConfiguration = SubtitleMenuConfiguration(
+            embeddedTitle: embeddedTitle, onlineTitle: onlineTitle, offTitle: offTitle, onlineItems: onlineItems
+        )
+        refreshTrackMenus()
+    }
+
     public func stop() {
         guard !stopped else {
             return
@@ -2272,11 +2328,15 @@ public final class HybridPlaybackSession:
         return String(rate)
     }
 
-    private func refreshMenusAndSnapshot() {
+    public func refreshTrackMenus() {
         if let controller = attachedController {
             controller.transportBarCustomMenuItems =
                 previousCustomMenuItems + makeTrackMenus()
         }
+    }
+
+    private func refreshMenusAndSnapshot() {
+        refreshTrackMenus()
         publishSnapshot()
     }
 
@@ -2399,34 +2459,31 @@ public final class HybridPlaybackSession:
             )
         }
 
-        if !engine.subtitleTracks.isEmpty {
-            var actions: [UIAction] = [
-                UIAction(
-                    title: "Off",
-                    state: engine.activeSubtitleTrackIndex == nil
-                        ? .on
-                        : .off
-                ) { [weak self] _ in
-                    DispatchQueue.main.async {
-                        self?.selectSubtitleTrack(id: nil, origin: .user)
-                    }
-                },
-            ]
-            actions.append(
-                contentsOf: engine.subtitleTracks.map { track in
-                    UIAction(
-                        title: track.name,
-                        state: track.id
-                            == engine.activeSubtitleTrackIndex
-                            ? .on
-                            : .off
-                    ) { [weak self] _ in
-                        DispatchQueue.main.async {
-                            self?.selectSubtitleTrack(id: track.id, origin: .user)
-                        }
-                    }
+        let subtitleTracks = engine.subtitleTracks
+        if !subtitleTracks.isEmpty || subtitleMenuConfiguration != nil {
+            let off = subtitleTrackAction(id: nil, title: subtitleMenuConfiguration?.offTitle ?? "Off")
+            let children: [UIMenuElement]
+            let options: UIMenu.Options
+            if let configuration = subtitleMenuConfiguration {
+                let embedded = subtitleTracks.filter { !$0.isExternal }.map {
+                    subtitleTrackAction(id: $0.id, title: $0.name)
                 }
-            )
+                let sourceSidecars = subtitleTracks.filter {
+                    $0.isExternal && downloadedSubtitleTracks[$0.id] == nil
+                }.map { subtitleTrackAction(id: $0.id, title: $0.name) }
+                let online = UIMenu(
+                    title: configuration.onlineTitle,
+                    children: sourceSidecars + configuration.onlineItems(selectedDownloadedSubtitle?.url)
+                )
+                children = [
+                    UIMenu(title: configuration.embeddedTitle, children: [off] + embedded),
+                    online,
+                ]
+                options = []
+            } else {
+                children = [off] + subtitleTracks.map { subtitleTrackAction(id: $0.id, title: $0.name) }
+                options = .singleSelection
+            }
             menus.append(
                 UIMenu(
                     title: "Subtitles",
@@ -2434,12 +2491,20 @@ public final class HybridPlaybackSession:
                     identifier: UIMenu.Identifier(
                         "com.qoli.SyncnextHybrid.subtitles"
                     ),
-                    options: .singleSelection,
-                    children: actions
+                    options: options,
+                    children: children
                 )
             )
         }
         return menus
+    }
+
+    private func subtitleTrackAction(id: Int?, title: String) -> UIAction {
+        UIAction(title: title, state: id == engine.activeSubtitleTrackIndex ? .on : .off) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.selectSubtitleTrack(id: id, origin: .user)
+            }
+        }
     }
 
     private func publishSnapshot() {
