@@ -3,5 +3,4 @@
 0004-cache-backed-fingerprint-audio.patch
 0007-media-request-diagnostics.patch
 0009-audio-tap-segment-pacing.patch
-0010-subtitle-bitmap-storage.patch
 0011-progressive-http-disc-range.patch

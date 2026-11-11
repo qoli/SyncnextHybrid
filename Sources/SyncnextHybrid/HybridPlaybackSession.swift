@@ -212,6 +212,21 @@ public final class HybridPlaybackSession:
     private var vodBufferPolicy: HybridVODBufferPolicy?
 
     #if DEBUG
+    @_spi(SmokeTesting)
+    public func subtitleBitmapHistory(covering time: Double) -> (
+        reach: Double, earliestEnd: Double?, coveringCount: Int
+    ) {
+        let cues = engine.subtitleCues.filter {
+            if case .image = $0.body { return true }
+            return false
+        }
+        return (
+            engine.maximumSubtitleOffsetSeconds,
+            cues.map(\.endTime).min(),
+            cues.count { $0.startTime <= time && time < $0.endTime }
+        )
+    }
+
     public var vodNetworkTestObservation: (videoRoute: String, isLive: Bool, videoWidth: Int, videoHeight: Int) {
         (engine.videoRoute.rawValue, engine.isLive, Int(engine.sourceVideoWidth), Int(engine.sourceVideoHeight))
     }
@@ -282,6 +297,8 @@ public final class HybridPlaybackSession:
                 String(describing: error)
             )
         }
+        // Hybrid presents subtitles at their authored source timestamps.
+        engine.maximumSubtitleOffsetSeconds = 0
         surface = AetherPlayerView()
         engine.bind(view: surface)
         startupDiagnostics.observe(engine)
@@ -1422,7 +1439,7 @@ public final class HybridPlaybackSession:
     /// Past source time alone is not an eviction rule: offsets and seeks still
     /// require the subtitle's authored presentation window.
     public var memoryObservation: (counters: [String: Int], selectedSubtitleCodec: String?) {
-        var images: [ObjectIdentifier: (bytes: Int, encodedBytes: Int?, pastOnly: Bool)] = [:]
+        var images: [ObjectIdentifier: (bytes: Int, pastOnly: Bool)] = [:]
         var bitmaps = 0, texts = 0, richTexts = 0, textBytes = 0
         let playhead = engine.sourceTime
         for cue in engine.subtitleCues {
@@ -1432,7 +1449,6 @@ public final class HybridPlaybackSession:
                 let key = ObjectIdentifier(image.cgImage)
                 let previous = images[key]
                 images[key] = (image.cgImage.bytesPerRow * image.cgImage.height,
-                               image.encodedBackingBytes,
                                (previous?.pastOnly ?? true) && cue.endTime < playhead)
             case .text(let text):
                 texts += 1; textBytes += text.utf8.count
@@ -1445,8 +1461,6 @@ public final class HybridPlaybackSession:
             "subtitleBitmapCueCount": bitmaps, "subtitleUniqueBitmapCount": images.count,
             "subtitleBitmapBytesEstimate": images.values.reduce(0) { $0 + $1.bytes },
             "subtitlePastBitmapBytesEstimate": images.values.filter(\.pastOnly).reduce(0) { $0 + $1.bytes },
-            "subtitleEncodedBackingBytes": images.values.reduce(0) { $0 + ($1.encodedBytes ?? 0) },
-            "subtitleEncodedBitmapCount": images.values.filter { $0.encodedBytes != nil }.count,
             "subtitleTextCueCount": texts, "subtitleRichTextCueCount": richTexts,
             "subtitleTextUTF8Bytes": textBytes,
         ]

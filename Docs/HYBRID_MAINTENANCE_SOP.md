@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-11-09
+更新日期：2026-11-11
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -96,22 +96,13 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 2026-10-30 升級時移除已由上游取代的 pacing／held-buffer 實作，只保留
      opt-in `lossless`。預設使用上游 256-buffer 及 overflow discontinuity 契約，
      同時保留上游新增的 `channels` 參數。
-6. `0010-subtitle-bitmap-storage.patch`
-   - 依使用者 2026-10-25 明確批准的最小 Patch，將 bitmap 字幕的歷史圖像以
-     無損 PNG provider 保留，按繪製需求展開像素；不縮短 cue 保留時間、不刪字幕。
-   - 保留原 crop、位置、時間、forced 標記及 interpolation。公開圖像只承諾
-     CGImage 的繪製內容，不假設 provider 固定為 premultiplied RGBA；增加已知
-     encoded backing bytes 觀測值。範圍與退出條件見第 8 節。
-   - 實作沿用既有 [PR #879](https://github.com/superuser404notfound/AetherEngine/pull/879)。
-     上游採用 raw RGBA byte budget，並於 7.59.0 加入 `maximumSubtitleOffsetSeconds`。
-     7.61.1 的 Release 實機對照確認 0 秒 RGBA 可重建回跳後的 PGS，現有 PNG 配置仍降低
-     程序 footprint，因此此次升級保留本 Patch。
-     [#929 實機對照](https://github.com/superuser404notfound/AetherEngine/issues/929#issuecomment-6731082228)
-   - Core Animation 直接顯示 lazy PNG 可在 main 解碼並保留展開像素。Encoded bytes
-     與程序 physical footprint 分別量測。
-7. `0011-progressive-http-disc-range.patch`
-   - 依使用者 2026-11-09 明確授權，讓播放 demuxer 在打開遠端 ISO 後，連續補讀
-     使用長 Range，回應通過驗證後即可逐段交付。範圍與退出條件見第 8 節。
+6. `0011-progressive-http-disc-range.patch`
+   - 依使用者 2026-11-09 明確授權，播放 demuxer 完成探測後，第一個順序補讀
+     即可用長 Range。跳轉先以短 Range 建立落點，再接回長 Range。
+   - 自 7.62.1 起重用上游 `ProgressiveRangeStream`，保留上述啟用與跳轉時機。
+
+`0010-subtitle-bitmap-storage.patch` 自 7.62.1 起退役。Hybrid 使用上游 RGBA 儲存，
+並在載入前設定 0 秒字幕偏移。見第 8 節及 [#929 真機驗證](https://github.com/superuser404notfound/AetherEngine/issues/929)。
 
 `0005-query-wrapped-hls-segment-ingest.patch` 已由 AetherEngine 7.45.0 原生
 `LoadOptions.heldSourceConnection` 的持續 HTTP/1.1 HLS transport 取代並退出。
@@ -296,6 +287,27 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 套用 AetherEngine 7.62.1（2026-11-11）
+
+- [AetherEngine 7.62.1](https://github.com/superuser404notfound/AetherEngine/releases/tag/7.62.1) 固定於
+  `d879ef83bc401decb5ac8e2b03b5c973c18db5d9`。上游要求
+  [FFmpegBuild 3.14.0](https://github.com/superuser404notfound/FFmpegBuild/releases/tag/3.14.0)，固定於
+  `2ff2238f6b65d7686e71c8aa9e45fa4e26f33e1d`。`0001` 仍只將依賴指向本機 sibling。
+- `apply-patches.sh` 連跑兩次，兩次的官方 HEAD 與套用後的 source tree 相同，並與真機候選版一致。
+  兩次 Hybrid 測試皆為 175 個案例、4 個跳過、0 個失敗；通用 tvOS 裝置建置及
+  正式 checkout 的 Syncnext 通用 tvOS Simulator 建置通過。
+- 退役 `0010`。正式播放在載入前將 `maximumSubtitleOffsetSeconds` 設為 `0`；引擎不會為字幕
+  額外預取影片。書房電視 tvOS 26.6.1 的 HDR PQ 內嵌 PGS 及外掛 SUP 均通過。
+  在同一段 10 分鐘 REMUX，從 PNG／60 秒改成上游 RGBA／0 秒，程序取樣峰值由
+  436.52 MB 變為 429.15 MB，末 120 秒中位數由 395.81 MB 變為 348.56 MB。
+  兩組回跳 120 秒後均重新顯示 PGS。這組比較同時改變儲存方式和保留範圍。
+- 保留 `0011`，重用上游 `ProgressiveRangeStream`。書房電視的受控 ISO 通過，
+  首次短讀後觀察到 64 MiB 長 Range；原生 AVPlayer 播放、跳轉、續播及獨立音軌讀取亦通過。
+- 同一個 61.2 GB 原 ISO 從 10:00 起觀察 210 秒，原正式版 7.61.1 停頓 7 次，
+  7.62.1 保留 `0011` 停頓 8 次，兩版連播皆未通過。候選版五個跳轉均落點，
+  四個通過續播門檻。依使用者 2026-11-11 決定，本次更新不等原 ISO 通過；
+  驗收條件保留，[#1007](https://github.com/superuser404notfound/AetherEngine/issues/1007) 繼續開啟。
 
 ### AetherEngine 7.61.1 候選版的最小相容重整（2026-11-09）
 
