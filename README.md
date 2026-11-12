@@ -67,11 +67,12 @@ matcher 從通過既有統計門檻的非重疊種子視窗估計線性時間漂
 設定 `FINGERPRINT_INTRO_FIXTURES` 為 App 凍結的 MDD 片頭目錄後，
 `swift test --filter RepeatedSegmentIntroOfflineTests` 會經正式 HLS decoder、PCM 與 matcher
 核對已人工確認的片頭音樂案例，輸出 `production-analysis.json`。
-Session 的 `fingerprintAudioPlan(for:)` 依已確認的媒體能力提供 provider 與取樣時機：
+Session 的 `fingerprintAudioPlan(for:)` 依來源探測結果與已載入格式提供 provider 與取樣時機。
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。
-已確認的有限 EBML 來源使用主播放的 SegmentCache 取得片頭與片尾音訊，
-不另外開啟原來源。片尾等播放進入其來源時間範圍且 seek 完成後才開始 cache material demand；
+已確認的有限 EBML 來源使用主播放的 SegmentCache 取得片頭與片尾音訊。
+來源探測回報 `request-failed` 時，指紋取樣亦採用相同的有限格式策略，
+啟播日誌保留實際的探測結果。片尾等播放進入其來源時間範圍且 seek 完成後才開始 cache material demand。
 片頭的後續 batch 同樣等已觸發的 seek 完成，避免前綴比對跳過改變正在取樣的時間軸。
 等待時間不消耗素材取得的 deadline。這條路徑的 cache 失敗明確回報，
 不觸發重新讀源的 AAC extractor。

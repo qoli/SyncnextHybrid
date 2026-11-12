@@ -123,6 +123,19 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         XCTAssertFalse(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: .aetherDefault(.confirmedNonHLS)))
     }
 
+    func testRequestFailureUsesFinitePlaybackCacheWithoutContainerInformation() throws {
+        let admission = HybridRemoteSourceAdmission.aetherDefault(.requestFailed)
+        let expected: [(HybridFingerprintAudioRegion, HybridFingerprintAudioTiming)] = [
+            (.front, .afterPlaybackSeek),
+            (.back, .whenPlaybackReachesRange),
+        ]
+        for (region, timing) in expected {
+            let plan = try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: region)
+            XCTAssertEqual(plan, HybridFingerprintAudioPlan(provider: .segmentCache, timing: timing))
+            XCTAssertTrue(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: admission, region: region))
+        }
+    }
+
     func testPlaybackCacheTailWaitsForSeekCompletion() throws {
         let range = 3_641.375..<3_821.375
         let plan = try HybridFingerprintAudioProviderResolver.resolve(
