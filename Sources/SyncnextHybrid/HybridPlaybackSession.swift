@@ -74,6 +74,27 @@ public final class HybridPlaybackSession:
         HybridMediaInformation.loaded(engine: engine, snapshot: snapshot)
     }
 
+    /// The player that decodes and presents native video, including loopback video
+    /// under the AVKit transport proxy. Nil for software video and audio-only sessions.
+    public var nativeVideoPlayer: AVPlayer? {
+        guard engine.nativePlayerLayer != nil else { return nil }
+        return engine.currentAVPlayer
+    }
+
+    /// Native video is mounted by AVKit or by the engine's proxy-route surface.
+    /// The overlay sits above that picture and below Hybrid's subtitle overlay.
+    public func mountNativeVideoOverlay(_ view: UIView, in controller: AVPlayerViewController) -> Bool {
+        guard let overlay = controller.contentOverlayView else { return false }
+        let picture = snapshot.route == .avKitProxy ? surface : nil
+        if let picture {
+            guard picture.superview === overlay else { return false }
+            overlay.insertSubview(view, aboveSubview: picture)
+        } else {
+            overlay.insertSubview(view, at: 0)
+        }
+        return true
+    }
+
     /// On native remote HLS, declared sidecars can arrive before the origin's
     /// legible group. The engine publishes the group's native tracks together.
     public var canReportMissingSubtitleTrack: Bool {
