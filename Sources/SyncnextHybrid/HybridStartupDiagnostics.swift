@@ -17,12 +17,13 @@ final class HybridStartupDiagnostics {
         self.recordsStartup = recordsStartup
     }
 
-    func observe(_ engine: AetherEngine) {
+    func observe(_ engine: AetherEngine, onProgress: (@MainActor (StartupProgress) -> Void)?) {
         guard recordsStartup else { return }
         // Aether publishes its startup sequence on its MainActor owner.
         observation = engine.$startupProgress.removeDuplicates().sink { [weak self] progress in
             guard let self, let progress else { return }
             self.mark("checkpoint-\(progress.checkpoint)", generation: progress.generation)
+            onProgress?(progress)
         }
     }
 

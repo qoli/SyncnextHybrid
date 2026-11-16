@@ -301,7 +301,10 @@ public final class HybridPlaybackSession:
         )
     }
 
-    public init(request: HybridPlaybackRequest) async throws {
+    public init(
+        request: HybridPlaybackRequest,
+        onStartupProgress: (@MainActor (StartupProgress) -> Void)? = nil
+    ) async throws {
         HybridNetworkDiagnostics.installMediaRequestLogging()
         self.request = request
         startupDiagnostics = HybridStartupDiagnostics(sessionID: diagnosticsID)
@@ -322,7 +325,7 @@ public final class HybridPlaybackSession:
         engine.maximumSubtitleOffsetSeconds = 0
         surface = AetherPlayerView()
         engine.bind(view: surface)
-        startupDiagnostics.observe(engine)
+        startupDiagnostics.observe(engine, onProgress: onStartupProgress)
 
         let externalSubtitles = request.externalSubtitles.map {
             ExternalSubtitleTrack(
