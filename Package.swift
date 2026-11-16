@@ -49,6 +49,7 @@ let package = Package(
                 "SyncnextHybrid",
                 .product(name: "AetherEngine", package: "AetherEngine"),
                 .product(name: "AetherLibavcodec", package: "FFmpegBuild"),
+                .product(name: "AetherLibavutil", package: "FFmpegBuild"),
             ],
             resources: [
                 .copy("Fixtures"),

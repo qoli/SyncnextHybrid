@@ -431,7 +431,15 @@ enum HybridIndependentFingerprintAudio {
                     + "buffers=\(buffers.count)"
             )
         }
-        if buffers.dropFirst().contains(where: \.discontinuity) {
+        if let index = buffers.indices.dropFirst().first(where: { buffers[$0].discontinuity }) {
+            let previous = buffers[index - 1]
+            let sampleRate = previous.buffer.format.sampleRate
+            let expected = Int64((previous.sourceTime * sampleRate).rounded()) + Int64(previous.buffer.frameLength)
+            let actual = Int64((buffers[index].sourceTime * sampleRate).rounded())
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_FINGERPRINT_COVERAGE result=discontinuous "
+                    + "sampleRate=\(sampleRate) expectedSample=\(expected) actualSample=\(actual) deltaSamples=\(actual - expected)"
+            )
             throw HybridFingerprintAudioError.discontinuousRange
         }
     }

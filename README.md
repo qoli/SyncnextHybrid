@@ -83,6 +83,10 @@ App 等待時收起分析進度並保留片頭結果，取樣與比對完成後�
 Session stop、呼叫方取消與音軌變更會撤銷
 分析；獨立 reader 的取消會關閉自己擁有的 HTTP producer。
 
+獨立解碼器按每幀的取樣格式、取樣率與聲道配置選用重取樣器。配置變更時先處理同一時間軸
+上的延遲樣本，再以新配置繼續產出 48 kHz mono PCM。缺少預期的音訊資料平面時回報解碼錯誤。
+`swift test --filter HybridFFmpegAudioDecoderTests` 涵蓋 5.1 到雙聲道切換後的樣本與時間戳連續性。
+
 DoH 等 process DNS policy 由 App 設定；播放 request 可明確指定
 `heldSourceConnection: true`，將上游的持續 HTTP/1.1 選項傳入 Aether 7.45.0。
 HLS VOD 的同源分片由官方 transport 持有連線，FIFO、framing、背壓與取消

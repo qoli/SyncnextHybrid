@@ -4,6 +4,7 @@ import AetherLibavcodec
 import AetherLibavformat
 import AetherLibavutil
 import AetherLibswresample
+import Foundation
 
 struct HybridAudioContinuityTracker {
     private static let initialOriginTolerance: Int64 = 1
@@ -39,9 +40,17 @@ struct HybridDecodedAudioChunk {
 
 final class HybridFFmpegAudioDecoder: @unchecked Sendable {
     private static let minimumSamplesPerChunk = 4_800
+    #if DEBUG
+    private static let observesISOFrames = ProcessInfo.processInfo.arguments.contains(
+        "--syncnext-acceptance-case=ISOAudioFingerprintCrash"
+    )
+    #endif
 
     private var codecContext: UnsafeMutablePointer<AVCodecContext>?
     private var resampler: OpaquePointer?
+    private var resamplerInputLayout = AVChannelLayout()
+    private var resamplerInputFormat = AV_SAMPLE_FMT_NONE
+    private var resamplerInputRate: Int32 = 0
     private var timeBase = AVRational(num: 1, den: 90_000)
     private var anchorPTS: Double?
     private var samplesSinceAnchor: Int64 = 0
@@ -115,9 +124,8 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
         if codecContext != nil {
             avcodec_free_context(&codecContext)
         }
-        if resampler != nil {
-            swr_free(&resampler)
-        }
+        swr_free(&resampler)
+        av_channel_layout_uninit(&resamplerInputLayout)
         pending.removeAll()
         anchorPTS = nil
         samplesSinceAnchor = 0
@@ -140,12 +148,7 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
         }
 
         while avcodec_receive_frame(context, frame) >= 0 {
-            if resampler == nil {
-                try initializeResampler(from: frame)
-            }
-            try ingest(frame)
-            if pending.count >= Self.minimumSamplesPerChunk,
-               let chunk = emitPending(force: false) {
+            if let chunk = try ingestDecodedFrame(frame) {
                 chunks.append(chunk)
             }
         }
@@ -153,54 +156,67 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
     }
 
     private func initializeResampler(
-        from frame: UnsafeMutablePointer<AVFrame>
-    ) throws {
+        layout: inout AVChannelLayout,
+        format: AVSampleFormat,
+        rate: Int32
+    ) throws -> OpaquePointer {
+        swr_free(&resampler)
+        av_channel_layout_uninit(&resamplerInputLayout)
+        guard av_channel_layout_copy(&resamplerInputLayout, &layout) >= 0 else {
+            throw HybridAudioAnalysisError.decoderFailed("FFmpeg could not copy the input audio layout")
+        }
+
         var outputLayout = AVChannelLayout()
         av_channel_layout_default(&outputLayout, 1)
-        var inputLayout = AVChannelLayout()
-        if frame.pointee.ch_layout.nb_channels > 0 {
-            av_channel_layout_copy(&inputLayout, &frame.pointee.ch_layout)
-        } else {
-            av_channel_layout_default(&inputLayout, 2)
-        }
-        defer {
-            av_channel_layout_uninit(&inputLayout)
-            av_channel_layout_uninit(&outputLayout)
-        }
+        defer { av_channel_layout_uninit(&outputLayout) }
 
         let allocation = swr_alloc_set_opts2(
             &resampler,
             &outputLayout,
             AV_SAMPLE_FMT_FLT,
             Int32(HybridAudioAnalysisFormat.sampleRate),
-            &inputLayout,
-            AVSampleFormat(rawValue: frame.pointee.format),
-            frame.pointee.sample_rate,
+            &layout,
+            format,
+            rate,
             0,
             nil
         )
         guard allocation >= 0,
-              resampler != nil,
+              let resampler,
               swr_init(resampler) >= 0 else {
-            if resampler != nil {
-                swr_free(&resampler)
-            }
+            swr_free(&resampler)
+            av_channel_layout_uninit(&resamplerInputLayout)
             throw HybridAudioAnalysisError.decoderFailed(
                 "FFmpeg could not initialize mono 48 kHz resampling"
             )
         }
+        resamplerInputFormat = format
+        resamplerInputRate = rate
+        return resampler
     }
 
-    private func ingest(
+    func ingestDecodedFrame(
         _ frame: UnsafeMutablePointer<AVFrame>
-    ) throws {
-        guard let resampler, frame.pointee.nb_samples > 0 else {
-            return
+    ) throws -> HybridDecodedAudioChunk? {
+        let input = frame.pointee
+        guard input.nb_samples > 0 else { return nil }
+        let format = AVSampleFormat(rawValue: input.format)
+        var layout = input.ch_layout
+        let rate = input.sample_rate
+        guard av_get_bytes_per_sample(format) > 0, rate > 0, av_channel_layout_check(&layout) != 0 else {
+            Self.recordInvalidFrame(input, reason: "invalid_configuration")
+            throw HybridAudioAnalysisError.decoderFailed("Invalid decoded audio frame configuration")
+        }
+        let planeCount = av_sample_fmt_is_planar(format) != 0 ? Int(layout.nb_channels) : 1
+        guard let planes = input.extended_data,
+              (0..<planeCount).allSatisfy({ planes[$0] != nil }) else {
+            Self.recordInvalidFrame(input, reason: "missing_data_plane")
+            throw HybridAudioAnalysisError.decoderFailed("Decoded audio frame is missing a data plane")
         }
 
         let framePTS: Double? =
-            frame.pointee.pts != Int64.min && timeBase.den > 0
-            ? Double(frame.pointee.pts)
+            input.pts != Int64.min && timeBase.den > 0
+            ? Double(input.pts)
                 * Double(timeBase.num)
                 / Double(timeBase.den)
             : nil
@@ -208,26 +224,74 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
             $0 + Double(samplesSinceAnchor)
                 / HybridAudioAnalysisFormat.sampleRate
         }
-        if anchorPTS == nil
-            || (
-                framePTS != nil
-                    && runningPTS != nil
-                    && abs(framePTS! - runningPTS!) > 0.25
-            ) {
+        let startsNewTimeline: Bool
+        if let framePTS, let runningPTS {
+            startsNewTimeline = abs(framePTS - runningPTS) > 0.25
+        } else {
+            startsNewTimeline = anchorPTS == nil
+        }
+
+        let converter: OpaquePointer
+        if let resampler,
+           resamplerInputFormat == format, resamplerInputRate == rate,
+           av_channel_layout_compare(&resamplerInputLayout, &layout) == 0 {
+            converter = resampler
+        } else {
+            var previous: String?
+            if let resampler {
+                previous = Self.describeInput(resamplerInputFormat, resamplerInputRate, resamplerInputLayout)
+                // Keep delayed samples on the old timeline before replacing the converter.
+                if !startsNewTimeline {
+                    try appendResampledSamples(using: resampler, input: nil, count: 0)
+                }
+            }
+            converter = try initializeResampler(layout: &layout, format: format, rate: rate)
+            if let previous {
+                HybridDiagnosticEmitter.emit(
+                    "SYNCNEXT_HYBRID_FINGERPRINT_RESAMPLER event=reconfigured pts=\(input.pts) samples=\(input.nb_samples) "
+                        + "previous={\(previous)} frame={\(Self.describeInput(format, rate, layout)) planes=\(planeCount)/\(planeCount)}"
+                )
+            }
+            #if DEBUG
+            if previous == nil, Self.observesISOFrames {
+                HybridDiagnosticEmitter.emit(
+                    "SYNCNEXT_HYBRID_FINGERPRINT_RESAMPLER event=input pts=\(input.pts) samples=\(input.nb_samples) "
+                        + "frame={\(Self.describeInput(format, rate, layout)) planes=\(planeCount)/\(planeCount)}"
+                )
+            }
+            #endif
+        }
+
+        if startsNewTimeline {
+            #if DEBUG
+            if Self.observesISOFrames, let framePTS, let runningPTS {
+                HybridDiagnosticEmitter.emit(
+                    "SYNCNEXT_HYBRID_FINGERPRINT_RESAMPLER event=timestamp_reset pts=\(input.pts) "
+                        + "expectedSeconds=\(runningPTS) actualSeconds=\(framePTS) pendingSamples=\(pending.count)"
+                )
+            }
+            #endif
             pending.removeAll(keepingCapacity: true)
             anchorPTS = framePTS ?? 0
             samplesSinceAnchor = 0
         }
-        if pending.isEmpty {
-            pendingStartPTS =
-                anchorPTS!
-                + Double(samplesSinceAnchor)
-                    / HybridAudioAnalysisFormat.sampleRate
-        }
-
-        let maximumOutput = Int(
-            swr_get_out_samples(resampler, frame.pointee.nb_samples)
+        try appendResampledSamples(
+            using: converter,
+            input: UnsafePointer<UnsafePointer<UInt8>?>(OpaquePointer(planes)),
+            count: input.nb_samples
         )
+        return emitPending(force: false)
+    }
+
+    private func appendResampledSamples(
+        using resampler: OpaquePointer,
+        input: UnsafePointer<UnsafePointer<UInt8>?>?,
+        count: Int32
+    ) throws {
+        let maximumOutput = Int(swr_get_out_samples(resampler, count))
+        guard maximumOutput >= 0 else {
+            throw HybridAudioAnalysisError.decoderFailed("FFmpeg could not size the resampled output")
+        }
         guard maximumOutput > 0 else {
             return
         }
@@ -236,16 +300,7 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
             var outputPointer: UnsafeMutablePointer<UInt8>? =
                 raw.baseAddress?.assumingMemoryBound(to: UInt8.self)
             return withUnsafeMutablePointer(to: &outputPointer) { outputBuffer in
-                let input = UnsafePointer<UnsafePointer<UInt8>?>(
-                    OpaquePointer(frame.pointee.extended_data)
-                )
-                return swr_convert(
-                    resampler,
-                    outputBuffer,
-                    Int32(maximumOutput),
-                    input,
-                    frame.pointee.nb_samples
-                )
+                swr_convert(resampler, outputBuffer, Int32(maximumOutput), input, count)
             }
         }
         guard converted >= 0 else {
@@ -256,8 +311,30 @@ final class HybridFFmpegAudioDecoder: @unchecked Sendable {
         guard converted > 0 else {
             return
         }
+        if pending.isEmpty, let anchorPTS {
+            pendingStartPTS = anchorPTS + Double(samplesSinceAnchor) / HybridAudioAnalysisFormat.sampleRate
+        }
         pending.append(contentsOf: output.prefix(Int(converted)))
         samplesSinceAnchor += Int64(converted)
+    }
+
+    private static func describeInput(_ format: AVSampleFormat, _ rate: Int32, _ layout: AVChannelLayout) -> String {
+        let formatName = av_get_sample_fmt_name(format).map { String(cString: $0) } ?? "unknown"
+        var layout = layout
+        var layoutDescription = [CChar](repeating: 0, count: 128)
+        layoutDescription.withUnsafeMutableBufferPointer {
+            _ = av_channel_layout_describe(&layout, $0.baseAddress, $0.count)
+        }
+        let layoutName = layoutDescription.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return "format=\(formatName) rate=\(rate) channels=\(layout.nb_channels) "
+            + "layout=\(String(decoding: layoutName, as: UTF8.self).replacingOccurrences(of: " ", with: "_"))"
+    }
+
+    private static func recordInvalidFrame(_ frame: AVFrame, reason: String) {
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_RESAMPLER event=invalid_frame reason=\(reason) pts=\(frame.pts) "
+                + "samples=\(frame.nb_samples) format=\(frame.format) rate=\(frame.sample_rate) channels=\(frame.ch_layout.nb_channels)"
+        )
     }
 
     private func emitPending(
