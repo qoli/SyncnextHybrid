@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-11-11
+更新日期：2026-11-19
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -287,6 +287,81 @@ root commit 只允許包含：
 任何問題沒有證據即不得更新 pin。
 
 ## 8. 決策摘要
+
+### 套用 AetherEngine 7.70.0（2026-11-19）
+
+使用者閱讀下方候選驗收結果後，明確要求「套用給正式 hybrid」。依此決定，將同一份
+AetherEngine 7.70.0／FFmpegBuild 3.15.0 pins 與已批准的六份 Patch 套用到目前正式
+checkout，不等待原 ISO 連播與 seek 續播全數通過。這項採用決定不改寫驗收結果。
+
+- 使用候選封存檔中的原 bytes，未另行重寫或擴大 Patch。官方完整 SHA 與候選紀錄相同；
+  套用後 patched tree 為 `ce9be7952b22b98cf3c85beb7c2377b5fa09cab8`。
+- 正式 checkout 的完整 `apply-patches.sh` 重跑兩輪，每輪 Hybrid 177 項（4 項外部
+  fixture 跳過、0 失敗）及 generic tvOS 建置均通過；兩輪官方 HEAD、patched tree 與
+  diff hash 相同。依賴圖仍只有一份 sibling local FFmpegBuild，六份 Patch 與 manifest 一致。
+  本次正式套用的日誌與 tree 證據位於 `.build/Acceptance193/formal-apply/`。
+- Syncnext App 的 Debug／arm64／generic tvOS Simulator 建置通過。Xcode MCP 確認專案與
+  scheme 後，因現有 build 入口只提供具體 Simulator 選擇，此項使用 CLI 通用目的地建置。
+  本次沿用同一 patched tree 的先前書房電視驗收證據，未重新部署或執行實機 case。
+- 原 ISO 的 10 次 stall、25:00 落點續播失敗及下列未驗證項目繼續保留，
+  [#1007](https://github.com/superuser404notfound/AetherEngine/issues/1007) 不改記通過。
+- [5ML-193](https://linear.app/5mlstudio/issue/5ML-193) 同步記錄這次正式採用決定與整合結果；
+  保持目前 main checkout。使用者之後另行授權僅將本次 Hybrid 升級獨立 commit 並 push，
+  其他修改保留原樣；不包含發版。
+
+### AetherEngine 7.70.0 候選驗收與最小相容重整（2026-11-19）
+
+使用者已批准 `Approved minimal Patch` 並要求繼續驗收，追蹤於
+[5ML-193](https://linear.app/5mlstudio/issue/5ML-193)。首輪結論為阻塞採用：原 ISO 連播及一項
+seek 續播檢查未通過，且部分實機驗收仍缺證據，因此先恢復原正式 pins 與 Patch。
+候選完整 Patch、pins、任務 case 與去識別化摘要保存為該 issue 的 Resources；
+之後使用者明確決定套用，見上方正式採用紀錄。未通過與未驗證項目仍維持原結果。
+
+- 官方 [7.70.0](https://github.com/superuser404notfound/AetherEngine/releases/tag/7.70.0)
+  固定於 `3cfe848106482150209281c176ed72df5ac2674c`；其原始 manifest 要求
+  [FFmpegBuild 3.15.0](https://github.com/superuser404notfound/FFmpegBuild/releases/tag/3.15.0)，
+  固定於 `d445e6daa180db73f12d47606a00c914f682e278`。
+- `0001` 重生 dependency context；`0004` 保留上游新增的 cache store bookkeeping；
+  `0007` 的 streaming observer 隨上游移至 `AVIOReader+ForwardOnly.swift`，並保留
+  pool release 的 unread-byte refusal、1xx 與 redirect 修復。沒有新增 transport 或 recovery。
+- `0011` 改用上游 `playbackStreaming`／`streams()`，保留探測後明確 admission 與原有
+  seek 重設、取消契約；未 admission 的 discovery／獨立 reader 不得進入長 Range。
+  新增實際請求回歸先證明縮減版誤進入 1 MiB Range，再恢復原 admission gate 並通過。
+  上游自動啟用時機尚不能單獨取代此例外。
+  `0002`／`0009` bytes 不變，FFmpegBuild 沒有 patch。
+- 完整 `apply-patches.sh` 連跑兩次均通過，官方 HEAD 與 patched diff 一致；每輪 Hybrid
+  為 177 項、4 個外部 fixture 跳過、0 失敗。安全、cache、取消與 ISO 聚焦測試為
+  258 項 Swift Testing 加 27 項 XCTest，含憑證 origin／remote-HLS generation 及 admission 回歸；
+  FFmpegBuild 47 項通過。最終 patched source tree 為
+  `ce9be7952b22b98cf3c85beb7c2377b5fa09cab8`。
+  generic tvOS、Syncnext 簽章 Debug 與 Xcode MCP tvOS Simulator 建置通過；Simulator
+  執行行為尚未驗證。
+- 書房電視 tvOS 26.6.1 使用任務 case `Aether770Integration`，同一份 4K HEVC fixture、
+  六次 seek／preview 的程序取樣峰值由 388.42 MB 變為 229.51 MB；停止後四秒由
+  197.95 MB 變為 183.54 MB。使用最終 tree 的結果，不採早期候選較低數字；兩版皆
+  通過同組斷言。這是單輪受控比較，不能把差異
+  全部歸因於 decoder budget，也不是上游 1.1 GB 案例的重現。
+- 最終候選 11 組基本實機 case 通過：同源與跨來源認證 DASH、畸形 DASH 拒絕、
+  coded 3840×2176／crop2160 HEVC、native／AVKit proxy 雙向定位、獨立音訊、cache
+  fingerprint、受控 UDF ISO、4K 預覽，以及 HLS 起播與字幕 stand-in fetch 期間取消後換台。
+  雙 origin 實際請求確認原站認證有效，異源保留普通 header 而無 Authorization／Cookie／Token。
+  HLS 結果為生命週期與新 item 保留證據，沒有實際 HDMI 聲音確認；TLS trust suspension
+  的實機情境亦未驗證。獨立 PGS UI 重播未執行，損壞媒體的解析邊界由聚焦測試覆蓋。
+- 原 61.2 GB ISO 從 10:00 連播 210 秒，10 次 AVPlayer stall、15 筆 renderer 重新緩衝
+  樣本、掉幀增量 0，未通過原門檻；八筆 8 MiB 與一筆 64 MiB Range 均為正確 206。
+  run ID：`7C7A601C-C3A7-4B93-B04A-E359795853C0`。
+- 同源五次 AVKit seek 均落點，四次通過續播；25:00 落點後 8 秒內 renderer 只前進
+  4.76 秒、AVKit 前進 8.01 秒，該項未通過。
+  run ID：`38A7B7A1-A59F-40A8-890A-59AA1D0CFA4C`。
+  與較早版本的單輪網路條件不同，不能單憑此結果判定版本回歸；已知
+  [#1007](https://github.com/superuser404notfound/AetherEngine/issues/1007) 不改記通過。
+- 本機完整證據位於 `.build/Acceptance193/`，摘要逐項核對同輪唯一 terminal 與 JSON
+  結果。CoreDevice 7000／中止的 host 檔案讀取、Home 前景啟動等待及 Companion 準備
+  錯誤分開保留；最終 seek 補讀同一 PID／run，沒有重新播放或修改通過門檻。
+- 恢復後重新跑完整 `apply-patches.sh`：177 項 Hybrid 測試（4 項跳過、0 失敗）及
+  generic tvOS 建置通過；Syncnext 包含本次 Debug case 的 Xcode MCP Simulator 建置亦通過。
+  兩個 submodule 為原官方 detached HEAD；原 Patch bytes、manifest
+  與先前已驗證的 patched tree `4201757e99f326a5ebda4812dcae96035aae2f78` 一致。
 
 ### 套用 AetherEngine 7.62.1（2026-11-11）
 

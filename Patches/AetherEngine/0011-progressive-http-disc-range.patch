@@ -1,8 +1,8 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 300b67906c7728d29bc74d210aca0205bb725f9c..a8bf9b6b6448dc90a2f82f480dcf660cebcd13ae 100644
+index d4c531d6..4304cfae 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -893,6 +893,9 @@ public final class Demuxer: @unchecked Sendable {
+@@ -958,6 +958,9 @@ public final class Demuxer: @unchecked Sendable {
                      releaseOwnedSourceReader()
                      throw error
                  }
@@ -13,37 +13,16 @@ index 300b67906c7728d29bc74d210aca0205bb725f9c..a8bf9b6b6448dc90a2f82f480dcf660c
              }
              releaseOwnedSourceReader()
 diff --git a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
-index da10cefe1a20e72f40025c51e20006c3e720dd93..af17ed9ffe57869a287df3a373c8a00d6f043589 100644
+index 7952edb0..4b8a1091 100644
 --- a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
 +++ b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
-@@ -11,9 +11,9 @@ import Foundation
- /// starts at `baseChunkSize` (so the scattered, kilobyte-sized disc-structure reads at open do not
- /// each pull a megabyte) and doubles up to `maxChunkSize` while reads stay sequential (so steady
- /// playback of the title's extents costs few requests); any non-contiguous read resets it. Once the
--/// window would reach `maxChunkSize` on a sequential continuation, the read pattern is playback, and
--/// a `ProgressiveRangeStream` takes over: ranges of up to `streamRangeSize` whose bytes reach the
--/// demuxer as they arrive, with `maxChunkSize` as the buffer's watermark (#1007). Each
-+/// playback demuxer is open, a sequential refill can use `ProgressiveRangeStream` before the window
-+/// reaches `maxChunkSize`. Ranges of up to `streamRangeSize` reach the demuxer as they arrive, with
-+/// `maxChunkSize` as the buffer's watermark (#1007). Each
- /// range request retries with backoff so a transient network blip does not end playback. The server
- /// MUST honor range requests (any static file host does); if it does not, `init` returns nil after a
- /// clear log and `open` throws `AVIOReaderError.originIgnoresRange`, and the response is hung up on at
-@@ -37,6 +37,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
-     private let residentSpans: [ResidentSpan]
- 
-     private let lock = NSLock()
-+    private var progressiveReadAhead = false
-     private var position: Int64 = 0
-     private var bufferStart: Int64 = -1
-     private var buffer: [UInt8] = []
-@@ -222,9 +223,15 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+@@ -253,9 +253,15 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
  
      // MARK: - IOReader
  
 +    /// Disc discovery and independent readers stay on adaptive ranges.
 +    func enableProgressiveReadAhead() {
-+        lock.withLock { progressiveReadAhead = true }
++        lock.withLock { playbackStreaming = true }
 +    }
 +
      func read(_ outBuffer: UnsafeMutablePointer<UInt8>?, size n: Int32) -> Int32 {
@@ -53,7 +32,7 @@ index da10cefe1a20e72f40025c51e20006c3e720dd93..af17ed9ffe57869a287df3a373c8a00d
          return read(locked: out, size: n)
      }
  
-@@ -247,7 +254,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+@@ -278,7 +284,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
          if let s = stream {
              if s.skip(to: position), position < s.end {
                  let got = s.read(into: out, size: min(Int(n), Int(totalSize - position)))
@@ -62,19 +41,17 @@ index da10cefe1a20e72f40025c51e20006c3e720dd93..af17ed9ffe57869a287df3a373c8a00d
                      dropStreamLocked()
                      return -1
                  }
-@@ -267,9 +274,8 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+@@ -298,7 +304,8 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
                  current: currentChunkSize, base: baseChunkSize, maxChunk: maxChunkSize)
              // Stop at the next warmed span: its bytes are already here.
              let limit = residentSpans.lazy.map(\.start).filter { $0 > self.position }.min() ?? totalSize
 -            if Self.streams(position: position, lastFetchEnd: lastFetchEnd, nextChunk: currentChunkSize,
--                            maxChunk: maxChunkSize, streamRange: streamRangeSize),
--               limit - position > Int64(maxChunkSize) {
-+            if progressiveReadAhead, position == lastFetchEnd,
-+               streamRangeSize > maxChunkSize, limit - position > Int64(maxChunkSize) {
-                 guard startStreamLocked(end: limit) else { return -1 }
-                 buffer = []
-                 bufferStart = -1
-@@ -306,12 +312,22 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
++            if playbackStreaming,
++               Self.streams(position: position, lastFetchEnd: lastFetchEnd, nextChunk: currentChunkSize,
+                             maxChunk: maxChunkSize, streamRange: streamRangeSize,
+                             playback: playbackStreaming),
+                limit - position > Int64(maxChunkSize) {
+@@ -338,12 +345,22 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
          default: return -1
          }
          guard target >= 0 else { return -1 }
@@ -98,28 +75,29 @@ index da10cefe1a20e72f40025c51e20006c3e720dd93..af17ed9ffe57869a287df3a373c8a00d
          s?.close()
          session.invalidateAndCancel()
      }
-@@ -322,13 +338,6 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
-         session.getAllTasks { $0.forEach { $0.cancel() } }
-     }
- 
--    /// True when the refill at `position` is a sequential continuation that reaches the top of the
--    /// adaptive window, which is where disc discovery has ended and playback has begun (#1007).
--    static func streams(position: Int64, lastFetchEnd: Int64, nextChunk: Int, maxChunk: Int,
--                        streamRange: Int) -> Bool {
--        streamRange > maxChunk && position == lastFetchEnd && lastFetchEnd >= 0 && nextChunk >= maxChunk
--    }
--
-     private func startStreamLocked(end: Int64) -> Bool {
-         let s = ProgressiveRangeStream(
-             url: url, extraHeaders: extraHeaders, session: session, timeout: requestTimeout,
 diff --git a/Tests/AetherEngineTests/HTTPDiscIOReaderTests.swift b/Tests/AetherEngineTests/HTTPDiscIOReaderTests.swift
-index 315721e7f805dd20dba6525bbe86a0a04fd86231..a59e34ed1750e3c6ad852cb85e16b107878d92d7 100644
+index 7e89ca6e..257c8620 100644
 --- a/Tests/AetherEngineTests/HTTPDiscIOReaderTests.swift
 +++ b/Tests/AetherEngineTests/HTTPDiscIOReaderTests.swift
-@@ -100,10 +100,36 @@ struct HTTPDiscIOReaderTests {
+@@ -100,10 +100,51 @@ struct HTTPDiscIOReaderTests {
  
      private static let streamStart = 64 * 1024
  
++    @Test("discovery and independent profiles retain adaptive ranges until playback admission")
++    func unadmittedReaderDoesNotStream() throws {
++        let src = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 17) }
++        let maximum = 512 * 1024
++        let reader = try #require(makeReader(src, base: 64 * 1024, maxChunk: maximum, streamRange: 1024 * 1024))
++        defer { reader.close() }
++        let bytes = readAll(reader, count: 2 * 1024 * 1024)
++        #expect(bytes == Array(src[0..<bytes.count]))
++        let oversized = MockRangeURLProtocol.requestedRanges.filter { range in
++            let ends = range.replacingOccurrences(of: "bytes=", with: "").split(separator: "-").compactMap { Int($0) }
++            return ends.count == 2 && ends[1] - ends[0] + 1 > maximum
++        }
++        #expect(oversized.isEmpty, "unadmitted reader issued progressive ranges: \(oversized)")
++    }
++
 +    @Test("playback enables long sequential ranges before the adaptive ceiling and reopens after a seek")
 +    func playbackRangeAdmission() throws {
 +        let src = (0..<(2 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) }
@@ -153,7 +131,7 @@ index 315721e7f805dd20dba6525bbe86a0a04fd86231..a59e34ed1750e3c6ad852cb85e16b107
          defer { r.cancel() }
          MockRangeURLProtocol.stallFromOffset = Self.streamStart
          MockRangeURLProtocol.stallAfterBytes = 32 * 1024
-@@ -118,6 +144,7 @@ struct HTTPDiscIOReaderTests {
+@@ -118,6 +159,7 @@ struct HTTPDiscIOReaderTests {
      func shortBodyResumesAtTheFrontier() throws {
          let src = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 13) }
          let r = try #require(makeReader(src, streamRange: 256 * 1024))
@@ -161,7 +139,7 @@ index 315721e7f805dd20dba6525bbe86a0a04fd86231..a59e34ed1750e3c6ad852cb85e16b107
          MockRangeURLProtocol.shortBodyOnceFromOffset = Self.streamStart
          MockRangeURLProtocol.shortBodyBytes = 32 * 1024
          #expect(readAll(r, count: src.count) == src)
-@@ -129,6 +156,7 @@ struct HTTPDiscIOReaderTests {
+@@ -129,6 +171,7 @@ struct HTTPDiscIOReaderTests {
      func streamChainsRangesAndSeeks() throws {
          let src = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) }
          let r = try #require(makeReader(src, streamRange: 192 * 1024))
@@ -169,7 +147,15 @@ index 315721e7f805dd20dba6525bbe86a0a04fd86231..a59e34ed1750e3c6ad852cb85e16b107
          #expect(readAll(r, count: src.count) == src)
          let streamRequests = MockRangeURLProtocol.requestedRanges.filter {
              !$0.hasPrefix("bytes=0-")
-@@ -143,6 +171,7 @@ struct HTTPDiscIOReaderTests {
+@@ -158,6 +201,7 @@ struct HTTPDiscIOReaderTests {
+         let src = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 11) }
+         let r = try #require(makeReader(src, base: base, maxChunk: 512 * 1024, streamRange: range))
+         defer { r.cancel() }
++        r.enableProgressiveReadAhead()
+         let played = readAll(r, count: 2 * 1024 * 1024)
+         #expect(played == Array(src[0..<played.count]))
+         // Backwards, so the target is outside what the stream holds (the mock ignores suspend and
+@@ -179,6 +223,7 @@ struct HTTPDiscIOReaderTests {
      func misplacedStreamRangeIsRefused() throws {
          let src = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0) }
          let r = try #require(makeReader(src, streamRange: 256 * 1024))
@@ -177,7 +163,7 @@ index 315721e7f805dd20dba6525bbe86a0a04fd86231..a59e34ed1750e3c6ad852cb85e16b107
          #expect(readOffThread(r, size: Self.streamStart, within: 5)?.n == Int32(Self.streamStart))
          MockRangeURLProtocol.misrangedFor.insert("http://disc.test/test.iso")
          let next = try #require(readOffThread(r, size: 4096, within: 10))
-@@ -153,6 +182,7 @@ struct HTTPDiscIOReaderTests {
+@@ -189,6 +234,7 @@ struct HTTPDiscIOReaderTests {
      func cancelWakesAStalledStream() throws {
          let src = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0) }
          let r = try #require(makeReader(src, streamRange: 256 * 1024))
