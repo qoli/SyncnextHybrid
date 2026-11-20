@@ -2509,10 +2509,9 @@ public final class HybridPlaybackSession:
                 let sourceSidecars = subtitleTracks.filter {
                     $0.isExternal && downloadedSubtitleTracks[$0.id] == nil
                 }.map { subtitleTrackAction(id: $0.id, title: $0.name) }
-                // Use inline groups for the missing transport-bar subtitle button reported on tvOS 26.2.
+                // Use inline subtitle groups for AVKit transport-bar compatibility on tvOS 26.
                 let version = ProcessInfo.processInfo.operatingSystemVersion
-                let groupOptions: UIMenu.Options = version.majorVersion == 26 && version.minorVersion == 2
-                    ? .displayInline : []
+                let groupOptions: UIMenu.Options = version.majorVersion == 26 ? .displayInline : []
                 let online = UIMenu(
                     title: configuration.onlineTitle,
                     options: groupOptions,
