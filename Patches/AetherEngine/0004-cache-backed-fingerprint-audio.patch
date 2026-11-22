@@ -1,9 +1,9 @@
 diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 new file mode 100644
-index 00000000..6a12ce02
+index 00000000..4c38dca7
 --- /dev/null
 +++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,352 @@
 +import Foundation
 +import AVFAudio
 +
@@ -36,10 +36,13 @@ index 00000000..6a12ce02
 +    /// fast as segments become available. Unlike `installAudioTap()`, this is a
 +    /// one-shot batch operation and is not paced to the playhead. It never opens
 +    /// another source URL or silently switches to the remote-HLS tap reader.
++    /// The optional observer runs serially on the reader worker after each decoded segment.
++    /// Its buffers are provisional until the returned batch passes coverage and session checks.
 +    @MainActor
 +    public func fingerprintAudio(
 +        in sourceRange: Range<Double>,
-+        timeoutSeconds: Double = 30
++        timeoutSeconds: Double = 30,
++        onSegment: (@Sendable ([AudioTapBuffer]) throws -> Void)? = nil
 +    ) async throws -> AetherFingerprintAudioBatch {
 +        let duration = sourceRange.upperBound - sourceRange.lowerBound
 +        guard sourceRange.lowerBound.isFinite,
@@ -104,7 +107,7 @@ index 00000000..6a12ce02
 +            category: .engine
 +        )
 +        let worker = Task.detached(priority: .utility) {
-+            try reader.read()
++            try reader.read(onSegment: onSegment)
 +        }
 +        do {
 +            let batch = try await withTaskCancellationHandler {
@@ -170,7 +173,7 @@ index 00000000..6a12ce02
 +        self.timeoutSeconds = timeoutSeconds
 +    }
 +
-+    func read() throws -> AetherFingerprintAudioBatch {
++    func read(onSegment: (@Sendable ([AudioTapBuffer]) throws -> Void)?) throws -> AetherFingerprintAudioBatch {
 +        let deadline = Date().addingTimeInterval(timeoutSeconds)
 +        let demand = cache.beginAnalysisDemand(through: maximumLastIndex)
 +        defer { cache.endAnalysisDemand(demand) }
@@ -185,6 +188,7 @@ index 00000000..6a12ce02
 +        var decodeSeconds = 0.0
 +        var lastDecodedIndex = firstIndex - 1
 +
++        var deliveredCount = 0
 +        for index in firstIndex...maximumLastIndex {
 +            try Task.checkCancellation()
 +            let waitStartedAt = ProcessInfo.processInfo.systemUptime
@@ -222,6 +226,15 @@ index 00000000..6a12ce02
 +                )
 +                pendingDiscontinuity = false
 +            }
++            if let onSegment {
++                let buffers = collector.snapshot()
++                let segmentBuffers = buffers[deliveredCount...].filter(overlapsRequestedRange)
++                deliveredCount = buffers.count
++                if !segmentBuffers.isEmpty {
++                    try Task.checkCancellation()
++                    try onSegment(segmentBuffers)
++                }
++            }
 +            lastDecodedIndex = index
 +            if index >= nominalLastIndex,
 +               coversRequestedEnd(collector.snapshot()) {
@@ -229,13 +242,7 @@ index 00000000..6a12ce02
 +            }
 +        }
 +
-+        let relevant = collector.snapshot().filter { buffer in
-+            let end = buffer.sourceTime
-+                + Double(buffer.buffer.frameLength)
-+                    / buffer.buffer.format.sampleRate
-+            return end > sourceRange.lowerBound
-+                && buffer.sourceTime < sourceRange.upperBound
-+        }
++        let relevant = collector.snapshot().filter(overlapsRequestedRange)
 +        try validateCoverage(relevant)
 +        return AetherFingerprintAudioBatch(
 +            buffers: relevant,
@@ -244,6 +251,11 @@ index 00000000..6a12ce02
 +            cacheWaitSeconds: cacheWaitSeconds,
 +            decodeSeconds: decodeSeconds
 +        )
++    }
++
++    private func overlapsRequestedRange(_ buffer: AudioTapBuffer) -> Bool {
++        let end = buffer.sourceTime + Double(buffer.buffer.frameLength) / buffer.buffer.format.sampleRate
++        return end > sourceRange.lowerBound && buffer.sourceTime < sourceRange.upperBound
 +    }
 +
 +    private func waitForSegment(

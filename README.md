@@ -73,6 +73,8 @@ Session 的 `fingerprintAudioPlan(for:)` 依來源探測結果與已載入格式
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。
 已確認的有限 EBML 來源使用主播放的 SegmentCache 取得片頭與片尾音訊。
+快取片頭依分片順序轉換 PCM 並計算指紋。各段共用一個重取樣器，沿用同一個 hop 格點、
+前兩幀的頻譜比較及未滿窗樣本。只有完整素材及原 session 通過驗證後才交付指紋。
 來源探測回報 `request-failed` 時，指紋取樣亦採用相同的有限格式策略，
 啟播日誌保留實際的探測結果。片尾等播放進入其來源時間範圍且 seek 完成後才開始 cache material demand。
 片頭的後續 batch 同樣等已觸發的 seek 完成，避免前綴比對跳過改變正在取樣的時間軸。

@@ -78,6 +78,9 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
 3. `0004-cache-backed-fingerprint-audio.patch`
    - 為 fingerprint v2 暴露最小、有限、可取消的 loopback VOD cache PCM
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
+   - 2026-11-22 批准擴充現有 Patch，加上可選、同步的逐段 PCM 回呼。reader 在同一
+     worker 套用時間軸過濾後交付片段。Hybrid 持有重取樣器與指紋狀態，在整窗覆蓋及
+     session 驗證通過後使用結果。上游提供同等的可取消逐段 PCM API 時可退役此回呼。
    - 非 loopback route、音軌缺失、cache 不完整或 session 改變均明確失敗，
      不回退至獨立來源下載。
 4. `0007-media-request-diagnostics.patch`

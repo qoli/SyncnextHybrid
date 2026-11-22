@@ -176,6 +176,9 @@ enum HybridIndependentFingerprintAudio {
         }
 
         let decodeStartedAt = ProcessInfo.processInfo.systemUptime
+        var packetReadSeconds = 0.0
+        var decoderSeconds = 0.0
+        var packetPayloadBytes: Int64 = 0
         var buffers: [HybridFingerprintAudioBuffer] = []
         var continuity = HybridAudioContinuityTracker(
             requestedStartPosition: Int64(
@@ -261,18 +264,28 @@ enum HybridIndependentFingerprintAudio {
             while !reachedRangeEnd {
                 try Task.checkCancellation()
                 try checkDeadline()
-                guard let packet = try demuxer.readPacket() else {
+                let readStartedAt = ProcessInfo.processInfo.systemUptime
+                let nextPacket = try demuxer.readPacket()
+                packetReadSeconds += ProcessInfo.processInfo.systemUptime - readStartedAt
+                guard let packet = nextPacket else {
                     break
                 }
                 var packetToFree: UnsafeMutablePointer<AVPacket>? = packet
                 defer { av_packet_free(&packetToFree) }
+                packetPayloadBytes += Int64(packet.pointee.size)
                 guard packet.pointee.stream_index == selected.id else {
                     continue
                 }
-                try await append(try decoder.decode(packet: packet))
+                let codecStartedAt = ProcessInfo.processInfo.systemUptime
+                let chunks = try decoder.decode(packet: packet)
+                decoderSeconds += ProcessInfo.processInfo.systemUptime - codecStartedAt
+                try await append(chunks)
             }
             if !reachedRangeEnd {
-                try await append(try decoder.drain())
+                let codecStartedAt = ProcessInfo.processInfo.systemUptime
+                let chunks = try decoder.drain()
+                decoderSeconds += ProcessInfo.processInfo.systemUptime - codecStartedAt
+                try await append(chunks)
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -283,6 +296,13 @@ enum HybridIndependentFingerprintAudio {
         }
 
         try validateCoverage(buffers, range: range)
+        let loopSeconds = ProcessInfo.processInfo.systemUptime - decodeStartedAt
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_DEMUX provider=\(source.provider.rawValue) "
+                + "rangeStart=\(range.lowerBound) rangeEnd=\(range.upperBound) "
+                + "packetPayloadBytes=\(packetPayloadBytes) packetReadSeconds=\(packetReadSeconds) "
+                + "decoderSeconds=\(decoderSeconds) loopSeconds=\(loopSeconds)"
+        )
         return HybridFingerprintAudioBatch(
             buffers: buffers,
             sourceRange: range,
@@ -290,8 +310,7 @@ enum HybridIndependentFingerprintAudio {
             segmentCount: preparedHLSCursor?.segmentCount ?? 0,
             preparationSeconds: preparationSeconds,
             cacheWaitSeconds: 0,
-            decodeSeconds:
-                ProcessInfo.processInfo.systemUptime - decodeStartedAt
+            decodeSeconds: loopSeconds
         )
     }
 

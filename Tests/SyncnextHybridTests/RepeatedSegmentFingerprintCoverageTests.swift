@@ -98,6 +98,45 @@ final class RepeatedSegmentFingerprintCoverageTests: XCTestCase {
         ])
     }
 
+    func testSegmented48kPCMMatchesBatchAcrossUnevenBoundaries() throws {
+        let rate = 48_000.0
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
+        let lengths = [913, 5_321, 7_103, 60_137, 4_001, 82_019, 911]
+        var cursor = 0
+        let buffers = lengths.map { length -> HybridFingerprintAudioBuffer in
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(length))!
+            buffer.frameLength = AVAudioFrameCount(length)
+            for index in 0..<length {
+                let t = Double(cursor + index) / rate
+                buffer.floatChannelData![0][index] = Float(sin(t * 1750) * cos(t * t * 2800))
+            }
+            defer { cursor += length }
+            return HybridFingerprintAudioBuffer(buffer: buffer, sourceTime: Double(cursor) / rate, discontinuity: false)
+        }
+        let range = 0.0013..<(Double(cursor) / rate - 0.002)
+        let input = HybridFingerprintAudioBatch(
+            buffers: buffers, sourceRange: range, provider: .segmentCache, segmentCount: lengths.count,
+            preparationSeconds: 0, cacheWaitSeconds: 0, decodeSeconds: 0
+        )
+        let expected = try RepeatedSegmentFingerprint.compute(audioBatch: input, label: "segments")
+        let streamed = CachedSegmentFingerprint(sourceRange: range, label: "segments")
+        for buffer in buffers.dropLast(2) { try streamed.append([buffer]) }
+        XCTAssertNotNil(streamed.firstFramesUptime)
+        XCTAssertThrowsError(try streamed.finish()) { error in
+            XCTAssertEqual(error as? RepeatedSegmentFingerprintError, .discontinuousAudio)
+        }
+        try streamed.append(Array(buffers.suffix(2)))
+        XCTAssertEqual(try streamed.finish(), expected)
+    }
+
+    func testSegmentedPCMRejectsDiscontinuityAcrossCallbacks() throws {
+        let streamed = CachedSegmentFingerprint(sourceRange: 0..<2, label: "gap")
+        try streamed.append([makeBuffer(start: 0, end: 1)])
+        XCTAssertThrowsError(try streamed.append([makeBuffer(start: 1, end: 2, discontinuity: true)])) { error in
+            XCTAssertEqual(error as? RepeatedSegmentFingerprintError, .discontinuousAudio)
+        }
+    }
+
     private func assertDiscontinuous(
         _ buffers: [HybridFingerprintAudioBuffer],
         file: StaticString = #filePath,

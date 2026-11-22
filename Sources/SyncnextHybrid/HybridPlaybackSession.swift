@@ -1029,7 +1029,8 @@ public final class HybridPlaybackSession:
     private func prepareFingerprintAudio(
         request fingerprintRequest: HybridFingerprintAudioRequest,
         audioSelection: HybridRemoteHLSAudioSelection?,
-        onProgress: HybridFingerprintAudioProgressHandler?
+        onProgress: HybridFingerprintAudioProgressHandler?,
+        cachedFingerprint: CachedSegmentFingerprint? = nil
     ) async throws -> HybridFingerprintAudioBatch {
         guard !stopped else {
             throw HybridFingerprintAudioError.sessionStopped
@@ -1059,19 +1060,22 @@ public final class HybridPlaybackSession:
         do {
             switch provider {
             case .segmentCache:
+                let onSegment: (@Sendable ([AudioTapBuffer]) throws -> Void)?
+                if let cachedFingerprint {
+                    onSegment = { buffers in
+                        try cachedFingerprint.append(buffers.map(HybridFingerprintAudioBuffer.init(cached:)))
+                    }
+                } else {
+                    onSegment = nil
+                }
                 let cached = try await engine.fingerprintAudio(
                     in: fingerprintRequest.sourceRange,
-                    timeoutSeconds: fingerprintRequest.deadlineSeconds
+                    timeoutSeconds: fingerprintRequest.deadlineSeconds,
+                    onSegment: onSegment
                 )
                 try Task.checkCancellation()
                 batch = HybridFingerprintAudioBatch(
-                    buffers: cached.buffers.map {
-                        HybridFingerprintAudioBuffer(
-                            buffer: $0.buffer,
-                            sourceTime: $0.sourceTime,
-                            discontinuity: $0.discontinuity
-                        )
-                    },
+                    buffers: cached.buffers.map(HybridFingerprintAudioBuffer.init(cached:)),
                     sourceRange: cached.sourceRange,
                     provider: .segmentCache,
                     segmentCount: cached.segmentCount,
@@ -1185,7 +1189,11 @@ public final class HybridPlaybackSession:
         // and must not consume the acquisition/analysis deadline.
         let plan = try fingerprintAudioPlan(for: fingerprintRequest.region)
         try await waitForFingerprintMaterial(fingerprintRequest, plan: plan, onProgress: onProgress)
-        let deadline = ProcessInfo.processInfo.systemUptime + fingerprintRequest.deadlineSeconds
+        let materialStartedAt = ProcessInfo.processInfo.systemUptime
+        let deadline = materialStartedAt + fingerprintRequest.deadlineSeconds
+        let cachedFingerprint = plan.provider == .segmentCache && fingerprintRequest.region == .front
+            ? CachedSegmentFingerprint(sourceRange: fingerprintRequest.sourceRange, label: label)
+            : nil
         let selectedTrack = engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }
         let selection = sourceAdmission.isConfirmedHLS ? try await nativeHLSAudioSelection() : nil
         let batch: HybridFingerprintAudioBatch
@@ -1198,7 +1206,7 @@ public final class HybridPlaybackSession:
                     sourceRange: fingerprintRequest.sourceRange,
                     deadlineSeconds: remaining, region: fingerprintRequest.region
                 ),
-                audioSelection: selection, onProgress: onProgress
+                audioSelection: selection, onProgress: onProgress, cachedFingerprint: cachedFingerprint
             )
         } catch let error as HybridFingerprintAudioError
             where error.canUseIntroAudioExtraction
@@ -1257,9 +1265,26 @@ public final class HybridPlaybackSession:
             "SYNCNEXT_HYBRID_FINGERPRINT_PCM provider=\(batch.provider.rawValue) segments=\(batch.segmentCount) "
                 + "preparationSeconds=\(batch.preparationSeconds) cacheWaitSeconds=\(batch.cacheWaitSeconds) decodeSeconds=\(batch.decodeSeconds)"
         )
-        return try await HybridFingerprintWork.run {
+        if batch.provider == .segmentCache, let cachedFingerprint {
+            let artifact = try cachedFingerprint.finish()
+            let firstFramesSeconds = cachedFingerprint.firstFramesUptime.map { $0 - materialStartedAt }
+            HybridDiagnosticEmitter.emit(
+                "SYNCNEXT_HYBRID_FINGERPRINT_COMPUTE session=\(diagnosticsID) region=\(fingerprintRequest.region) "
+                    + "provider=\(batch.provider.rawValue) mode=incremental segments=\(cachedFingerprint.segmentCount) "
+                    + "firstFramesSeconds=\(firstFramesSeconds.map { String($0) } ?? "none") "
+                    + "elapsedSeconds=\(cachedFingerprint.computeSeconds)"
+            )
+            return artifact
+        }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let artifact = try await HybridFingerprintWork.run {
             try RepeatedSegmentFingerprint.compute(audioBatch: batch, label: label)
         }
+        HybridDiagnosticEmitter.emit(
+            "SYNCNEXT_HYBRID_FINGERPRINT_COMPUTE session=\(diagnosticsID) region=\(fingerprintRequest.region) "
+                + "provider=\(batch.provider.rawValue) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - startedAt)"
+        )
+        return artifact
     }
 
     private func waitForFingerprintMaterial(
@@ -2704,5 +2729,11 @@ public final class HybridPlaybackSession:
         }
     }
 
+}
+
+private extension HybridFingerprintAudioBuffer {
+    init(cached buffer: AudioTapBuffer) {
+        self.init(buffer: buffer.buffer, sourceTime: buffer.sourceTime, discontinuity: buffer.discontinuity)
+    }
 }
 #endif

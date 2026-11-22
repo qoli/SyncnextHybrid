@@ -307,128 +307,17 @@ public enum RepeatedSegmentFingerprint {
         label: String,
         configuration: RepeatedSegmentFingerprintConfiguration = .v1
     ) throws -> RepeatedSegmentFingerprintArtifact {
-        guard let first = audioBatch.buffers.first,
-              let outputFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: Double(configuration.sampleRate),
-                channels: 1,
-                interleaved: false
-              ),
-              let converter = AVAudioConverter(
-                from: first.buffer.format,
-                to: outputFormat
-              ) else {
+        guard let first = audioBatch.buffers.first else {
             throw RepeatedSegmentFingerprintError.audioDecodeFailed
         }
-
-        let sourceRange = audioBatch.sourceRange
-        let tolerance = HybridFingerprintAudioCoverage.leadingTolerance
-        var coveredThrough = sourceRange.lowerBound
-        var relevantBufferCount = 0
-        var samples: [Float] = []
-        samples.reserveCapacity(
-            Int((sourceRange.upperBound - sourceRange.lowerBound)
-                * Double(configuration.sampleRate))
+        let converter = try FingerprintPCMConverter(
+            inputFormat: first.buffer.format, sourceRange: audioBatch.sourceRange, configuration: configuration
         )
-
-        for timedBuffer in audioBatch.buffers {
-            let input = timedBuffer.buffer
-            let format = input.format
-            guard format.commonFormat == .pcmFormatFloat32,
-                  !format.isInterleaved,
-                  format.channelCount == 1,
-                  format.sampleRate == first.buffer.format.sampleRate,
-                  let channel = input.floatChannelData?[0] else {
-                throw RepeatedSegmentFingerprintError.invalidAudio
-            }
-            let rate = format.sampleRate
-            let start = timedBuffer.sourceTime
-            let end = start + Double(input.frameLength) / rate
-            guard end > sourceRange.lowerBound,
-                  start < sourceRange.upperBound else {
-                continue
-            }
-            if relevantBufferCount > 0, timedBuffer.discontinuity {
-                throw RepeatedSegmentFingerprintError.discontinuousAudio
-            }
-            let clippedStart = max(start, sourceRange.lowerBound)
-            if clippedStart > coveredThrough + tolerance {
-                throw RepeatedSegmentFingerprintError.discontinuousAudio
-            }
-            let firstFrame = max(
-                0,
-                Int(ceil((clippedStart - start) * rate))
-            )
-            let clippedEnd = min(end, sourceRange.upperBound)
-            let endFrame = min(
-                Int(input.frameLength),
-                Int(floor((clippedEnd - start) * rate))
-            )
-            let frameCount = endFrame - firstFrame
-            guard frameCount > 0,
-                  let clipped = AVAudioPCMBuffer(
-                    pcmFormat: format,
-                    frameCapacity: AVAudioFrameCount(frameCount)
-                  ) else {
-                continue
-            }
-            clipped.frameLength = AVAudioFrameCount(frameCount)
-            clipped.floatChannelData![0].update(
-                from: channel + firstFrame,
-                count: frameCount
-            )
-
-            let ratio = outputFormat.sampleRate / format.sampleRate
-            let outputCapacity = AVAudioFrameCount(
-                ceil(Double(frameCount) * ratio) + 32
-            )
-            guard let output = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: outputCapacity
-            ) else {
-                throw RepeatedSegmentFingerprintError.audioDecodeFailed
-            }
-            let inputState = AudioConverterInputState(buffer: clipped)
-            var conversionError: NSError?
-            let status = converter.convert(
-                to: output,
-                error: &conversionError
-            ) { _, inputStatus in
-                guard !inputState.supplied else {
-                    inputStatus.pointee = .noDataNow
-                    return nil
-                }
-                inputState.supplied = true
-                inputStatus.pointee = .haveData
-                return inputState.buffer
-            }
-            guard conversionError == nil,
-                  status != .error,
-                  let outputChannel = output.floatChannelData?[0] else {
-                throw RepeatedSegmentFingerprintError.audioDecodeFailed
-            }
-            samples.append(
-                contentsOf: UnsafeBufferPointer(
-                    start: outputChannel,
-                    count: Int(output.frameLength)
-                )
-            )
-            coveredThrough = max(coveredThrough, clippedEnd)
-            relevantBufferCount += 1
-            if coveredThrough >= sourceRange.upperBound - tolerance {
-                break
-            }
-        }
-        // The trailing allowance applies only after consuming the batch; it
-        // must not relax gap checks or stop conversion earlier.
-        guard coveredThrough >= sourceRange.upperBound - HybridFingerprintAudioCoverage.trailingTolerance else {
-            throw RepeatedSegmentFingerprintError.discontinuousAudio
-        }
+        let samples = try converter.convert(audioBatch.buffers)
+        try converter.validateEnd()
         return try compute(
-            monoSamples: samples,
-            label: label,
-            sourceStartSeconds: sourceRange.lowerBound,
-            configuration: configuration
+            monoSamples: samples, label: label,
+            sourceStartSeconds: audioBatch.sourceRange.lowerBound, configuration: configuration
         )
     }
 
@@ -1080,5 +969,184 @@ public enum RepeatedSegmentFingerprint {
             + a[4]) * r + a[5]) * q
             / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r
                 + b[4]) * r + 1)
+    }
+}
+
+// Keep one resampler and one coverage cursor across all segments in a source window.
+private final class FingerprintPCMConverter {
+    private let sourceRange: Range<Double>
+    private let converter: AVAudioConverter
+    private let outputFormat: AVAudioFormat
+    private var coveredThrough: Double
+    private var relevantBufferCount = 0
+
+    init(inputFormat: AVAudioFormat, sourceRange: Range<Double>, configuration: RepeatedSegmentFingerprintConfiguration) throws {
+        guard let output = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: Double(configuration.sampleRate),
+            channels: 1, interleaved: false
+        ), let converter = AVAudioConverter(from: inputFormat, to: output) else {
+            throw RepeatedSegmentFingerprintError.audioDecodeFailed
+        }
+        self.sourceRange = sourceRange
+        self.converter = converter
+        self.outputFormat = output
+        self.coveredThrough = sourceRange.lowerBound
+    }
+
+    func convert(_ buffers: [HybridFingerprintAudioBuffer]) throws -> [Float] {
+        let tolerance = HybridFingerprintAudioCoverage.leadingTolerance
+        var samples: [Float] = []
+        for timedBuffer in buffers {
+            if relevantBufferCount > 0 && coveredThrough >= sourceRange.upperBound - tolerance { break }
+            let input = timedBuffer.buffer
+            let format = input.format
+            guard format.commonFormat == .pcmFormatFloat32,
+                  !format.isInterleaved,
+                  format.channelCount == 1,
+                  format.sampleRate == converter.inputFormat.sampleRate,
+                  let channel = input.floatChannelData?[0] else {
+                throw RepeatedSegmentFingerprintError.invalidAudio
+            }
+            let rate = format.sampleRate
+            let start = timedBuffer.sourceTime
+            let end = start + Double(input.frameLength) / rate
+            guard end > sourceRange.lowerBound,
+                  start < sourceRange.upperBound else {
+                continue
+            }
+            if relevantBufferCount > 0, timedBuffer.discontinuity {
+                throw RepeatedSegmentFingerprintError.discontinuousAudio
+            }
+            let clippedStart = max(start, sourceRange.lowerBound)
+            if clippedStart > coveredThrough + tolerance {
+                throw RepeatedSegmentFingerprintError.discontinuousAudio
+            }
+            let firstFrame = max(
+                0,
+                Int(ceil((clippedStart - start) * rate))
+            )
+            let clippedEnd = min(end, sourceRange.upperBound)
+            let endFrame = min(
+                Int(input.frameLength),
+                Int(floor((clippedEnd - start) * rate))
+            )
+            let frameCount = endFrame - firstFrame
+            guard frameCount > 0,
+                  let clipped = AVAudioPCMBuffer(
+                    pcmFormat: format,
+                    frameCapacity: AVAudioFrameCount(frameCount)
+                  ) else {
+                continue
+            }
+            clipped.frameLength = AVAudioFrameCount(frameCount)
+            clipped.floatChannelData![0].update(
+                from: channel + firstFrame,
+                count: frameCount
+            )
+
+            let ratio = outputFormat.sampleRate / format.sampleRate
+            let outputCapacity = AVAudioFrameCount(
+                ceil(Double(frameCount) * ratio) + 32
+            )
+            guard let output = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: outputCapacity
+            ) else {
+                throw RepeatedSegmentFingerprintError.audioDecodeFailed
+            }
+            let inputState = AudioConverterInputState(buffer: clipped)
+            var conversionError: NSError?
+            let status = converter.convert(
+                to: output,
+                error: &conversionError
+            ) { _, inputStatus in
+                guard !inputState.supplied else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                inputState.supplied = true
+                inputStatus.pointee = .haveData
+                return inputState.buffer
+            }
+            guard conversionError == nil,
+                  status != .error,
+                  let outputChannel = output.floatChannelData?[0] else {
+                throw RepeatedSegmentFingerprintError.audioDecodeFailed
+            }
+            samples.append(
+                contentsOf: UnsafeBufferPointer(
+                    start: outputChannel,
+                    count: Int(output.frameLength)
+                )
+            )
+            coveredThrough = max(coveredThrough, clippedEnd)
+            relevantBufferCount += 1
+        }
+        return samples
+    }
+
+    func validateEnd() throws {
+        guard coveredThrough >= sourceRange.upperBound - HybridFingerprintAudioCoverage.trailingTolerance else {
+            throw RepeatedSegmentFingerprintError.discontinuousAudio
+        }
+    }
+}
+
+/// A single cache reader owns append calls. The session reads the result only after that worker joins.
+final class CachedSegmentFingerprint: @unchecked Sendable {
+    private let sourceRange: Range<Double>
+    private let label: String
+    private let configuration = RepeatedSegmentFingerprintConfiguration.v1
+    private var converter: FingerprintPCMConverter?
+    private var samples: [Float] = []
+    private var fingerprints: [UInt64] = []
+    private var validity: [Bool] = []
+    private var overlapFrames = 0
+    private(set) var computeSeconds = 0.0
+    private(set) var firstFramesUptime: Double?
+    private(set) var segmentCount = 0
+
+    init(sourceRange: Range<Double>, label: String) {
+        self.sourceRange = sourceRange
+        self.label = label
+    }
+
+    func append(_ buffers: [HybridFingerprintAudioBuffer]) throws {
+        guard let first = buffers.first else { return }
+        try Task.checkCancellation()
+        let start = ProcessInfo.processInfo.systemUptime
+        defer { computeSeconds += ProcessInfo.processInfo.systemUptime - start }
+        segmentCount += 1
+        if converter == nil {
+            converter = try FingerprintPCMConverter(
+                inputFormat: first.buffer.format, sourceRange: sourceRange, configuration: configuration
+            )
+        }
+        guard let converter else { throw RepeatedSegmentFingerprintError.audioDecodeFailed }
+        samples.append(contentsOf: try converter.convert(buffers))
+        let window = configuration.windowSamples
+        let hop = configuration.hopSamples
+        guard samples.count >= window + overlapFrames * hop else { return }
+        let segment = try RepeatedSegmentFingerprint.compute(
+            monoSamples: samples, label: label, sourceStartSeconds: sourceRange.lowerBound,
+            configuration: configuration
+        )
+        fingerprints.append(contentsOf: segment.fingerprints.dropFirst(overlapFrames))
+        validity.append(contentsOf: segment.validity.dropFirst(overlapFrames))
+        if firstFramesUptime == nil { firstFramesUptime = ProcessInfo.processInfo.systemUptime }
+        // Format v1 compares each spectrum with its two predecessors. Retain those
+        // frame starts and the incomplete next window on the original hop grid.
+        overlapFrames = min(2, segment.fingerprints.count)
+        samples.removeFirst((segment.fingerprints.count - overlapFrames) * hop)
+    }
+
+    func finish() throws -> RepeatedSegmentFingerprintArtifact {
+        guard let converter else { throw RepeatedSegmentFingerprintError.audioDecodeFailed }
+        try converter.validateEnd()
+        guard !fingerprints.isEmpty else { throw RepeatedSegmentFingerprintError.invalidAudio }
+        return RepeatedSegmentFingerprintArtifact(
+            label: label, sourceStartSeconds: sourceRange.lowerBound,
+            fingerprints: fingerprints, validity: validity, configuration: configuration
+        )
     }
 }
