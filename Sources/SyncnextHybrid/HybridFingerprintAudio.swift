@@ -131,6 +131,25 @@ public enum HybridFingerprintAudioError: Error, Sendable, Equatable {
 }
 
 enum HybridFingerprintAudioProviderResolver {
+    private static func isMP4(_ containerFormat: String?) -> Bool {
+        containerFormat?.split(separator: ",").contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "mp4"
+        } == true
+    }
+
+    /// Loopback MP4 fragments can start after the source audio. Only the standard
+    /// intro artifact accepts this loss. PCM requests retain their exact range.
+    static func cachedMP4IntroRange(
+        for request: HybridFingerprintAudioRequest, admission: HybridRemoteSourceAdmission,
+        containerFormat: String?, hasLoopbackVideo: Bool
+    ) -> Range<Double>? {
+        guard request.region == .front, request.sourceRange == 0..<180,
+              hasLoopbackVideo,
+              admission == .aetherDefault(.confirmedNonHLS) || admission == .aetherDefault(.requestFailed),
+              isMP4(containerFormat) else { return nil }
+        return 2..<request.sourceRange.upperBound
+    }
+
     /// Use playback's cursor for finite EBML, a failed source probe, and MP4 tails.
     /// Another ranged cursor can exhaust or invalidate a cloud proxy transfer.
     static func requiresPlaybackCache(
@@ -143,9 +162,7 @@ enum HybridFingerprintAudioProviderResolver {
             return true
         case .aetherDefault:
             // Use the loaded demuxer's format for MP4 tails.
-            return region == .back && containerFormat?.split(separator: ",").contains {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines) == "mp4"
-            } == true
+            return region == .back && isMP4(containerFormat)
         default:
             return false
         }

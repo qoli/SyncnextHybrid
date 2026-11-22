@@ -21,7 +21,7 @@ final class MP4FingerprintPlanTests: XCTestCase {
         }
     }
 
-    func testMP4FrontKeepsExistingProviderAndFailurePolicy() throws {
+    func testMP4FrontPCMRequestKeepsExactRangeProviderAndFailurePolicy() throws {
         let admission = HybridRemoteSourceAdmission.aetherDefault(.confirmedNonHLS)
         let plan = try HybridFingerprintAudioProviderResolver.resolve(
             admission: admission, region: .front, containerFormat: mp4
@@ -31,6 +31,31 @@ final class MP4FingerprintPlanTests: XCTestCase {
         XCTAssertFalse(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(
             admission: admission, region: .front, containerFormat: mp4
         ))
+    }
+
+    func testOnlyStandardLoopbackMP4IntroArtifactUsesShortenedWindow() {
+        func cachedRange(
+            _ range: Range<Double> = 0..<180, region: HybridFingerprintAudioRegion = .front,
+            admission: HybridRemoteSourceAdmission = .aetherDefault(.confirmedNonHLS),
+            format: String? = "mov,mp4,m4a", loopback: Bool = true
+        ) -> Range<Double>? {
+            HybridFingerprintAudioProviderResolver.cachedMP4IntroRange(
+                for: HybridFingerprintAudioRequest(sourceRange: range, region: region),
+                admission: admission, containerFormat: format, hasLoopbackVideo: loopback
+            )
+        }
+
+        XCTAssertEqual(cachedRange(), 2..<180)
+        XCTAssertNil(cachedRange(0..<2))
+        XCTAssertNil(cachedRange(30..<180))
+        XCTAssertNil(cachedRange(region: .back))
+        XCTAssertNil(cachedRange(format: nil))
+        XCTAssertNil(cachedRange(format: "matroska,webm"))
+        XCTAssertNil(cachedRange(loopback: false))
+        XCTAssertNil(cachedRange(admission: .hlsVOD))
+        XCTAssertEqual(cachedRange(admission: .aetherDefault(.requestFailed)), 2..<180)
+        XCTAssertNil(cachedRange(admission: .aetherDefault(.requestFailed), format: nil))
+        XCTAssertNil(cachedRange(admission: .aetherDefault(.nonHTTPSource)))
     }
 
     func testUnknownAndOtherContainersDoNotSelectMP4Policy() throws {

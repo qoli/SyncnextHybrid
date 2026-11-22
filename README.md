@@ -69,6 +69,10 @@ matcher 從通過既有統計門檻的非重疊種子視窗估計線性時間漂
 設定 `FINGERPRINT_INTRO_FIXTURES` 為 App 凍結的 MDD 片頭目錄後，
 `swift test --filter RepeatedSegmentIntroOfflineTests` 會經正式 HLS decoder、PCM 與 matcher
 核對已人工確認的片頭音樂案例，輸出 `production-analysis.json`。
+對已載入為 MP4、使用 loopback 播放的遠端來源（探測為非 HLS 或來源探測請求失敗），建立 0–180 秒的標準片頭指紋時改取快取的 2–180 秒。
+分片可能缺少開頭音訊。指紋保留 2 秒來源起點，後續比對及跳過均使用原片時間；這也適用於和舊版完整指紋混用。
+快取缺樣或中段不連續時直接回報失敗。直接要求 PCM 時依呼叫方指定的來源範圍取樣。
+
 Session 的 `fingerprintAudioPlan(for:)` 依來源探測結果與已載入格式提供 provider 與取樣時機。
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。

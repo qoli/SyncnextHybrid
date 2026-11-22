@@ -1028,6 +1028,7 @@ public final class HybridPlaybackSession:
 
     private func prepareFingerprintAudio(
         request fingerprintRequest: HybridFingerprintAudioRequest,
+        plan artifactPlan: HybridFingerprintAudioPlan? = nil,
         audioSelection: HybridRemoteHLSAudioSelection?,
         onProgress: HybridFingerprintAudioProgressHandler?,
         cachedFingerprint: CachedSegmentFingerprint? = nil
@@ -1037,7 +1038,7 @@ public final class HybridPlaybackSession:
         }
 
         try fingerprintRequest.validate()
-        let plan = try fingerprintAudioPlan(for: fingerprintRequest.region)
+        let plan = try artifactPlan ?? fingerprintAudioPlan(for: fingerprintRequest.region)
         try await waitForFingerprintMaterial(fingerprintRequest, plan: plan, onProgress: onProgress)
         let provider = plan.provider
         HybridDiagnosticEmitter.emit(
@@ -1187,12 +1188,23 @@ public final class HybridPlaybackSession:
         try fingerprintRequest.validate()
         // Waiting for playback to reach the tail is not active material work
         // and must not consume the acquisition/analysis deadline.
-        let plan = try fingerprintAudioPlan(for: fingerprintRequest.region)
+        let containerFormat = engine.isLive ? nil : engine.sourceContainerFormat
+        let cachedIntroRange = HybridFingerprintAudioProviderResolver.cachedMP4IntroRange(
+            for: fingerprintRequest, admission: sourceAdmission, containerFormat: containerFormat,
+            hasLoopbackVideo: engine.videoRoute == .loopback
+        )
+        let sourceRange = cachedIntroRange ?? fingerprintRequest.sourceRange
+        let plan: HybridFingerprintAudioPlan
+        if cachedIntroRange != nil {
+            plan = HybridFingerprintAudioPlan(provider: .segmentCache, timing: .afterPlaybackSeek)
+        } else {
+            plan = try fingerprintAudioPlan(for: fingerprintRequest.region)
+        }
         try await waitForFingerprintMaterial(fingerprintRequest, plan: plan, onProgress: onProgress)
         let materialStartedAt = ProcessInfo.processInfo.systemUptime
         let deadline = materialStartedAt + fingerprintRequest.deadlineSeconds
         let cachedFingerprint = plan.provider == .segmentCache && fingerprintRequest.region == .front
-            ? CachedSegmentFingerprint(sourceRange: fingerprintRequest.sourceRange, label: label)
+            ? CachedSegmentFingerprint(sourceRange: sourceRange, label: label)
             : nil
         let selectedTrack = engine.audioTracks.first { $0.id == engine.activeAudioTrackIndex }
         let selection = sourceAdmission.isConfirmedHLS ? try await nativeHLSAudioSelection() : nil
@@ -1203,13 +1215,13 @@ public final class HybridPlaybackSession:
             guard remaining > 0 else { throw HybridFingerprintAudioError.deadlineExceeded }
             batch = try await prepareFingerprintAudio(
                 request: HybridFingerprintAudioRequest(
-                    sourceRange: fingerprintRequest.sourceRange,
+                    sourceRange: sourceRange,
                     deadlineSeconds: remaining, region: fingerprintRequest.region
                 ),
-                audioSelection: selection, onProgress: onProgress, cachedFingerprint: cachedFingerprint
+                plan: plan, audioSelection: selection, onProgress: onProgress, cachedFingerprint: cachedFingerprint
             )
         } catch let error as HybridFingerprintAudioError
-            where error.canUseIntroAudioExtraction
+            where error.canUseIntroAudioExtraction && cachedIntroRange == nil
                 && !HybridFingerprintAudioProviderResolver.requiresPlaybackCache(
                     admission: sourceAdmission, region: fingerprintRequest.region,
                     containerFormat: engine.isLive ? nil : engine.sourceContainerFormat
