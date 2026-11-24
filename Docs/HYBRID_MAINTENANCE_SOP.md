@@ -103,6 +103,12 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
    - 依使用者 2026-11-09 明確授權，播放 demuxer 完成探測後，第一個順序補讀
      即可用長 Range。跳轉先以短 Range 建立落點，再接回長 Range。
    - 自 7.62.1 起重用上游 `ProgressiveRangeStream`，保留上述啟用與跳轉時機。
+7. `0012-disc-open-diagnostics.patch`
+   - 依 2026-11-24 發版前保存工作區變更的要求，將既有光碟開啟診斷納入可重播 Patch。
+   - 僅以 `--aether-disc-open-trace` 明確啟用，記錄辨識階段、Range 位移、長度、
+     嘗試次數、狀態、位元組及單調時間；不記錄 URL、headers 或媒體內容。
+   - 不改變讀取、重試、逾時、路由或取消行為。完成該開啟延遲調查，或上游提供
+     等效觀測入口後移除此診斷；不作為擴張一般日誌的先例。
 
 `0010-subtitle-bitmap-storage.patch` 自 7.62.1 起退役。Hybrid 使用上游 RGBA 儲存，
 並在載入前設定 0 秒字幕偏移。見第 8 節及 [#929 真機驗證](https://github.com/superuser404notfound/AetherEngine/issues/929)。
@@ -119,7 +125,7 @@ FFmpegBuild 的 `series` 目前為空。這些例外只能維持已批准的責�
 - 額外 route 或 recovery；
 - Syncnext 片頭判定；
 - AVKit proxy 行為；
-- 超出 `0007` 位元組摘要範圍的一般日誌、telemetry 或 diagnostics forwarding；
+- 超出 `0007` 位元組摘要及 `0012` 明確啟用的光碟開啟觀測範圍的一般日誌、telemetry 或 diagnostics forwarding；
 - 與獨立音訊 reader 無關的 access-level 擴張。
 
 原 `0003-hevc-mpegts-hls-vod-remux-workaround.patch` 已被上游正式能力取代並移除；

@@ -1,0 +1,189 @@
+diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
+index 4304cfae..82bc687a 100644
+--- a/Sources/AetherEngine/Demuxer/Demuxer.swift
++++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
+@@ -760,6 +760,7 @@ public final class Demuxer: @unchecked Sendable {
+             // out of RAM). Falls back to the normal local open when not a disc.
+             if url.isFileURL, let fileReader = FileIOReader(url: url),
+                let discInfo = try DiscReader.wrap(fileReader, selectTitleID: selectTitleID, cacheKey: url.absoluteString) {
++                DiscOpenTrace.mark("stage=recognition_complete")
+                 adoptDiscInfo(discInfo)
+                 auditSource = nil
+                 let bridge = CustomIOReaderBridge(reader: discInfo.reader)
+@@ -905,6 +906,7 @@ public final class Demuxer: @unchecked Sendable {
+     /// Opens `url` through the disc adapter. False when the source is unreachable or is not a
+     /// recognizable disc, in which case any warm is back in the store for the streaming reader.
+     private func openHTTPDiscImage(url: URL, extraHeaders: [String: String], selectTitleID: Int?) throws -> Bool {
++        DiscOpenTrace.mark("stage=size_probe")
+         let warm = HTTPDiscIOReader.takePrewarm(for: url, extraHeaders: extraHeaders)
+         // Registered before the probe, and the close flag read after it: markClosed() sets the flag and
+         // then cancels, so whichever side runs second still stops the open (audit DMX-201).
+@@ -941,6 +943,7 @@ public final class Demuxer: @unchecked Sendable {
+             }
+             let discInfo: DiscInfo?
+             do {
++                DiscOpenTrace.mark("stage=disc_recognition")
+                 discInfo = try DiscReader.wrap(discReader, selectTitleID: selectTitleID, cacheKey: url.absoluteString)
+             } catch {
+                 releaseOwnedSourceReader()
+@@ -948,6 +951,7 @@ public final class Demuxer: @unchecked Sendable {
+                 throw error
+             }
+             if let discInfo {
++                DiscOpenTrace.mark("stage=recognition_complete")
+                 adoptDiscInfo(discInfo)
+                 auditSource = nil
+                 let bridge = CustomIOReaderBridge(reader: discInfo.reader)
+diff --git a/Sources/AetherEngine/Diagnostics/DiscOpenTrace.swift b/Sources/AetherEngine/Diagnostics/DiscOpenTrace.swift
+new file mode 100644
+index 00000000..bca2326d
+--- /dev/null
++++ b/Sources/AetherEngine/Diagnostics/DiscOpenTrace.swift
+@@ -0,0 +1,11 @@
++import Foundation
++
++/// Opt-in disc-opening trace. Thread and monotonic time distinguish concurrent demuxers.
++enum DiscOpenTrace {
++    static let enabled = ProcessInfo.processInfo.arguments.contains("--aether-disc-open-trace")
++
++    static func mark(_ fields: @autoclosure () -> String) {
++        guard enabled else { return }
++        EngineLog.emit("[DiscOpenTrace] time=\(ProcessInfo.processInfo.systemUptime) thread=\(pthread_mach_thread_np(pthread_self())) \(fields())", category: .demux)
++    }
++}
+diff --git a/Sources/AetherEngine/Disc/DiscReader.swift b/Sources/AetherEngine/Disc/DiscReader.swift
+index 68cddd37..98f10c44 100644
+--- a/Sources/AetherEngine/Disc/DiscReader.swift
++++ b/Sources/AetherEngine/Disc/DiscReader.swift
+@@ -38,22 +38,27 @@ enum DiscReader {
+                            udfAnchorChecked: Bool = false) throws -> DiscInfo? {
+         guard udfAnchorChecked || looksLikeUDF(reader) else { return nil }
+         EngineLog.emit("[disc] UDF anchor present; attempting Blu-ray BDMV", category: .demux)
++        DiscOpenTrace.mark("stage=udf_volume")
+         let udf: UDFReader
+         do { udf = try UDFReader(reader: reader) }
+         catch DiscError.notUDF {
+             EngineLog.emit("[disc] UDF anchor present but volume structure not UDF", category: .demux)
+             return nil
+         }
++        DiscOpenTrace.mark("stage=root_directory")
+         let root = (try? udf.list(path: [])) ?? []
+         guard root.contains(where: { $0.isDir && $0.name == "BDMV" }) else {
+             let names = root.isEmpty ? "<none>" : root.map(\.name).joined(separator: ", ")
+             EngineLog.emit("[disc] no BDMV directory in UDF root (entries: \(names)); not a Blu-ray", category: .demux)
+             return nil
+         }
++        DiscOpenTrace.mark("stage=playlist_directory")
+         let playlistDir = (try? udf.list(path: ["BDMV", "PLAYLIST"])) ?? []
++        DiscOpenTrace.mark("stage=playlist_scan")
+         let parsed = scanPlaylists(playlistDir,
+                                    extents: { (try? udf.extents(of: $0)) ?? [] },
+                                    read: { readAll(reader, $0) })
++        DiscOpenTrace.mark("stage=title_selection parsed=\(parsed.count)")
+         let titles = BDTitleSelector.enumerateTitles(parsed)
+         guard !titles.isEmpty else {
+             EngineLog.emit("[disc] BDMV present but no parseable .mpls (\(playlistDir.count) PLAYLIST entries, \(parsed.count) parsed); cannot select a title", category: .demux)
+@@ -61,7 +66,9 @@ enum DiscReader {
+         }
+         let selectedIndex = selectTitleID.flatMap { titles.indices.contains($0) ? $0 : nil } ?? 0
+         let selected = titles[selectedIndex]
++        DiscOpenTrace.mark("stage=stream_directory")
+         let streamDir = (try? udf.list(path: ["BDMV", "STREAM"])) ?? []
++        DiscOpenTrace.mark("stage=clip_extents")
+         let streamIndex = Dictionary(streamDir.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+         let assembled = assembleBluRayTitle(
+             clipIDs: selected.bdClipIDs ?? [],
+@@ -82,12 +89,15 @@ enum DiscReader {
+         }
+         let totalBytes = allExtents.reduce(Int64(0)) { $0 + max(0, $1.length) }
+         EngineLog.emit("[disc] Blu-ray recognized: \(titles.count) title(s), selected \(selectedIndex) playlist=\(selected.bdPlaylist ?? "-") clips=\(selected.bdClipIDs ?? []) m2ts-extents=\(allExtents.count) bytes=\(totalBytes) clipSpans=\(clipTimeline.count) stnLanguages=\(selected.streamLanguages.count)", category: .demux)
++        DiscOpenTrace.mark("stage=clipinfo_directory")
+         let clipInfoDir = (try? udf.list(path: ["BDMV", "CLIPINF"])) ?? []
++        DiscOpenTrace.mark("stage=seek_table")
+         let seekTable = buildSeekTable(title: selected, resolved: assembled.resolved) { clip in
+             guard let entry = clipInfoDir.first(where: { $0.name.caseInsensitiveCompare("\(clip).clpi") == .orderedSame }),
+                   let extents = try? udf.extents(of: entry), !extents.isEmpty else { return nil }
+             return readAll(reader, extents)
+         }
++        DiscOpenTrace.mark("stage=recognition_store")
+         storeRecognition(cacheKey: cacheKey, selectTitleID: selectTitleID,
+                          formatHint: "mpegts", titles: titles, selectedIndex: selectedIndex,
+                          extents: allExtents, clipTimeline: clipTimeline, seekTable: seekTable)
+@@ -291,6 +301,7 @@ enum DiscReader {
+                             clipTimeline: cached.clipTimeline, seekTable: cached.seekTable,
+                             dvdTimeMap: cached.dvdTimeMap)
+         }
++        DiscOpenTrace.mark("stage=format_signatures")
+         guard looksLikeISO9660(reader) else {
+             // The anchor is read once: a probe's input budget counts every read recognition makes.
+             guard looksLikeUDF(reader) else { return nil }
+diff --git a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
+index 4b8a1091..17f35329 100644
+--- a/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
++++ b/Sources/AetherEngine/IO/HTTPDiscIOReader.swift
+@@ -436,7 +436,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+             cancelLock.lock(); let stop = cancelled; cancelLock.unlock()
+             if stop { return nil }
+             let response = Self.rangeGet(url: url, extraHeaders: extraHeaders, session: session,
+-                                         timeout: requestTimeout, offset: offset, length: length)
++                                         timeout: requestTimeout, offset: offset, length: length, attempt: attempt + 1)
+             if let response, !response.body.isEmpty {
+                 transferLock.lock(); transferredBytes &+= Int64(response.body.count); transferLock.unlock()
+             }
+@@ -471,7 +471,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+             defer { OriginRequestBudget.shared.release(ticket) }
+             if shouldAbort?() == true { return .unreachable }
+             let r = rangeGet(url: url, extraHeaders: extraHeaders, session: session,
+-                             timeout: timeout, offset: 0, length: 1)
++                             timeout: timeout, offset: 0, length: 1, attempt: attempt + 1)
+             if shouldAbort?() == true { return .unreachable }
+             if let r = r, r.status == 206, let cr = r.contentRange,
+                let total = parseContentRangeTotal(cr) {
+@@ -524,7 +524,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+     /// AVIOReader leak (see `AVIOReader.persistentSession`): the owner was always the caller
+     /// thread's pool, and delegate-based delivery fixed that path by keeping the body off it.
+     static func rangeGet(url: URL, extraHeaders: [String: String], session: URLSession,
+-                                 timeout: TimeInterval, offset: Int64, length: Int) -> RangeResponse? {
++                                 timeout: TimeInterval, offset: Int64, length: Int, attempt: Int = 1) -> RangeResponse? {
+         autoreleasepool {
+             var req = URLRequest(engineURL: url, timeoutInterval: timeout)
+             req.httpMethod = "GET"
+@@ -536,12 +536,21 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+             delegate.onCompletion = { sem.signal() }
+             let task = session.dataTask(with: req)
+             task.delegate = delegate
++            let start = DiscOpenTrace.enabled ? ProcessInfo.processInfo.systemUptime : 0
++            func trace(_ result: String, received: Int = 0, headTime: Double? = nil) {
++                DiscOpenTrace.mark("range=\(offset) length=\(length) attempt=\(attempt) result=\(result) bytes=\(received) start=\(start) head=\(headTime.map { String($0) } ?? "none")")
++            }
+             task.resume()
+             if sem.wait(timeout: .now() + timeout + 5) == .timedOut {
+                 task.cancel()
++                trace("deadline")
++                return nil
++            }
++            guard let http = delegate.response else {
++                trace("no_headers")
+                 return nil
+             }
+-            guard let http = delegate.response else { return nil }
++            trace(String(http.statusCode), received: delegate.body.count, headTime: delegate.headerTime)
+             let body = delegate.body
+             Self.recordFetched(bytes: body.count)
+             return RangeResponse(status: http.statusCode,
+@@ -593,6 +602,7 @@ final class HTTPDiscIOReader: IOReader, SourceTransferCounting, @unchecked Senda
+ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+     private let offset: Int64
+     private let length: Int
++    private(set) var headerTime: Double?
+     private(set) var response: HTTPURLResponse?
+     private(set) var answer: AVIOReader.RangeAnswer = .unjudged
+     private(set) var body = Data()
+@@ -622,6 +632,7 @@ private final class RangeFetchDelegate: NSObject, URLSessionDataDelegate, @unche
+             completionHandler(.cancel)
+             return
+         }
++        if DiscOpenTrace.enabled { headerTime = ProcessInfo.processInfo.systemUptime }
+         self.response = http
+         answer = AVIOReader.rangeAnswer(
+             http, requestedStart: offset, requestedEnd: offset + Int64(length) - 1)
