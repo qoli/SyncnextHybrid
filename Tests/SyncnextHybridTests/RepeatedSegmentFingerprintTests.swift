@@ -1,4 +1,5 @@
 import AVFAudio
+import AudioToolbox
 import XCTest
 @testable import SyncnextHybrid
 
@@ -10,13 +11,63 @@ final class RepeatedSegmentFingerprintTests: XCTestCase {
     func testBoundedExtractionRequestPreservesBackRange() {
         let request = HybridIntroAudioExtractionRequest(
             url: URL(string: "https://example.com/episode.m3u8")!,
-            sourceRange: 2_520..<2_700,
+            sourceRange: 2_400..<2_700,
             outputURL: URL(fileURLWithPath: "/tmp/back.aac")
         )
 
-        XCTAssertEqual(request.sourceRange, 2_520..<2_700)
-        XCTAssertEqual(request.maximumDuration, 180)
+        XCTAssertEqual(request.sourceRange, 2_400..<2_700)
+        XCTAssertEqual(request.maximumDuration, 300)
     }
+
+    func testThreeHundredSecondFingerprintRequests() throws {
+        for (region, range) in [(HybridFingerprintAudioRegion.front, 0.0..<300.0), (.back, 2_400.0..<2_700.0)] {
+            XCTAssertNoThrow(try HybridFingerprintAudioRequest(sourceRange: range, region: region).validate())
+        }
+        XCTAssertThrowsError(try HybridFingerprintAudioRequest(sourceRange: 0..<301).validate()) {
+            XCTAssertEqual($0 as? HybridFingerprintAudioError, .invalidRange)
+        }
+    }
+
+    #if os(macOS)
+    func testThreeHundredSecondIndependentDecodeAndExtraction() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("episode.m4a")
+        let pcm = makePCMBuffer(startSeconds: 0, duration: 1).buffer
+        do {
+            let file = try AVAudioFile(forWriting: source, settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 96_000,
+            ])
+            for _ in 0..<600 { try file.write(from: pcm) }
+        }
+
+        for range in [0.0..<300.0, 300.0..<600.0] {
+            let batch = try await HybridIndependentFingerprintAudio.decode(
+                source: .demuxer(url: source, httpHeaders: [:], selectedTrack: nil), range: range
+            )
+            let first = try XCTUnwrap(batch.buffers.first)
+            let last = try XCTUnwrap(batch.buffers.last)
+            XCTAssertEqual(first.sourceTime, range.lowerBound, accuracy: HybridFingerprintAudioCoverage.leadingTolerance)
+            let end = last.sourceTime + Double(last.buffer.frameLength) / last.buffer.format.sampleRate
+            XCTAssertEqual(end, range.upperBound, accuracy: HybridFingerprintAudioCoverage.trailingTolerance)
+
+            let extracted = try await HybridIntroAudioExtractor.extract(
+                request: HybridIntroAudioExtractionRequest(
+                    url: source, sourceRange: range,
+                    outputURL: directory.appendingPathComponent("\(range.lowerBound).aac")
+                )
+            )
+            XCTAssertGreaterThan(extracted.packetCount, 0)
+            XCTAssertEqual(extracted.sourceStartSeconds, range.lowerBound, accuracy: HybridFingerprintAudioCoverage.leadingTolerance)
+            XCTAssertEqual(extracted.sourceStartSeconds + extracted.sourceDuration, range.upperBound,
+                           accuracy: HybridFingerprintAudioCoverage.trailingTolerance)
+        }
+    }
+    #endif
 
     func testExplorerGoldenPairWhenFixturesAreProvided() throws {
         let environment = ProcessInfo.processInfo.environment

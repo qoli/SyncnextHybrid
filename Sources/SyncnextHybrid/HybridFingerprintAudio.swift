@@ -7,6 +7,7 @@ public enum HybridFingerprintAudioRegion: Sendable, Equatable {
 }
 
 public struct HybridFingerprintAudioRequest: Sendable, Equatable {
+    public static let maximumDurationSeconds = 300.0
     public static let defaultDeadlineSeconds = 240.0
 
     public let sourceRange: Range<Double>
@@ -26,7 +27,7 @@ public struct HybridFingerprintAudioRequest: Sendable, Equatable {
     func validate() throws {
         let duration = sourceRange.upperBound - sourceRange.lowerBound
         guard sourceRange.lowerBound.isFinite, sourceRange.upperBound.isFinite,
-              sourceRange.lowerBound >= 0, duration > 0, duration <= 180 else {
+              sourceRange.lowerBound >= 0, duration > 0, duration <= Self.maximumDurationSeconds else {
             throw HybridFingerprintAudioError.invalidRange
         }
         guard deadlineSeconds.isFinite, deadlineSeconds > 0 else {
@@ -143,7 +144,8 @@ enum HybridFingerprintAudioProviderResolver {
         for request: HybridFingerprintAudioRequest, admission: HybridRemoteSourceAdmission,
         containerFormat: String?, hasLoopbackVideo: Bool
     ) -> Range<Double>? {
-        guard request.region == .front, request.sourceRange == 0..<180,
+        guard request.region == .front,
+              request.sourceRange == 0..<HybridFingerprintAudioRequest.maximumDurationSeconds,
               hasLoopbackVideo,
               admission == .aetherDefault(.confirmedNonHLS) || admission == .aetherDefault(.requestFailed),
               isMP4(containerFormat) else { return nil }

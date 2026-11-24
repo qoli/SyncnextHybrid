@@ -70,7 +70,7 @@ public struct HybridIntroAudioExtractionRequest:
     public init(
         url: URL,
         httpHeaders: [String: String] = [:],
-        maximumDuration: Double = 180,
+        maximumDuration: Double = HybridFingerprintAudioRequest.maximumDurationSeconds,
         outputURL: URL,
         audioSelection: HybridRemoteHLSAudioSelection? = nil,
         selectedTrack: TrackInfo? = nil
@@ -135,7 +135,7 @@ public enum HybridIntroAudioExtractor {
               request.sourceRange.lowerBound >= 0,
               maximumDuration.isFinite,
               maximumDuration > 0,
-              maximumDuration <= 180 else {
+              maximumDuration <= HybridFingerprintAudioRequest.maximumDurationSeconds else {
             throw HybridIntroAudioExtractionError.invalidDuration
         }
 

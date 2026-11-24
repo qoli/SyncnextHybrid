@@ -11,7 +11,7 @@ final class MP4FingerprintPlanTests: XCTestCase {
             )
             XCTAssertEqual(plan.provider, .segmentCache)
             XCTAssertEqual(plan.timing, .whenPlaybackReachesRange)
-            let tail = 2_621.416..<2_801.416
+            let tail = 2_501.416..<2_801.416
             XCTAssertFalse(plan.isReady(for: tail, playbackTime: 180, isSeeking: false))
             XCTAssertFalse(plan.isReady(for: tail, playbackTime: tail.lowerBound, isSeeking: true))
             XCTAssertTrue(plan.isReady(for: tail, playbackTime: tail.lowerBound, isSeeking: false))
@@ -35,7 +35,7 @@ final class MP4FingerprintPlanTests: XCTestCase {
 
     func testOnlyStandardLoopbackMP4IntroArtifactUsesShortenedWindow() {
         func cachedRange(
-            _ range: Range<Double> = 0..<180, region: HybridFingerprintAudioRegion = .front,
+            _ range: Range<Double> = 0..<300, region: HybridFingerprintAudioRegion = .front,
             admission: HybridRemoteSourceAdmission = .aetherDefault(.confirmedNonHLS),
             format: String? = "mov,mp4,m4a", loopback: Bool = true
         ) -> Range<Double>? {
@@ -45,15 +45,16 @@ final class MP4FingerprintPlanTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(cachedRange(), 2..<180)
+        XCTAssertEqual(cachedRange(), 2..<300)
         XCTAssertNil(cachedRange(0..<2))
+        XCTAssertNil(cachedRange(0..<180))
         XCTAssertNil(cachedRange(30..<180))
         XCTAssertNil(cachedRange(region: .back))
         XCTAssertNil(cachedRange(format: nil))
         XCTAssertNil(cachedRange(format: "matroska,webm"))
         XCTAssertNil(cachedRange(loopback: false))
         XCTAssertNil(cachedRange(admission: .hlsVOD))
-        XCTAssertEqual(cachedRange(admission: .aetherDefault(.requestFailed)), 2..<180)
+        XCTAssertEqual(cachedRange(admission: .aetherDefault(.requestFailed)), 2..<300)
         XCTAssertNil(cachedRange(admission: .aetherDefault(.requestFailed), format: nil))
         XCTAssertNil(cachedRange(admission: .aetherDefault(.nonHTTPSource)))
     }

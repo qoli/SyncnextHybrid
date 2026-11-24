@@ -63,7 +63,7 @@ enum HybridIndependentFingerprintAudio {
               range.upperBound.isFinite,
               range.lowerBound >= 0,
               duration > 0,
-              duration <= 180 else {
+              duration <= HybridFingerprintAudioRequest.maximumDurationSeconds else {
             throw HybridFingerprintAudioError.invalidRange
         }
         guard deadlineSeconds.isFinite, deadlineSeconds > 0 else {
