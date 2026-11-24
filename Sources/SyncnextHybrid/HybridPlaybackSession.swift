@@ -74,6 +74,15 @@ public final class HybridPlaybackSession:
         HybridMediaInformation.loaded(engine: engine, snapshot: snapshot)
     }
 
+    /// Stages the host's AVKit metadata for this session. Aether replays it
+    /// before mounting replacement native items; the proxy keeps the same
+    /// metadata on its AVKit transport item.
+    public func setExternalMetadata(_ items: [AVMetadataItem]) {
+        guard !stopped else { return }
+        engine.setExternalMetadata(items)
+        proxyContext?.player.currentItem?.externalMetadata = items
+    }
+
     /// The player that decodes and presents native video, including loopback video
     /// under the AVKit transport proxy. Nil for software video and audio-only sessions.
     public var nativeVideoPlayer: AVPlayer? {
@@ -1477,6 +1486,7 @@ public final class HybridPlaybackSession:
         proxyNavigationTasks.removeAll()
         detach()
         engine.stop()
+        proxyContext?.player.currentItem?.externalMetadata = []
         manifestFallbackServer?.stop()
         manifestFallbackServer = nil
         proxyContext?.player.pause()

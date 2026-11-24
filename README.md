@@ -27,6 +27,10 @@ Patch 的工作。正式變更放在 root repo，不能只保留 dirty upstream 
 [HybridPlaybackSession](Sources/SyncnextHybrid/HybridPlaybackSession.swift) 對 App
 提供 `AVPlayer`。native route 綁定 Aether 公開的 player；proxy route 由本地 HLS
 提供 AVKit transport UI，真實影片呈現仍交給 Aether。
+宿主以 `session.setExternalMetadata(_:)` 交付 AVKit 標題、封面等資訊；native
+由 Aether 保存並在音軌切換等內部重建時套到新 item，proxy 套到 AVKit transport
+item。`stop()` 清除這份 session 資料。宿主需另觀察 `AVPlayer.currentItem`，
+讓 item 狀態與通知跟隨同一 player 內的替換。
 原生純音訊綁定 Aether `audioNowPlayingSession.players` 中既有的 AVPlayer；
 播放、暫停、seek、媒體時鐘與 stop 仍由同一 Aether session 擁有。播放器綁定
 與前景恢復共用這個選取邊界。沒有 engine-owned AVPlayer 的純音訊解碼路徑
