@@ -1,9 +1,9 @@
 diff --git a/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
 new file mode 100644
-index 00000000..4c38dca7
+index 00000000..00f46aa8
 --- /dev/null
 +++ b/Sources/AetherEngine/AetherEngine+FingerprintAudio.swift
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,365 @@
 +import Foundation
 +import AVFAudio
 +
@@ -49,7 +49,7 @@ index 00000000..4c38dca7
 +              sourceRange.upperBound.isFinite,
 +              sourceRange.lowerBound >= 0,
 +              duration > 0,
-+              duration <= 180,
++              duration <= 300,
 +              timeoutSeconds.isFinite,
 +              timeoutSeconds > 0 else {
 +            throw AetherFingerprintAudioError.invalidRange
@@ -116,13 +116,26 @@ index 00000000..4c38dca7
 +                worker.cancel()
 +                cache.wakeWaiters()
 +            }
++            // A seek can refine the video/item mapping while this reader runs.
++            // PCM already uses each adopted segment's audio shift and passes
++            // source-range coverage checks; only a changed source origin would
++            // invalidate that normalization, not a new presentation seam.
 +            guard loadGeneration == generation,
 +                  nativeVideoSession === session,
-+                  FingerprintAudioAxis.itemRange(
++                  sourcePresentationOrigin == presentationOrigin else {
++                let currentItemRange = FingerprintAudioAxis.itemRange(
 +                    for: sourceRange,
 +                    sourcePresentationOrigin: sourcePresentationOrigin,
 +                    map: presentationAxisMap
-+                  ) == itemRange else {
++                )
++                EngineLog.emit(
++                    "[FingerprintAudio] phase=session-changed "
++                        + "sameGeneration=\(loadGeneration == generation) sameSession=\(nativeVideoSession === session) "
++                        + "origin=\(presentationOrigin) currentOrigin=\(sourcePresentationOrigin) "
++                        + "itemRange=\(itemRange) currentItemRange=\(String(describing: currentItemRange)) "
++                        + "seams=\(axisMap.seams) currentSeams=\(presentationAxisMap.seams)",
++                    category: .engine
++                )
 +                throw AetherFingerprintAudioError.sessionChanged
 +            }
 +            EngineLog.emit(
@@ -584,7 +597,7 @@ index 98291808..8c0bf1cf 100644
              }
          }
 diff --git a/Tests/AetherEngineTests/SegmentCacheTests.swift b/Tests/AetherEngineTests/SegmentCacheTests.swift
-index 74011795..b4015b6d 100644
+index 74011795..7116037b 100644
 --- a/Tests/AetherEngineTests/SegmentCacheTests.swift
 +++ b/Tests/AetherEngineTests/SegmentCacheTests.swift
 @@ -7,6 +7,22 @@ struct SegmentCacheTests {
@@ -610,7 +623,7 @@ index 74011795..b4015b6d 100644
      @Test("store then fetch round-trips; count and totalBytes track")
      func storeFetch() {
          let c = SegmentCache(forwardWindow: 5, backwardWindow: 5)
-@@ -59,6 +75,128 @@ struct SegmentCacheTests {
+@@ -59,6 +75,150 @@ struct SegmentCacheTests {
          #expect(c.totalBytes == 40)
      }
  
@@ -640,6 +653,28 @@ index 74011795..b4015b6d 100644
 +            sourcePresentationOrigin: 600,
 +            map: PresentationAxisMap()
 +        ) == nil)
++    }
++
++    @Test("seek presentation refinement preserves the decoded audio source axis")
++    func fingerprintSeekRefinementKeepsSourceAxis() throws {
++        // Replays the 21 ms video seam observed during the Study TV tail read.
++        let sourceRange = 1133.1..<1433.1
++        var initial = PresentationAxisMap.anchored(shiftSeconds: 0)
++        initial.appendSeam(shiftSeconds: 0, activatingAtItemSeconds: 1128)
++        var refined = initial
++        refined.appendSeam(shiftSeconds: -0.021, activatingAtItemSeconds: 1128.021)
++        let before = try #require(FingerprintAudioAxis.itemRange(
++            for: sourceRange, sourcePresentationOrigin: 0, map: initial
++        ))
++        let after = try #require(FingerprintAudioAxis.itemRange(
++            for: sourceRange, sourcePresentationOrigin: 0, map: refined
++        ))
++        #expect(abs(after.lowerBound - before.lowerBound - 0.021) < 0.000_001)
++        let audioSourceTime = FingerprintAudioTimeline.sourceTime(
++            decodedPTS: after.lowerBound, audioSourceShiftSeconds: -0.021,
++            sourcePresentationOrigin: 0
++        )
++        #expect(abs(audioSourceTime - sourceRange.lowerBound) < 0.000_001)
 +    }
 +
 +    @Test("audio source shift follows the exact adopted generation")

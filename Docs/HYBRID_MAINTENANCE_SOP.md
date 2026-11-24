@@ -1,6 +1,6 @@
 # SyncnextHybrid 維護 SOP
 
-更新日期：2026-11-19
+更新日期：2026-11-24
 狀態：Active  
 Owner：SyncnextHybrid
 
@@ -78,6 +78,12 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
 3. `0004-cache-backed-fingerprint-audio.patch`
    - 為 fingerprint v2 暴露最小、有限、可取消的 loopback VOD cache PCM
      batch；一次性 material demand 不改寫 AVPlayer consumer target。
+   - 有限 PCM 窗口上限為 300 秒，與 Hybrid 的片頭／片尾請求一致。
+     `CacheBackedFingerprintWindowTests` 直接呼叫 SDK 入口核對此上限；
+     獨立解碼測試不取代 cache PCM 路徑的驗證。
+   - seek 後 producer 可修正影片的 presentation seam；PCM 已按每段 audio shift
+     還原來源時間並驗證完整覆蓋，不因影片映射的正常更新而丟棄。完成時仍核對
+     load generation、session 身分及 source origin，真正換片或來源軸改變明確失敗。
    - 2026-11-22 批准擴充現有 Patch，加上可選、同步的逐段 PCM 回呼。reader 在同一
      worker 套用時間軸過濾後交付片段。Hybrid 持有重取樣器與指紋狀態，在整窗覆蓋及
      session 驗證通過後使用結果。上游提供同等的可取消逐段 PCM API 時可退役此回呼。
