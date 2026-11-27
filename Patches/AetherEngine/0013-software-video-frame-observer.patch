@@ -1,0 +1,227 @@
+diff --git a/Sources/AetherEngine/AetherEngine+FrameTimes.swift b/Sources/AetherEngine/AetherEngine+FrameTimes.swift
+index d5bf23dd..4ce81f6d 100644
+--- a/Sources/AetherEngine/AetherEngine+FrameTimes.swift
++++ b/Sources/AetherEngine/AetherEngine+FrameTimes.swift
+@@ -38,6 +38,15 @@ extension AetherEngine {
+         softwareHost?.setVideoFrameTimeObserver(observer)
+     }
+ 
++    /// Observe immutable software-decoded pictures already handed to the renderer, in presentation
++    /// order. The callback runs on the decode thread and must not block or mutate the pixel buffer.
++    /// It survives load(); generations distinguish flushes and replacement sessions. Pass nil to stop.
++    /// Native and bypass routes do not produce these frames. Transport remains engine-owned.
++    public func setSoftwareVideoFrameObserver(_ observer: SoftwareVideoFrameObserver?) {
++        softwareVideoFrameObserver = observer
++        softwareHost?.setVideoFrameObserver(observer)
++    }
++
+     /// The timebase the software path presents against, or nil on every other path and before a
+     /// session exists (#311).
+     ///
+diff --git a/Sources/AetherEngine/AetherEngine+Loading.swift b/Sources/AetherEngine/AetherEngine+Loading.swift
+index eea8da03..58ddfaab 100644
+--- a/Sources/AetherEngine/AetherEngine+Loading.swift
++++ b/Sources/AetherEngine/AetherEngine+Loading.swift
+@@ -2167,6 +2167,7 @@ extension AetherEngine {
+         // #311: a load builds a new host and a new renderer, so an observer installed once by the
+         // host app has to be carried across the seam, exactly as the native session does at load.
+         host.setVideoFrameTimeObserver(softwareVideoFrameTimeObserver)
++        host.setVideoFrameObserver(softwareVideoFrameObserver)
+         // #353: the settled picture size, wired next to the frame times because a host laying out an
+         // overlay needs the rectangle as well as the clock, and both come off this renderer.
+         mirrorSoftwareDisplaySize(from: host.$videoDisplaySize, storeIn: &softwareCancellables)
+diff --git a/Sources/AetherEngine/AetherEngine.swift b/Sources/AetherEngine/AetherEngine.swift
+index a438d69d..8d639f41 100644
+--- a/Sources/AetherEngine/AetherEngine.swift
++++ b/Sources/AetherEngine/AetherEngine.swift
+@@ -2773,6 +2773,7 @@ public final class AetherEngine: ObservableObject {
+     /// The software path's equivalent (#311), held for the same reason: a `load()` builds a fresh
+     /// host, and the observer has to survive it. See `setSoftwareVideoFrameTimeObserver`.
+     var softwareVideoFrameTimeObserver: SoftwareVideoFrameTimeObserver?
++    var softwareVideoFrameObserver: SoftwareVideoFrameObserver?
+ 
+     func setPresentationAxis(_ map: PresentationAxisMap) {
+         presentationAxis = map
+@@ -9087,6 +9088,7 @@ public final class AetherEngine: ObservableObject {
+             isResettingPictureInPictureForStop = false
+         }
+         softwareHost?.setVideoFrameTimeObserver(nil)
++        softwareHost?.setVideoFrameObserver(nil)
+         softwareHost?.stop()
+         softwarePiPSource = nil
+         softwareHost = nil
+diff --git a/Sources/AetherEngine/Native/SoftwarePlaybackHost.swift b/Sources/AetherEngine/Native/SoftwarePlaybackHost.swift
+index 3ba84e87..3fe63edc 100644
+--- a/Sources/AetherEngine/Native/SoftwarePlaybackHost.swift
++++ b/Sources/AetherEngine/Native/SoftwarePlaybackHost.swift
+@@ -601,6 +601,10 @@ final class SoftwarePlaybackHost {
+         renderer.setFrameEnqueuedObserver(observer)
+     }
+ 
++    func setVideoFrameObserver(_ observer: SoftwareVideoFrameObserver?) {
++        renderer.setVideoFrameObserver(observer)
++    }
++
+     /// #303: the renderer's own view of what reached the display. Async because the AVFoundation
+     /// accessor is; the memprobe already runs in an async context, so it is read there rather than
+     /// cached, and the line never carries a stale snapshot.
+diff --git a/Sources/AetherEngine/Renderer/SampleBufferRenderer.swift b/Sources/AetherEngine/Renderer/SampleBufferRenderer.swift
+index aa7cf789..883c44aa 100644
+--- a/Sources/AetherEngine/Renderer/SampleBufferRenderer.swift
++++ b/Sources/AetherEngine/Renderer/SampleBufferRenderer.swift
+@@ -274,6 +274,13 @@ final class SampleBufferRenderer: @unchecked Sendable {
+         reorderLock.unlock()
+     }
+ 
++    private var _videoFrameObserver: SoftwareVideoFrameObserver?
++    func setVideoFrameObserver(_ observer: SoftwareVideoFrameObserver?) {
++        reorderLock.lock()
++        _videoFrameObserver = observer
++        reorderLock.unlock()
++    }
++
+     /// The host's own hook on the same moment, kept apart from the public #311 observer: the source
+     /// timestamp of every frame the queue target accepted, whether it left the reorder buffer on its own
+     /// or in a drain. Same locking as the observer.
+@@ -1072,10 +1079,12 @@ final class SampleBufferRenderer: @unchecked Sendable {
+         // to a failed sample-buffer creation never reaches this line and is never reported.
+         reorderLock.lock()
+         let observer = _frameEnqueuedObserver
++        let videoObserver = accepted ? _videoFrameObserver : nil
+         let generation = _flushGeneration
+         let handoverHook = accepted ? _handoverHook : nil
+         reorderLock.unlock()
+         observer?(SoftwareVideoFrameTime(presentation: pts, generation: generation))
++        videoObserver?(SoftwareVideoFrame(pixelBuffer: pixelBuffer, presentation: pts, generation: generation))
+         if let handoverHook, pts.isNumeric { handoverHook(CMTimeGetSeconds(pts)) }
+ 
+         reorderLock.lock()
+diff --git a/Sources/AetherEngine/SoftwareVideoFrame.swift b/Sources/AetherEngine/SoftwareVideoFrame.swift
+new file mode 100644
+index 00000000..b1264045
+--- /dev/null
++++ b/Sources/AetherEngine/SoftwareVideoFrame.swift
+@@ -0,0 +1,22 @@
++import CoreMedia
++import CoreVideo
++
++/// An immutable picture handed to the software renderer after presentation reordering and seek
++/// filtering. Retaining the value retains its pixel buffer; a consumer must release obsolete frames
++/// and must never write the pixels or attachments. The renderer and audio keep their original clock.
++public struct SoftwareVideoFrame: @unchecked Sendable {
++    public let pixelBuffer: CVPixelBuffer
++    /// Source-axis PTS, using softwarePresentationTimebase and the subtitle cue axis.
++    public let presentation: CMTime
++    /// Process-wide renderer flush generation, with the same semantics as SoftwareVideoFrameTime.
++    public let generation: UInt64
++
++    public init(pixelBuffer: CVPixelBuffer, presentation: CMTime, generation: UInt64) {
++        self.pixelBuffer = pixelBuffer
++        self.presentation = presentation
++        self.generation = generation
++    }
++}
++
++/// Called on the decode thread, with no renderer lock held. Must not block or mutate the picture.
++public typealias SoftwareVideoFrameObserver = @Sendable (SoftwareVideoFrame) -> Void
+diff --git a/Tests/AetherEngineTests/SoftwareVideoFrameObserverTests.swift b/Tests/AetherEngineTests/SoftwareVideoFrameObserverTests.swift
+new file mode 100644
+index 00000000..0e8b7ac1
+--- /dev/null
++++ b/Tests/AetherEngineTests/SoftwareVideoFrameObserverTests.swift
+@@ -0,0 +1,95 @@
++import AVFoundation
++import Foundation
++import Testing
++@testable import AetherEngine
++
++@Suite("Immutable software video frame observer")
++struct SoftwareVideoFrameObserverTests {
++    private final class Collector: @unchecked Sendable {
++        private let lock = NSLock()
++        private var storage: [SoftwareVideoFrame] = []
++        var values: [SoftwareVideoFrame] {
++            lock.lock(); defer { lock.unlock() }
++            return storage
++        }
++        func append(_ frame: SoftwareVideoFrame) {
++            lock.lock(); defer { lock.unlock() }
++            storage.append(frame)
++        }
++    }
++
++    private func picture() -> CVPixelBuffer {
++        var buffer: CVPixelBuffer?
++        CVPixelBufferCreate(kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA, nil, &buffer)
++        return buffer!
++    }
++
++    private func time(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 600) }
++
++    @Test("observes the original decoded buffers in presentation order")
++    @MainActor
++    func orderedPictures() {
++        let renderer = SampleBufferRenderer()
++        let seen = Collector()
++        renderer.setVideoFrameObserver { seen.append($0) }
++        let times = [0.00, 0.12, 0.04, 0.08, 0.20, 0.16]
++        let pictures = times.map { _ in picture() }
++        for (seconds, pixelBuffer) in zip(times, pictures) {
++            renderer.enqueue(pixelBuffer: pixelBuffer, pts: time(seconds))
++        }
++        renderer.drainReorderBuffer()
++        #expect(seen.values.map { $0.presentation.seconds } == times.sorted())
++        for frame in seen.values {
++            let index = times.firstIndex(of: frame.presentation.seconds)!
++            #expect(frame.pixelBuffer === pictures[index])
++            #expect(frame.generation == renderer.flushGeneration)
++        }
++    }
++
++    @Test("invalid timestamps and pre-target seek frames never reach the pixel observer")
++    @MainActor
++    func filteredPictures() {
++        let renderer = SampleBufferRenderer()
++        let seen = Collector()
++        renderer.setVideoFrameObserver { seen.append($0) }
++        renderer.setSkipThreshold(time(10))
++        renderer.enqueue(pixelBuffer: picture(), pts: .invalid)
++        for seconds in [9.0, 9.5, 10.0] {
++            renderer.enqueue(pixelBuffer: picture(), pts: time(seconds))
++        }
++        renderer.drainReorderBuffer()
++        #expect(seen.values.map { $0.presentation.seconds } == [10.0])
++    }
++
++    @Test("flush generations separate identical timestamps and removing the observer stops delivery")
++    @MainActor
++    func generationAndRemoval() {
++        let renderer = SampleBufferRenderer()
++        let seen = Collector()
++        renderer.setVideoFrameObserver { seen.append($0) }
++        renderer.enqueue(pixelBuffer: picture(), pts: time(30))
++        renderer.drainReorderBuffer()
++        renderer.flush(removingDisplayedImage: false)
++        renderer.enqueue(pixelBuffer: picture(), pts: time(30))
++        renderer.drainReorderBuffer()
++        #expect(seen.values.count == 2)
++        #expect(seen.values[1].generation > seen.values[0].generation)
++        renderer.setVideoFrameObserver(nil)
++        renderer.enqueue(pixelBuffer: picture(), pts: time(31))
++        renderer.drainReorderBuffer()
++        #expect(seen.values.count == 2)
++    }
++
++    @Test("the engine stores and removes the pixel observer independently of the time observer")
++    @MainActor
++    func installation() throws {
++        let engine = try AetherEngine()
++        engine.setSoftwareVideoFrameTimeObserver { _ in }
++        engine.setSoftwareVideoFrameObserver { _ in }
++        #expect(engine.softwareVideoFrameObserver != nil)
++        engine.setSoftwareVideoFrameObserver(nil)
++        #expect(engine.softwareVideoFrameObserver == nil)
++        #expect(engine.softwareVideoFrameTimeObserver != nil)
++        engine.setSoftwareVideoFrameTimeObserver(nil)
++    }
++}

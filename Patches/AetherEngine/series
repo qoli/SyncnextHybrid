@@ -5,3 +5,4 @@
 0009-audio-tap-segment-pacing.patch
 0011-progressive-http-disc-range.patch
 0012-disc-open-diagnostics.patch
+0013-software-video-frame-observer.patch

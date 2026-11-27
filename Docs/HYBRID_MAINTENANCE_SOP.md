@@ -115,6 +115,16 @@ Syncnext-specific admission、AVKit presentation 或產品 recovery 下沉至上
      嘗試次數、狀態、位元組及單調時間；不記錄 URL、headers 或媒體內容。
    - 不改變讀取、重試、逾時、路由或取消行為。完成該開啟延遲調查，或上游提供
      等效觀測入口後移除此診斷；不作為擴張一般日誌的先例。
+8. `0013-software-video-frame-observer.patch`
+   - 依使用者 2026-11-28 的 `Approved minimal Patch` 決定，新增可選的唯讀軟解
+     像素畫格回呼，附 source-axis PTS 與 renderer flush generation。回呼位置沿用
+     排序及 seek 過濾後的 renderer handover，不改解碼、音訊或 renderer 排程。
+   - 回呼在 decode thread 執行，不持有 renderer lock；消費者不得阻塞或修改像素。
+     Hybrid 負責畫格持有、時鐘讀取及過期資料釋放；VT、顯示與字幕疊層留在 App。
+   - 每次升級須重驗排序、seek 世代、移除回呼與 load／stop 的重新掛接。上游提供
+     等效唯讀畫格 API 後移除此 Patch；介面缺失時明確不可用，不擷取黑色 Proxy。
+   - `Versions.env` 同步既有已提交的 Aether gitlink `6128e35aecaaf5131eb5ccf68af59c2871ddc64a`，
+     保留目前已整合的 probe bitrate API，避免 Patch runner 退回舊的 `3cfe848`。
 
 `0010-subtitle-bitmap-storage.patch` 自 7.62.1 起退役。Hybrid 使用上游 RGBA 儲存，
 並在載入前設定 0 秒字幕偏移。見第 8 節及 [#929 真機驗證](https://github.com/superuser404notfound/AetherEngine/issues/929)。

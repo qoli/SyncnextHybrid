@@ -99,6 +99,24 @@ public final class HybridPlaybackSession:
         return engine.currentAVPlayer
     }
 
+    private var softwareVideoFrameSource: HybridSoftwareVideoFrameSource?
+
+    /// Capture the software decoder's immutable pictures for host processing. This does not
+    /// change decode, playback, or audio scheduling. Stop the source when its consumer detaches.
+    public func makeSoftwareVideoFrameSource() -> HybridSoftwareVideoFrameSource? {
+        guard !stopped, engine.videoRoute == .software,
+              engine.softwarePresentationTimebase != nil else { return nil }
+        if let source = softwareVideoFrameSource, source.isCurrent { return source }
+        softwareVideoFrameSource?.stop()
+        let source = HybridSoftwareVideoFrameSource(engine: engine) { [weak self] id in
+            guard let self, self.softwareVideoFrameSource?.id == id else { return }
+            self.engine.setSoftwareVideoFrameObserver(nil)
+            self.softwareVideoFrameSource = nil
+        }
+        softwareVideoFrameSource = source
+        return source
+    }
+
     /// Native video is mounted by AVKit or by the engine's proxy-route surface.
     /// The overlay sits above that picture and below Hybrid's subtitle overlay.
     public func mountNativeVideoOverlay(_ view: UIView, in controller: AVPlayerViewController) -> Bool {
@@ -1508,6 +1526,7 @@ public final class HybridPlaybackSession:
         foregroundRecoveryTask = nil
         proxyNavigationTasks.values.forEach { $0.cancel() }
         proxyNavigationTasks.removeAll()
+        softwareVideoFrameSource?.stop()
         detach()
         engine.stop()
         proxyContext?.player.currentItem?.externalMetadata = []
