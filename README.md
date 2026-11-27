@@ -41,6 +41,10 @@ item。`stop()` 清除這份 session 資料。宿主需另觀察 `AVPlayer.curre
 為 0 秒，由 Aether 管理 bitmap 歷史及前向預取。
 App 的插幀從 `nativeVideoPlayer` 讀取實際畫面的 AVPlayer；在代理控制路徑，
 `mountNativeVideoOverlay(_:in:)` 將畫面掛載於 Aether surface 與 Hybrid 字幕之間。
+原生遠端 HLS 的 VTT 由 AVPlayer 選取。掛載插幀畫面時，
+`HybridNativeSubtitleOverlay` 以被動 legible output 將所選文字呈現在畫面上方；
+不抑制原生字幕、不改選軌。item 替換會重新綁定，seek flush 清空舊文字，
+`unmountNativeVideoOverlay()` 與 session detach 會移除鏡像。
 字幕字形與描邊可用 [SubtitleStyleProbe](Examples/SubtitleStyleProbe/README.md)
 直接比較固定 cue，不需經過訂閱、片源與播放流程。
 時間軸權責與手工驗收見 [AVKit proxy 模型](Docs/AVKIT_UI_PROXY_TIMELINE_MODEL.md)。

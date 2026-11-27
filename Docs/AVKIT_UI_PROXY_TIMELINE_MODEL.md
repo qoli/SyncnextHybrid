@@ -48,6 +48,13 @@ timeline 取代。切軌、關閉字幕及 seek 清空的 cue 必須同步移除
 有效字幕。detach 移除字幕層。字幕繼續由既有 Subtitles 選單切換，本次不改變
 既有語言選擇政策。此層只負責畫面內字幕，不代表已驗收 PiP／AirPlay 字幕。
 
+原生遠端 HLS 不經上述 decoded cue，而由 AVPlayer 呈現所選 legible rendition。
+插幀的 opaque picture 會遮住它，因此 `HybridNativeSubtitleOverlay` 被動接收
+同一 item 的 `AVPlayerItemLegibleOutput`，僅在 picture mount 之上鏡像文字。
+output 使用主佇列及原始 item time，不預先派送，也不抑制 AVPlayer 自己的字幕。
+空字串與 seek flush 清空鏡像；item 替換重綁，停止插幀及 detach 移除鏡像。
+鏡像沿用實心白字與陰影，不更改字幕選擇或保存另一套字幕偏好。
+
 回歸入口為 `HybridSubtitlePresentationTests`（source PTS、重疊／過期 cue、
 letterbox 與 canvas placement）及 tvOS 的 `HybridSubtitleOverlayViewTests`
 （文字視圖、白字填色 raster、暫停／關閉、同 ID 切軌和圖像字幕）。兩者均屬

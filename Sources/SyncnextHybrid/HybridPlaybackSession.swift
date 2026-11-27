@@ -74,6 +74,15 @@ public final class HybridPlaybackSession:
         HybridMediaInformation.loaded(engine: engine, snapshot: snapshot)
     }
 
+    /// Position to persist for a later resume. The silent AVKit carrier can
+    /// advance while software video is still waiting for its renderer clock.
+    public var resumePosition: CMTime {
+        if engine.videoRoute == .software {
+            return CMTime(seconds: engine.currentTime, preferredTimescale: 90_000)
+        }
+        return avPlayer.currentTime()
+    }
+
     /// Stages the host's AVKit metadata for this session. Aether replays it
     /// before mounting replacement native items; the proxy keeps the same
     /// metadata on its AVKit transport item.
@@ -101,7 +110,20 @@ public final class HybridPlaybackSession:
         } else {
             overlay.insertSubview(view, at: 0)
         }
+        if engine.videoRoute == .remoteBypass {
+            nativeSubtitleOverlay.mount(above: view, in: overlay)
+        }
         return true
+    }
+
+    public func unmountNativeVideoOverlay() {
+        nativeSubtitleOverlay.unmount()
+    }
+
+    @_spi(SmokeTesting)
+    public var nativeSubtitleOverlayObservation: (text: String, itemTime: Double?, deliveries: Int, flushes: Int, abovePicture: Bool) {
+        (nativeSubtitleOverlay.text, nativeSubtitleOverlay.itemTime, nativeSubtitleOverlay.deliveries,
+         nativeSubtitleOverlay.flushes, nativeSubtitleOverlay.isAbovePicture)
     }
 
     /// On native remote HLS, declared sidecars can arrive before the origin's
@@ -159,6 +181,7 @@ public final class HybridPlaybackSession:
     private let startupDiagnostics: HybridStartupDiagnostics
     private let surface: AetherPlayerView
     private let subtitleOverlay = HybridSubtitleOverlayView()
+    private let nativeSubtitleOverlay = HybridNativeSubtitleOverlay()
     private let proxyContext: ProxyContext?
     private let forceAVKitProxy: Bool
     private let sourceAdmission: HybridRemoteSourceAdmission
@@ -558,6 +581,7 @@ public final class HybridPlaybackSession:
         }
         surface.removeFromSuperview()
         subtitleOverlay.removeFromSuperview()
+        nativeSubtitleOverlay.detach()
         engine.unbind(view: surface)
         controller.transportBarCustomMenuItems = previousCustomMenuItems
         controller.delegate = previousControllerDelegate
@@ -1854,6 +1878,7 @@ public final class HybridPlaybackSession:
             }
             return
         }
+        nativeSubtitleOverlay.bind(to: engine.videoRoute == .remoteBypass ? avPlayer : nil)
         switch route {
         case .nativeAVPlayer:
             surface.removeFromSuperview()
