@@ -84,6 +84,10 @@ matcher 從通過既有統計門檻的非重疊種子視窗估計線性時間漂
 快取缺樣或中段不連續時直接回報失敗。直接要求 PCM 時依呼叫方指定的來源範圍取樣。
 
 Session 的 `fingerprintAudioPlan(for:)` 依來源探測結果與已載入格式提供 provider 與取樣時機。
+已載入為 MP4 且實際影片路徑為 software（包含 AV1）時，片尾預先選用同一來源及
+所選音軌的 bounded independent demuxer，片頭完成後即可採集 300 秒片尾，不等待播放
+進入片尾。軟解路徑沒有 loopback SegmentCache；這個選擇在取樣前決定，失敗時明確回報，
+不再啟動 AAC extractor。loopback MP4 仍沿用原有 playback-cache 策略。
 一般 HLS VOD 用獨立 bounded HLS reader，片頭完成後即可取得片尾；HEVC MPEG-TS HLS
 保留片頭 cache／片尾獨立 reader。直播明確不支援固定片尾分析。
 已確認的有限 EBML 來源使用主播放的 SegmentCache 取得片頭與片尾音訊。

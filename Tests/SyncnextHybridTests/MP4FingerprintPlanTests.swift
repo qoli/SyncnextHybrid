@@ -11,6 +11,7 @@ final class MP4FingerprintPlanTests: XCTestCase {
             )
             XCTAssertEqual(plan.provider, .segmentCache)
             XCTAssertEqual(plan.timing, .whenPlaybackReachesRange)
+            XCTAssertFalse(plan.allowsAudioExtraction)
             let tail = 2_501.416..<2_801.416
             XCTAssertFalse(plan.isReady(for: tail, playbackTime: 180, isSeeking: false))
             XCTAssertFalse(plan.isReady(for: tail, playbackTime: tail.lowerBound, isSeeking: true))
@@ -19,6 +20,38 @@ final class MP4FingerprintPlanTests: XCTestCase {
                 admission: admission, region: .back, containerFormat: mp4
             ), "A cache acquisition failure must not reopen the rate-limited source")
         }
+    }
+
+    func testSoftwareMP4TailUsesBoundedReaderBeforePlaybackArrives() throws {
+        for admission in [HybridRemoteSourceAdmission.aetherDefault(.confirmedNonHLS), .aetherDefault(.requestFailed)] {
+            let plan = try HybridFingerprintAudioProviderResolver.resolve(
+                admission: admission, region: .back, containerFormat: mp4, usesSoftwareVideo: true
+            )
+            XCTAssertEqual(plan.provider, .independentDemuxer)
+            XCTAssertEqual(plan.timing, .immediate)
+            XCTAssertTrue(plan.isReady(for: 1_161..<1_461, playbackTime: 0, isSeeking: false))
+            XCTAssertFalse(plan.allowsAudioExtraction, "A failed software tail must not start another extractor")
+            XCTAssertFalse(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(
+                admission: admission, region: .back, containerFormat: mp4, usesSoftwareVideo: true
+            ))
+        }
+    }
+
+    func testSoftwareVideoDoesNotChangeUnknownOrEBMLCachePolicy() throws {
+        for format: String? in [nil, "matroska,webm"] {
+            let plan = try HybridFingerprintAudioProviderResolver.resolve(
+                admission: .aetherDefault(.requestFailed), region: .back,
+                containerFormat: format, usesSoftwareVideo: true
+            )
+            XCTAssertEqual(plan.provider, .segmentCache)
+            XCTAssertFalse(plan.allowsAudioExtraction)
+        }
+        let intro = try HybridFingerprintAudioProviderResolver.resolve(
+            admission: .aetherDefault(.confirmedNonHLS), region: .front,
+            containerFormat: mp4, usesSoftwareVideo: true
+        )
+        XCTAssertEqual(intro.provider, .independentDemuxer)
+        XCTAssertTrue(intro.allowsAudioExtraction)
     }
 
     func testMP4FrontPCMRequestKeepsExactRangeProviderAndFailurePolicy() throws {

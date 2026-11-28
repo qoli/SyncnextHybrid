@@ -52,6 +52,17 @@ public enum HybridFingerprintAudioTiming: String, Sendable, Equatable {
 public struct HybridFingerprintAudioPlan: Sendable, Equatable {
     public let provider: HybridFingerprintAudioProvider
     public let timing: HybridFingerprintAudioTiming
+    let allowsAudioExtraction: Bool
+
+    init(
+        provider: HybridFingerprintAudioProvider,
+        timing: HybridFingerprintAudioTiming,
+        allowsAudioExtraction: Bool = true
+    ) {
+        self.provider = provider
+        self.timing = timing
+        self.allowsAudioExtraction = allowsAudioExtraction
+    }
 
     func isReady(for range: Range<Double>, playbackTime: Double, isSeeking: Bool) -> Bool {
         switch timing {
@@ -157,8 +168,12 @@ enum HybridFingerprintAudioProviderResolver {
     static func requiresPlaybackCache(
         admission: HybridRemoteSourceAdmission,
         region: HybridFingerprintAudioRegion = .front,
-        containerFormat: String? = nil
+        containerFormat: String? = nil,
+        usesSoftwareVideo: Bool = false
     ) -> Bool {
+        if usesSoftwareVideo, region == .back, isMP4(containerFormat) {
+            return false
+        }
         switch admission {
         case .aetherDefault(.confirmedFiniteEBML), .aetherDefault(.requestFailed):
             return true
@@ -173,7 +188,8 @@ enum HybridFingerprintAudioProviderResolver {
     static func resolve(
         admission: HybridRemoteSourceAdmission,
         region: HybridFingerprintAudioRegion = .front,
-        containerFormat: String? = nil
+        containerFormat: String? = nil,
+        usesSoftwareVideo: Bool = false
     ) throws -> HybridFingerprintAudioPlan {
         switch admission {
         case .hlsVOD, .hlsVODRepairedManifest, .hlsVODPQOnlyMaster:
@@ -186,10 +202,22 @@ enum HybridFingerprintAudioProviderResolver {
         case .hlsLive:
             throw HybridFingerprintAudioError.liveOrDVRUnsupported
         case .aetherDefault:
-            if requiresPlaybackCache(admission: admission, region: region, containerFormat: containerFormat) {
+            // Software playback has no loopback SegmentCache. Select its bounded
+            // audio reader up front so the tail is ready before playback reaches it.
+            if usesSoftwareVideo, region == .back, isMP4(containerFormat) {
+                return HybridFingerprintAudioPlan(
+                    provider: .independentDemuxer, timing: .immediate,
+                    allowsAudioExtraction: false
+                )
+            }
+            if requiresPlaybackCache(
+                admission: admission, region: region, containerFormat: containerFormat,
+                usesSoftwareVideo: usesSoftwareVideo
+            ) {
                 return HybridFingerprintAudioPlan(
                     provider: .segmentCache,
-                    timing: region == .front ? .afterPlaybackSeek : .whenPlaybackReachesRange
+                    timing: region == .front ? .afterPlaybackSeek : .whenPlaybackReachesRange,
+                    allowsAudioExtraction: false
                 )
             }
             return HybridFingerprintAudioPlan(provider: .independentDemuxer, timing: .immediate)

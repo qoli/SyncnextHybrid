@@ -131,7 +131,9 @@ final class HybridHLSVODAudioSourceTests: XCTestCase {
         ]
         for (region, timing) in expected {
             let plan = try HybridFingerprintAudioProviderResolver.resolve(admission: admission, region: region)
-            XCTAssertEqual(plan, HybridFingerprintAudioPlan(provider: .segmentCache, timing: timing))
+            XCTAssertEqual(plan, HybridFingerprintAudioPlan(
+                provider: .segmentCache, timing: timing, allowsAudioExtraction: false
+            ))
             XCTAssertTrue(HybridFingerprintAudioProviderResolver.requiresPlaybackCache(admission: admission, region: region))
         }
     }

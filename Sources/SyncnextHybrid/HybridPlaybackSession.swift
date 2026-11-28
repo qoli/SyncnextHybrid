@@ -1059,7 +1059,8 @@ public final class HybridPlaybackSession:
     public func fingerprintAudioPlan(for region: HybridFingerprintAudioRegion) throws -> HybridFingerprintAudioPlan {
         try HybridFingerprintAudioProviderResolver.resolve(
             admission: sourceAdmission, region: region,
-            containerFormat: engine.isLive ? nil : engine.sourceContainerFormat
+            containerFormat: engine.isLive ? nil : engine.sourceContainerFormat,
+            usesSoftwareVideo: engine.videoRoute == .software
         )
     }
 
@@ -1096,6 +1097,7 @@ public final class HybridPlaybackSession:
             "SYNCNEXT_HYBRID_FINGERPRINT_PROVIDER "
                 + "session=\(diagnosticsID) "
                 + "provider=\(provider.rawValue) timing=\(plan.timing.rawValue) "
+                + "region=\(fingerprintRequest.region) videoRoute=\(engine.videoRoute.rawValue) "
                 + "range=\(String(format: "%.3f", fingerprintRequest.sourceRange.lowerBound))..."
                 + "\(String(format: "%.3f", fingerprintRequest.sourceRange.upperBound))"
         )
@@ -1247,7 +1249,9 @@ public final class HybridPlaybackSession:
         let sourceRange = cachedIntroRange ?? fingerprintRequest.sourceRange
         let plan: HybridFingerprintAudioPlan
         if cachedIntroRange != nil {
-            plan = HybridFingerprintAudioPlan(provider: .segmentCache, timing: .afterPlaybackSeek)
+            plan = HybridFingerprintAudioPlan(
+                provider: .segmentCache, timing: .afterPlaybackSeek, allowsAudioExtraction: false
+            )
         } else {
             plan = try fingerprintAudioPlan(for: fingerprintRequest.region)
         }
@@ -1273,10 +1277,7 @@ public final class HybridPlaybackSession:
             )
         } catch let error as HybridFingerprintAudioError
             where error.canUseIntroAudioExtraction && cachedIntroRange == nil
-                && !HybridFingerprintAudioProviderResolver.requiresPlaybackCache(
-                    admission: sourceAdmission, region: fingerprintRequest.region,
-                    containerFormat: engine.isLive ? nil : engine.sourceContainerFormat
-                ) {
+                && plan.allowsAudioExtraction {
             try Task.checkCancellation()
             guard !stopped else { throw HybridFingerprintAudioError.sessionStopped }
             guard ProcessInfo.processInfo.systemUptime < deadline else {
